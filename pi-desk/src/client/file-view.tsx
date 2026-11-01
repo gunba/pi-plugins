@@ -70,6 +70,28 @@ export function FileLink({ session, file, children }: { session: string; file: F
 		{open && <FileViewer session={session} reference={file} close={() => setOpen(false)} />}
 	</span>;
 }
+/** A small preview of an image file; clicking it opens the file viewer. Other files show their name. */
+export function FileThumbnail({ session, file }: { session: string; file: FileReference }) {
+	const origin = useReferenceQuery();
+	const [url, setUrl] = useState(""), [open, setOpen] = useState(false);
+	useEffect(() => {
+		const controller = new AbortController();
+		let made = "";
+		void api<FileInfo>(`/sessions/${session}/files/${file.id}?${origin}`).then(async info => {
+			if (info.kind !== "image" || info.size > FILE_IMAGE_LIMIT) return;
+			const blob = await fileBlob(session, info, origin, controller.signal, () => {});
+			if (controller.signal.aborted) return;
+			made = URL.createObjectURL(blob.slice(0, blob.size, info.mimeType)); setUrl(made);
+		}).catch(() => {});
+		return () => { controller.abort(); if (made) URL.revokeObjectURL(made); };
+	}, [session, file.id, origin]);
+	return <>
+		<button type="button" className="file-thumbnail" title={file.name} aria-label={`Preview ${file.name}`} onClick={() => setOpen(true)}>
+			{url ? <img src={url} alt="" /> : <span>{file.name}</span>}</button>
+		{open && <FileViewer session={session} reference={file} close={() => setOpen(false)} />}
+	</>;
+}
+
 function FileViewer({ session, reference, close }: { session: string; reference: FileReference; close: () => void }) {
 	const origin = useReferenceQuery();
 	const content = useRef<HTMLPreElement>(null);

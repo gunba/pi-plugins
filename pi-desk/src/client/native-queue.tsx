@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { Icon } from "./icons.tsx";
+import { FileThumbnail } from "./file-view.tsx";
 
 type Queue = "steering" | "followUp";
 export type SendQueuedNow = (queue: Queue, index: number, preview: string) => void;
@@ -10,8 +11,8 @@ type EditQueued = (queue: Queue, id: string, change?: { original: string; text: 
  * Messages waiting inside Pi. Each can be edited where it is (Enter or leaving the field saves, Esc discards), sent now,
  * or cancelled, which returns it to the message box. An edit to a message sent meanwhile goes to the message box.
  */
-export function NativeQueue({ queue, sendNow, cancel, edit, keep }: {
-	queue: SessionSnapshot["queue"]; sendNow?: SendQueuedNow; cancel?: SendQueuedNow; edit?: EditQueued; keep?: (text: string) => void;
+export function NativeQueue({ session, queue, sendNow, cancel, edit, keep }: {
+	session: string; queue: SessionSnapshot["queue"]; sendNow?: SendQueuedNow; cancel?: SendQueuedNow; edit?: EditQueued; keep?: (text: string) => void;
 }) {
 	const [editing, setEditing] = useState<{ queue: Queue; id: string; original: string; text: string }>();
 	const [working, setWorking] = useState(false), [error, setError] = useState("");
@@ -59,7 +60,9 @@ export function NativeQueue({ queue, sendNow, cancel, edit, keep }: {
 							if (event.key === "Escape") { event.preventDefault(); setEditing(undefined); setError(""); }
 							else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void save(); }
 						}} />
-					: <p>{text}</p>}
+					: <div className="queue-text"><p>{text}</p>
+						{!!group.files?.[index]?.length && <div className="queue-files">{group.files[index]!.map(file =>
+							<FileThumbnail key={file.id} session={session} file={file} />)}</div>}</div>}
 					{edit && id && !here && <button type="button" className="queue-cancel" title="Edit" disabled={working || !!editing}
 						aria-label={`Edit waiting message ${index + 1}`} onClick={() => void open(key, id)}><Icon name="edit" /></button>}
 					{key === "followUp" && sendNow && <button type="button" className="queue-send-now" title="Stop the current turn and send this message now"

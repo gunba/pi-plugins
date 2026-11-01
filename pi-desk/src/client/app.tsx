@@ -676,7 +676,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                 <span>{questions.length > 1 ? `${questions.length} questions →` : "Answer →"}</span>
               </button>
             )}
-            {session.snapshot && <NativeQueue key={selected} queue={session.snapshot.queue}
+            {session.snapshot && <NativeQueue key={selected} session={session.key} queue={session.snapshot.queue}
               edit={connected && session.state === "ready" && session.workerRuntime?.queueEdit
                 ? async (queue, id, change) => {
                   const reply = await command<{ result: { text: string } }>(change

@@ -40,6 +40,7 @@ export interface PresentationSnapshot {
 	editorId: string;
 	title: string;
 }
+export interface QueueGroup { count: number; previews: string[]; ids?: (string | null)[]; files?: FileReference[][] }
 export interface SessionSnapshot {
 	id: string;
 	file?: string;
@@ -64,7 +65,8 @@ export interface SessionSnapshot {
 	extensions: { path: string; error?: string }[];
 	commands: import("./prompt-commands.ts").PromptCommandInfo[];
 	models: { id: string; provider: string; name: string }[];
-	queue: { steering: { count: number; previews: string[]; ids?: (string | null)[] }; followUp: { count: number; previews: string[]; ids?: (string | null)[] } };
+	/** Messages waiting in Pi. `files` lists, per message, the attached files its preview leaves out. */
+	queue: { steering: QueueGroup; followUp: QueueGroup };
 	/** `estimated` when no provider-reported usage applies and the tokens are counted from characters. */
 	context?: { tokens: number | null; contextWindow: number; percent: number | null; estimated?: boolean };
 	/** Branch order of the first message the model still sees verbatim; earlier messages survive only in a summary. */

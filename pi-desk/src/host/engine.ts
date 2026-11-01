@@ -60,7 +60,26 @@ import { promptCommandName } from "../shared/prompt-commands.ts";
 import { entryCheckpoint, portableContextUnchanged, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
 import { lazyMcpTransports } from "../../../pi-agents/lazy-mcp.ts";
 
-const queuePreview = (text: string) => text.length > 300 ? `${text.slice(0, 300)}…` : text;
+/** The list of attached files Desk appends to a message (attachments.ts), and a file it names. */
+const ATTACHED = "\n\nAttached files on the host:\n";
+const ATTACHMENT_LINE = /^- ("(?:[^"\\]|\\.)*") \(\d+ bytes\): ("(?:[^"\\]|\\.)*")$/gm;
+const ATTACHMENT_PATH = /[\\/]desk[\\/]attachments[\\/][a-f0-9]{64}[\\/][a-f0-9]{64}[\\/]attachment\.[a-z0-9]+$/i;
+/** A waiting message as shown, and as queue commands identify it: its text without the file list, cut at 300 characters. */
+export const queuePreview = (message: string) => {
+	const at = message.lastIndexOf(ATTACHED), text = at < 0 ? message : message.slice(0, at);
+	return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+};
+/** The files a waiting message's list names, which the app shows as thumbnails. */
+export function queueAttachments(message: string): { name: string; path: string }[] {
+	const at = message.lastIndexOf(ATTACHED);
+	if (at < 0) return [];
+	return [...message.slice(at + ATTACHED.length).matchAll(ATTACHMENT_LINE)].flatMap(match => {
+		try {
+			const name: unknown = JSON.parse(match[1]!), path: unknown = JSON.parse(match[2]!);
+			return typeof name === "string" && typeof path === "string" && ATTACHMENT_PATH.test(path) ? [{ name, path }] : [];
+		} catch { return []; }
+	});
+}
 const modelContextCache = new WeakMap<SessionManager, { leaf: string | null; constraint: SessionSnapshot["modelSwitchConstraint"] }>();
 function modelSwitchConstraint(session: AgentSession, fresh = false): SessionSnapshot["modelSwitchConstraint"] {
 	const manager = session.sessionManager, leaf = manager.getLeafId(), cached = modelContextCache.get(manager);
@@ -477,8 +496,14 @@ export class DeskEngine {
 			: { ...usage, tokens: measured, percent: measured / usage.contextWindow * 100 });
 		const cache = promptCache(session);
 		const defaults = session.settingsManager.getGlobalSettings();
-		const queued = (messages: readonly string[], queue: "steering" | "followUp") => ({ count: messages.length,
-			previews: messages.map(queuePreview), ids: queuedMessageIds(session, queue) });
+		const queued = (messages: readonly string[], queue: "steering" | "followUp") => {
+			const files = messages.map(message => queueAttachments(message).flatMap(file => {
+				const reference = this.transcript.files.observePath(file.path, session.sessionManager.getCwd(), file.name);
+				return reference ? [reference] : [];
+			}));
+			return { count: messages.length, previews: messages.map(queuePreview), ids: queuedMessageIds(session, queue),
+				...(files.some(list => list.length) ? { files } : {}) };
+		};
 		const manager = session.sessionManager, leaf = manager.getLeafId();
 		if (this.opening?.manager !== manager || !this.opening.text)
 			this.opening = { manager, text: openingMessage(manager.getEntries(), this.fullEntry(manager)) };
