@@ -24,10 +24,10 @@ export function OfficePages({ session, file, large }: { session: string; file: F
 			const [blob, pdfjs] = await Promise.all([fileBlob(session, pages, origin, controller.signal, () => {}), import("pdfjs-dist")]);
 			pdfjs.GlobalWorkerOptions.workerSrc = WORKER;
 			loaded = await pdfjs.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
-			if (controller.signal.aborted) void loaded.destroy();
+			if (controller.signal.aborted) void loaded.loadingTask.destroy();
 			else setPdf(loaded);
 		})().catch(failure => { if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : String(failure)); });
-		return () => { controller.abort(); void loaded?.destroy(); };
+		return () => { controller.abort(); void loaded?.loadingTask.destroy(); };
 	}, [session, file.id, origin]);
 	if (error) return <p className="office-pages-status error-text">{error}</p>;
 	if (!pdf) return <p className="office-pages-status muted">Rendering the pages…</p>;
