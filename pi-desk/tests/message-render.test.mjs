@@ -11,10 +11,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 const require = createRequire(import.meta.url);
 const directory = mkdtempSync(join(tmpdir(), "pi-desk-render-"));
-let MessageView, DisclosureStates, WorkBody, WorkChip, ShownSummary, messageLinks, workItems;
+let MessageView, DisclosureStates, WorkBody, WorkChip, ShownSummary, messageLinks, workItems, NativeQueue;
 try {
 	const file = join(directory, "view.mjs");
-	await build({ stdin: { contents: 'export { MessageView } from "./message-view.tsx"; export { DisclosureStates } from "./disclosure.tsx"; export { WorkBody, WorkChip, ShownSummary, messageLinks, workItems } from "./change-view.tsx";',
+	await build({ stdin: { contents: 'export { MessageView } from "./message-view.tsx"; export { DisclosureStates } from "./disclosure.tsx"; export { WorkBody, WorkChip, ShownSummary, messageLinks, workItems } from "./change-view.tsx"; export { NativeQueue } from "./native-queue.tsx";',
 		resolveDir: fileURLToPath(new URL("../src/client", import.meta.url)), loader: "ts" },
 		outfile: file, bundle: true, platform: "node", format: "esm", jsx: "automatic",
 		banner: { js: 'import {createRequire} from "node:module"; const require=createRequire(import.meta.url); globalThis.history={state:null,length:1}; globalThis.location={hash:""}; globalThis.addEventListener=()=>{};' },
@@ -22,7 +22,7 @@ try {
 			builder.onResolve({ filter: /^react(?:-dom)?(?:\/.*)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
 		} }],
 	});
-	({ MessageView, DisclosureStates, WorkBody, WorkChip, ShownSummary, messageLinks, workItems } = await import(pathToFileURL(file).href));
+	({ MessageView, DisclosureStates, WorkBody, WorkChip, ShownSummary, messageLinks, workItems, NativeQueue } = await import(pathToFileURL(file).href));
 } finally { rmSync(directory, { recursive: true, force: true }); }
 
 const message = (id, role, blocks) => ({ id, role, blocks, order: 0, revision: 1, timestamp: 0, complete: true });
@@ -148,4 +148,11 @@ test("empty text does not give activity rows a chat header or an invisible gap",
 	const text = render({ message: message("reply", "assistant", [{ type: "thinking", text: "reasoning" }, { type: "text", text: "A reply" }]) });
 	assert.match(text, /message-heading/);
 	assert.match(text, /A reply/);
+});
+
+test("a waiting message with an attached image renders its thumbnail", () => {
+	const file = { id: "a".repeat(64), name: "image.png" };
+	const html = renderToStaticMarkup(createElement(NativeQueue, { session: "fixture",
+		queue: { steering: { count: 0, previews: [] }, followUp: { count: 1, previews: ["Look at this"], ids: ["q1"], files: [[file]] } } }));
+	assert.match(html, /<button type="button" class="file-thumbnail" title="image.png" aria-label="Preview image.png"><span>image.png<\/span><\/button>/);
 });

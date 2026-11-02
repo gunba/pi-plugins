@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { Icon } from "./icons.tsx";
 import { FileThumbnail } from "./file-view.tsx";
+import { ReferenceContext } from "./reference-origin.tsx";
 
 type Queue = "steering" | "followUp";
 export type SendQueuedNow = (queue: Queue, index: number, preview: string) => void;
@@ -61,8 +62,11 @@ export function NativeQueue({ session, queue, sendNow, cancel, edit, keep }: {
 							else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void save(); }
 						}} />
 					: <div className="queue-text"><p>{text}</p>
-						{!!group.files?.[index]?.length && <div className="queue-files">{group.files[index]!.map(file =>
-							<FileThumbnail key={file.id} session={session} file={file} />)}</div>}</div>}
+						{/* A waiting message isn't in the transcript yet; the worker registered its files when it listed them, so
+						    reading them needs no transcript message to recover from, and its queue id stands in for one. */}
+						{!!group.files?.[index]?.length && <ReferenceContext value={{ message: id ?? `queued-${key}-${index}` }}>
+							<div className="queue-files">{group.files[index]!.map(file => <FileThumbnail key={file.id} session={session} file={file} />)}</div>
+						</ReferenceContext>}</div>}
 					{edit && id && !here && <button type="button" className="queue-cancel" title="Edit" disabled={working || !!editing}
 						aria-label={`Edit waiting message ${index + 1}`} onClick={() => void open(key, id)}><Icon name="edit" /></button>}
 					{key === "followUp" && sendNow && <button type="button" className="queue-send-now" title="Stop the current turn and send this message now"
