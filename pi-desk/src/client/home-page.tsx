@@ -56,6 +56,6 @@ export function HomePage({ page, work, open }: { page: string; work: HomeWork[];
 		{lead && <div className="home-lead"><Text>{lead}</Text></div>}
 		{columns.length ? <div className="home-columns">{columns.map((column, index) =>
 			<section key={index} className="home-column"><h2>{column.title}</h2><Text>{column.body}</Text></section>)}</div>
-			: !lead && <p className="home-empty muted">Tell Home what you need to do, and it keeps your page here.</p>}
+			: !lead && <p className="home-empty muted">No tasks yet.</p>}
 	</div></div>;
 }

@@ -524,7 +524,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             return headerPlan ? <PlanHeader view={headerPlan} title={name} disabled={!connected || closing}
               invoke={action => run({ kind: "action", view: headerPlan.id, revision: headerPlan.revision, action: action.id })} />
               : <div className="conversation-heading">
-                {phone && <span>{session ? `${currentComputer ? `${currentComputer.name} · ` : ""}${folderName(session.cwd)}` : "Your workspace"}</span>}
+                {phone && <span>{session ? `${currentComputer ? `${currentComputer.name} · ` : ""}${folderName(session.cwd)}` : "Pi Desk"}</span>}
                 {name}
               </div>;
           })()}
@@ -607,22 +607,14 @@ export function App({ account }: { account?: BrowserAccount }) {
           empty={waiting ??
               <div className="welcome">
                 <div className="welcome-mark">π</div>
-                <div className="eyebrow">
-                  {session
-                    ? folderName(session.cwd)
-                    : "A LITTLE SPACE TO THINK BIG"}
-                </div>
+                {session && <div className="eyebrow">{folderName(session.cwd)}</div>}
                 <h1>
                   {session && !canCompose ? "Pi is not running"
                     : session?.reconnecting ? "Reconnecting to Pi…"
                     : session?.state === "starting" ? closing ? "Closing this conversation…" : controlBusy ? "Updating this conversation…" : "Opening this conversation…"
-                    : session ? "What shall we work on?" : "Make something good."}
+                    : session ? "New conversation" : "No conversation open"}
                 </h1>
-                <p>
-                  {session && !canCompose ? session.error || "Resume Pi to load this conversation. Nothing has been resent." : session
-                    ? "Your tools, context, and conversations. All in one place."
-                    : "Start a conversation in any project. Pick it up on any device."}
-                </p>
+                {session && !canCompose && <p>{session.error || "Resume Pi to load this conversation. Nothing has been resent."}</p>}
                 {!session && (
                   <button className="primary" onClick={() => newConversation.open()}>
                     Start a conversation <span>↗</span>

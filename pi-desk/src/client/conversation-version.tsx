@@ -28,8 +28,7 @@ export function VersionBanner({ session, computer, busy, report }: {
 	if (!stale) return null;
 	return <div className="version-banner" role="status">
 		<Icon name="update" />
-		<span>This conversation runs Desk {stale.running}; {computer?.name ?? "this computer"} has {stale.current}.
-			{computer?.updates?.automatic?.conversations ? " It moves to the new version by itself once idle with its prompt cache expired, or restart it now." : " It keeps its tools and fixes until restarted."} History is kept.</span>
+		<span>Runs Desk {stale.running}; {computer?.name ?? "this computer"} has {stale.current}.</span>
 		<button disabled={busy || restarting} title={busy ? "Restart when the conversation is idle." : undefined} onClick={() => {
 			setRestarting(true);
 			void api(`/sessions/${session.key}/restart`, { replace: true }, session.computer)

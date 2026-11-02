@@ -43,7 +43,7 @@ export function AccountGate({ origin, children }: { origin: string; children: (a
 	</main>;
 	return <main className="account-page">
 		<div className="brand-mark" aria-hidden="true">π</div>
-		<h1>Your workspace, anywhere.</h1>
+		<h1>Pi Desk</h1>
 		<p>Sign in to access your computers and conversations.</p>
 		{phase === "signin" && client && <button className="primary" disabled={busy} onClick={() => {
 			setBusy(true); setError("");

@@ -91,7 +91,7 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
     <div className="sidebar-scroll">
     <nav className="home-navigation" aria-label="Home">
       <button className={`session-item${homeSelected ? " selected" : ""}`} aria-current={homeSelected ? "page" : undefined} onClick={() => select("home")}>
-        <span className="home-navigation-icon"><Icon name="layers" /></span><span><strong>Home</strong><small>Your work, together</small></span>
+        <span className="home-navigation-icon"><Icon name="layers" /></span><span><strong>Home</strong></span>
         {host.sessions.some(item => item.home && unseen(item)) && <span className="home-unread">New</span>}
       </button>
     </nav>

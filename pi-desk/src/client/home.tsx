@@ -113,7 +113,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 	const openWork = (work: HomeWork) => openConversation(referenceKey(work.computer ?? computer, work.id), work.view);
 	return <>
 		<header className="topbar home-topbar"><button className="icon-button mobile-nav" aria-label="Open navigation" onClick={openNavigation}>☰</button>
-			<div className="conversation-heading"><strong>Home</strong><span>{snapshot.busy ? "Working…" : "Your work, in one place"}</span></div>
+			<div className="conversation-heading"><strong>Home</strong>{snapshot.busy && <span>Working…</span>}</div>
 			<div className="top-actions"><span className="home-run" title={snapshot.run ? `${snapshot.run.input} input · ${snapshot.run.output} output · ${snapshot.run.cacheRead} cached tokens` : undefined}>
 				{snapshot.run ? `$${snapshot.run.cost.toFixed(4)} last run` : "Terra 6.1"}</span>
 				<button className="subtle-button" disabled={!key} onClick={() => {
