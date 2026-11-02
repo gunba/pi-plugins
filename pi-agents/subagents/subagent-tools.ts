@@ -167,6 +167,8 @@ export function createSubagentToolDefinitions(
 				}
 				if (params.computer !== undefined || params.cwd !== undefined)
 					throw Error("computer and cwd are for primary agents; a secondary agent works here, in this conversation's folder.");
+				if (params.context !== undefined && !/^(copy|fresh|\+?\d+)$/.test(params.context.trim()))
+					throw Error(`context is how much of this conversation the agent sees: copy, fresh or a number of recent turns, not ${JSON.stringify(params.context.slice(0, 40))}. Put what it needs to know in task.`);
 				const turns = parseForkTurns(params.context === undefined || params.context === "copy" ? "all" : params.context === "fresh" ? "none" : params.context);
 				const owner = resolveRuntime(runtime);
 				const result = await owner.start({

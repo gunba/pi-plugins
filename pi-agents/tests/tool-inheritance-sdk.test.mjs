@@ -79,7 +79,7 @@ export default function(pi) {
 }`;
 }
 
-async function integration(t, { search = false, party = false, policy = false, guard = false, structured = false, initialActive = ["custom_inventory", "restricted_action"] } = {}) {
+async function integration(t, { search = false, party = false, policy = false, guard = false, structured = false, inline = false, initialActive = ["custom_inventory", "restricted_action"] } = {}) {
 	const directory = await mkdtemp(join(tmpdir(), "pi-tool-inheritance-sdk-"));
 	const agentDir = join(directory, "agent"); const rootCwd = join(directory, "root-work");
 	await mkdir(agentDir); await mkdir(rootCwd);
@@ -151,14 +151,16 @@ async function integration(t, { search = false, party = false, policy = false, g
 	const events = createEventBus();
 	const loader = new DefaultResourceLoader({ cwd: rootCwd, agentDir, eventBus: events, settingsManager: SettingsManager.inMemory(settings),
 		additionalExtensionPaths: [fixturePath, ...(policy ? [policyPath] : []), ...(guard ? [GUARD_SOURCE, "builtin:codemode"] : []), ...(search ? [SEARCH_SOURCE] : []), ...(party ? [PARTY_SOURCE] : [])], noSkills: true,
-		extensionFactories: guard ? [{ name: "codemode", builtin: true, replaceable: true, factory: structured ? createStructuredToolExtension() : createCodemodeExtension() }] : [],
+		extensionFactories: [...guard ? [{ name: "codemode", builtin: true, replaceable: true, factory: structured ? createStructuredToolExtension() : createCodemodeExtension() }] : [],
+			...inline ? [{ name: "host", factory: pi => pi.registerTool({ name: "host_only", label: "host_only", description: "Registered inline by the host",
+				parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "host" }], details: {} }) }) }] : []],
 		noPromptTemplates: true, noThemes: true, noContextFiles: true });
 	await loader.reload();
 	assert.deepEqual(loader.getExtensions().errors, []);
 	({ session: rootSession } = await createAgentSession({ cwd: rootCwd, agentDir, model: MODELS[0], modelRuntime: runtime,
 		sessionManager: rootManager, settingsManager: SettingsManager.inMemory(settings), resourceLoader: loader,
 		tools: ["custom_inventory", "restricted_action", "newly_enabled", "local_policy_tool", ...(guard ? ["bash", "codemode"] : []), ...(search ? ["web_search"] : []),
-			...(party ? ["agent_move"] : [])] }));
+			...(party ? ["agent_move"] : []), ...(inline ? ["host_only"] : [])] }));
 	await rootSession.bindExtensions({ mode: "rpc" });
 	rootSession.setActiveToolsByName(initialActive);
 	const rootCatalogs = [];
@@ -168,7 +170,7 @@ async function integration(t, { search = false, party = false, policy = false, g
 		getActiveToolNames: () => rootSession.getActiveToolNames(),
 		getToolInfo() {
 			const catalog = rootSession.getAllTools();
-			for (const item of catalog) assert.ok(item.sourceInfo.source === "builtin" || isAbsolute(item.sourceInfo.path), "root catalog must not contain synthetic child sources");
+			for (const item of catalog) assert.ok(item.sourceInfo.source === "builtin" || isAbsolute(item.sourceInfo.path) || item.name === "host_only", "root catalog must not contain synthetic child sources");
 			rootCatalogs.push(catalog); return catalog;
 		},
 		getFlag: (name) => name === "allow-restricted" ? false : undefined,
@@ -399,4 +401,10 @@ for (const phase of ["factory", "session_start"]) test(`failed child ${phase} re
 	await assert.rejects(h.open(`failure-${phase}`), new RegExp(`offline ${phase} failure`));
 	assert.deepEqual(await h.audit(), [{ kind: `failed-${phase}-cleanup` }], "failed opening must run cleanup exactly once, including pre-bind factory failures");
 	assert.equal(h.requests.length, 0);
+});
+
+test("a child gets its parent's tools except those the parent's host registered inline", { timeout: 25000 }, async (t) => {
+	const h = await integration(t, { inline: true, initialActive: ["custom_inventory", "host_only"] });
+	const child = await h.open("inline-host-child");
+	assert.deepEqual(JSON.parse((await child.driver.prompt("fixture-availability")).output), ["custom_inventory"]);
 });

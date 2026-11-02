@@ -317,15 +317,20 @@ export class PiSdkDriverFactory implements ChildDriverFactory {
 			this.host.agentDir,
 			{ projectTrusted },
 		);
-		const toolInfo = this.host.getToolInfo?.();
 		const customTools = [...input.customTools];
 		const customToolNames = customTools.map((tool) => tool.name);
+		// A tool its host registers inline, such as Desk's Home tools, belongs to that conversation: no source file can
+		// rebuild it in a child, so the child gets the parent's other tools and its own versions of the agent tools.
+		const parentTools = this.host.getToolInfo?.();
+		const parentOnly = new Set((parentTools ?? []).filter(tool => tool.sourceInfo?.source !== "builtin"
+			&& tool.sourceInfo?.path.startsWith("<inline:") && !customToolNames.includes(tool.name)).map(tool => tool.name));
+		const toolInfo = parentTools?.filter(tool => !parentOnly.has(tool.name));
 		// Absence from getAllTools can mean an explicit SDK exclusion, not a
 		// child-only capability. Only the caller may declare intrinsic tools.
 		const childOnlyTools = (input.intrinsicToolNames ?? (!toolInfo ? customToolNames : []))
 			.filter((name) => customToolNames.includes(name));
 		const enabledTools = () => [...new Set([
-			...(this.host.getActiveToolNames?.() ?? input.descriptor.toolNames),
+			...(this.host.getActiveToolNames?.() ?? input.descriptor.toolNames).filter(name => !parentOnly.has(name)),
 			...childOnlyTools,
 		])];
 		const inheritedExtensions = await loadChildToolExtensions({
