@@ -312,3 +312,23 @@ test("a watch starts after pruning released another branch's watch entries", asy
     return {id: started.watches[0].id};`);
   assert.deepEqual(data(result), { id: "w8" });
 });
+
+
+test("a program reads a long file whole, or exactly the lines it asks for", async t => {
+  // An agent read a 1,347-line file, got Pi's first 50 KB page with its "Use offset=941 to continue" note, and wrote that
+  // back over the file.
+  const h = await harness(t);
+  const original = Array.from({ length: 3000 }, (_, index) => `line ${index + 1} ${"x".repeat(40)}`).join("\n") + "\n";
+  await writeFile(join(h.root, "long.txt"), original);
+  const result = await h.run(`
+    const whole = await tools.read({path:"long.txt"});
+    await tools.write({path:"copy.txt",content:whole});
+    const middle = await tools.read({path:"long.txt",offset:1500,limit:1300});
+    const tail = await tools.read({path:"long.txt",offset:2999,limit:5});
+    const rows = middle.split("\\n");
+    return {count: rows.length, first: rows[0], last: rows.at(-1), tail};`);
+  assert.equal(await readFile(join(h.root, "copy.txt"), "utf8"), original);
+  const lines = original.split("\n");
+  assert.deepEqual(data(result), { count: 1300, first: lines[1499], last: lines[2798], tail: lines.slice(2998).join("\n") });
+});
+

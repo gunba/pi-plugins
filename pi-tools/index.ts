@@ -38,7 +38,7 @@ export const requestDescription = (others: readonly string[]) => `Run a JavaScri
 - Paths are relative to the working directory. Write valid JavaScript: every object field needs key:value. In template literals, escape \` and \${, or use quoted strings.
 - Before repeating a change over many files, make it once and check it.
 Core operations:
-read({path,offset?,limit?}) -> text or an image. Lines count from 1; page through long files with offset.
+read({path,offset?,limit?}) -> the file's whole text, or just the lines asked for (counting from 1), or an image.
 bash({command,timeout?}) -> {output,exit_code,truncated,full_output_path?,wall_time_seconds}. Timeout in seconds. Use it for file operations and anything that needs Node.
 edit({path,edits:[{oldText,newText}]}) -> text. Each oldText must occur exactly once in the original file; edits must not overlap.
 write({path,content}) -> text. Creates folders and replaces the file: for new files and full rewrites.
@@ -140,12 +140,42 @@ function invalidCall(text: string, tool: { name: string; parameters?: unknown } 
   return `${text.split("\n\nReceived arguments:")[0]}\nCurrent parameters: ${tool.name}(${shape(tool.parameters as Schema)})`;
 }
 
+type Outcome = Awaited<ReturnType<ExtensionToolContext["executeTool"]>>;
+const READ_LIMIT = 16 * 1024 * 1024;
+/**
+ * A program reads a text file whole, or exactly the lines it asked for. Pi's read shows a long file a page at a time and
+ * ends the page with a note on how to go on; a program took such a page for the whole file and wrote it back, losing
+ * the rest and keeping the note. Each further page goes through Pi's read like the first, under the same guards.
+ */
+async function readWhole(ctx: ExtensionToolContext, params: unknown, options: Parameters<ExtensionToolContext["executeTool"]>[2]): Promise<Outcome> {
+  const request = (params && typeof params === "object" ? params : {}) as { offset?: number; limit?: number };
+  const pages: string[] = [];
+  let offset = request.offset ?? 1, wanted = request.limit, bytes = 0;
+  for (let call = params; ;) {
+    const outcome = await ctx.executeTool("read", call, options);
+    if (outcome.isError || outcome.result.content.some(part => part.type === "image")) return outcome;
+    const text = outcome.result.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
+    const truncation = (outcome.result.details as { truncation?: { content: string; truncated: boolean; outputLines: number; firstLineExceedsLimit?: boolean } } | undefined)?.truncation;
+    if (truncation?.firstLineExceedsLimit) return { ...outcome, isError: true };
+    const page = truncation?.truncated ? truncation.content : text.replace(/\n\n\[\d+ more lines in file\. Use offset=\d+ to continue\.\]$/, "");
+    pages.push(page); bytes += page.length;
+    if (bytes > READ_LIMIT) return { ...outcome, isError: true, result: { ...outcome.result, content: [{ type: "text", text: "The file is over 16 MB; read it in parts with offset and limit." }] } };
+    if (wanted !== undefined) wanted -= truncation?.truncated ? truncation.outputLines : wanted;
+    if (!truncation?.truncated || wanted !== undefined && wanted <= 0) {
+      const whole = pages.join("\n");
+      return { ...outcome, result: { ...outcome.result, content: [{ type: "text", text: whole }], structuredContent: whole, details: undefined } };
+    }
+    offset += truncation.outputLines;
+    call = { ...request, offset, ...(wanted !== undefined ? { limit: wanted } : {}) };
+  }
+}
+
 /** All nested operations still pass through Pi's validation, guards, approvals and Desk events. */
 function context(ctx: ExtensionToolContext, terminate: () => void): ExtensionToolContext {
   return Object.create(ctx, {
     tools: { value: ctx.tools.map(scriptTool) },
     executeTool: { value: async (...args: Parameters<ExtensionToolContext["executeTool"]>) => {
-      const outcome = await ctx.executeTool(...args);
+      const outcome = args[0] === "read" ? await readWhole(ctx, args[1], args[2]) : await ctx.executeTool(...args);
       if (outcome.result.terminate) terminate();
       if (external(args[0])) return outcome;
       const result = outcome.result;
