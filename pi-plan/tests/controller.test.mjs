@@ -169,3 +169,10 @@ test("an active plan untouched for 25 of the model's tool calls is recalled in t
 	for (let index = 0; index < 30; index++) assert.equal(await call(), undefined);
 	await h.emit("session_shutdown");
 });
+
+test("a step given as a string is a pending step", async () => {
+	const h = createExtensionHarness(); await h.start();
+	await create(h, { auto_continue: false, steps: ["Read the case", { content: "Draft the deck", status: "in_progress" }] });
+	assert.deepEqual((await read(h)).steps, [{ content: "Read the case", status: "pending" }, { content: "Draft the deck", status: "in_progress" }]);
+	await h.emit("session_shutdown");
+});

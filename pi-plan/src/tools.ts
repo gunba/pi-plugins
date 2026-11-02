@@ -1,14 +1,15 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
-import { planSteps } from "./steps.ts";
+import { planSteps, type PlanStep } from "./steps.ts";
 
-const Step = Type.Object({
+// A plain string is a pending step: agents write a fresh plan's steps as a list of strings.
+const Step = Type.Union([Type.String(), Type.Object({
 	content: Type.String(),
 	status: StringEnum(["pending", "in_progress", "completed"] as const),
-}, { additionalProperties: false });
+}, { additionalProperties: false })]);
 const Definition = {
 	objective: Type.Optional(Type.String()),
-	steps: Type.Optional(Type.Array(Step, { description: "The whole list; replaces the old one." })),
+	steps: Type.Optional(Type.Array(Step, { description: "The whole list; replaces the old one. A string is a pending step." })),
 	auto_continue: Type.Optional(Type.Boolean({ description: "Keep working in automatic rounds." })),
 	max_rounds: Type.Optional(Type.Integer({ minimum: 1 })),
 };
@@ -27,6 +28,8 @@ export type UpdateParams = Static<typeof UpdateParameters>;
  * Validate scalar fields before Pi's schema conversion can coerce them. update_plan once took plan_id and revision;
  * conversations that used it may still send them, so they are dropped rather than refused.
  */
+const pending = <T>(step: T | string): T | PlanStep => typeof step === "string" ? { content: step, status: "pending" } : step;
+
 export function preparePlanArguments<T extends CreateParams | UpdateParams>(value: unknown): T {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return value as T;
 	const { plan_id: _id, revision: _revision, ...input } = value as Record<string, unknown>;
@@ -36,13 +39,13 @@ export function preparePlanArguments<T extends CreateParams | UpdateParams>(valu
 		if (field in input && (typeof input[field] !== "number" || !Number.isSafeInteger(input[field]) || (input[field] as number) < 1))
 			throw new Error(`${field} must be a positive safe integer`);
 	if ("auto_continue" in input && typeof input.auto_continue !== "boolean") throw new Error("auto_continue must be a boolean");
-	if ("steps" in input) planSteps(input.steps, true);
+	if ("steps" in input) planSteps(Array.isArray(input.steps) ? input.steps.map(pending) : input.steps, true);
 	return input as T;
 }
 export function definition(params: CreateParams | UpdateParams) {
 	return {
 		...(params.objective === undefined ? {} : { objective: params.objective }),
-		...(params.steps === undefined ? {} : { steps: params.steps }),
+		...(params.steps === undefined ? {} : { steps: params.steps.map(step => pending<PlanStep>(step)) }),
 		...(params.auto_continue === undefined ? {} : { autoContinue: params.auto_continue }),
 		...(params.max_rounds === undefined ? {} : { maxRounds: params.max_rounds }),
 	};
