@@ -500,6 +500,10 @@ export class PartyStore {
 		).get(...scopeArgs, cursor.created, cursor.id);
 		return { messages: rows, hasOlder: !!first && exists(first, "<"), hasNewer: !!last && exists(last, ">") };
 	}
+	/** The other agent an ID, or the start of one, names. */
+	peer(session: string, target: string): Member {
+		return this.resolve(target, this.db.prepare("SELECT * FROM party_agents WHERE session<>?").all(session) as unknown as Member[]);
+	}
 	private resolve(target: string, peers: Member[]): Member {
 		if (!target.trim()) throw Error("Choose an agent ID from agent_list.");
 		const exact = peers.find(peer => peer.session === target);

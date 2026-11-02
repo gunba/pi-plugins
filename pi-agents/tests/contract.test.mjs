@@ -59,9 +59,9 @@ function extensionHarness() {
 test("root exposes the agent tools and none of the earlier ones", async () => {
 	const harness = extensionHarness();
 	try {
-		assert.equal(harness.tools.length, 4, "agent tools register during discovery");
+		assert.equal(harness.tools.length, 5, "agent tools register during discovery");
 		for (const handler of harness.handlers.get("session_start")) await handler({}, harness.ctx);
-		assert.deepEqual(harness.tools.map((tool) => tool.name), ["agent_start", "agent_send", "agent_list", "agent_stop"]);
+		assert.deepEqual(harness.tools.map((tool) => tool.name), ["agent_start", "agent_send", "agent_list", "agent_resume", "agent_stop"]);
 		for (const removed of ["wait_agent", "spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 			"subagent", "subagent_fork", "restart_agent", "wait_for_work", "cancel_work_wait", "kill_agent"])
 			assert.equal(harness.tools.some((tool) => tool.name === removed), false);
@@ -139,5 +139,5 @@ test("root and child modes use the same agent tools", () => {
 	const runtime = {};
 	const binding = { getAuthority: () => ({}) };
 	for (const mode of ["root", "one-shot", "continuable"])
-		assert.deepEqual(createSubagentToolDefinitions(runtime, binding, mode).map((tool) => tool.name), ["agent_start", "agent_send", "agent_list", "agent_stop"]);
+		assert.deepEqual(createSubagentToolDefinitions(runtime, binding, mode).map((tool) => tool.name), ["agent_start", "agent_send", "agent_list", "agent_resume", "agent_stop"]);
 });

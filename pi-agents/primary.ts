@@ -13,6 +13,8 @@ export interface PrimaryAgents {
 	list(request: { query?: string; offline?: boolean; offset?: number }): Record<string, unknown>;
 	/** Closes a conversation this one started. */
 	close(request: { agent: string; note?: string }, signal: AbortSignal | undefined): Promise<Record<string, unknown>>;
+	/** Reopens a closed conversation without sending it anything. */
+	resume(request: { agent: string }, signal: AbortSignal | undefined): Promise<Record<string, unknown>>;
 }
 export type PrimaryStart = { name: string; task: string; copy: boolean; computer?: string; cwd?: string; model?: string; reasoning?: string };
 

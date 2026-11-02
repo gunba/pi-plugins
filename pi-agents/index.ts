@@ -83,7 +83,7 @@ export default function party(pi: ExtensionAPI): void {
 		const resumable = state === "offline" && !resumeBlocker(peer);
 		// A managed child's parent owns its turns; messages arrive during the next one and never start it.
 		const delivery = peer.kind === "child" ? { ...partyDelivery(peer, false, state), deliveryReason: "Managed child agent: messages arrive during its next turn." }
-			: resumable ? { delivery: "reopen on wake", wakeable: true, deliveryReason: "Closed. agent_send with wake reopens it and it starts on your message; with wake=false the message waits until it is next opened." }
+			: resumable ? { delivery: "reopen on wake", wakeable: true, deliveryReason: "Closed. agent_send with wake reopens it and it starts on your message; with wake=false the message waits until it is next opened. agent_resume reopens it without a message." }
 			: partyDelivery(peer, !!peer.delivery && state !== "offline", state);
 		return {
 			id: peer.session, computer: peer.computer ?? null, label: peer.label, description: peer.description, cwd: peer.cwd,
@@ -402,6 +402,13 @@ export default function party(pi: ExtensionAPI): void {
 			rememberAgentLabels(found.agents);
 			return { agents: found.agents.map(publicAgent), nextOffset: found.nextOffset ?? null,
 				computers: [{ id: "local", name: hostname(), platform: process.platform, state: operations().hostOnline() ? "connected" : "offline" }, ...database().computers()] };
+		},
+		async resume(request, abort) {
+			const peer = database().peer(session, request.agent);
+			if (peer.heartbeat > Date.now() - LEASE_MS || peer.state === "restarting") return { agent: peer.session, reopened: "already open" };
+			const outcome = await reopen(peer, abort);
+			if (outcome.reopened === "no") throw Error(`${peer.label} could not be reopened: ${outcome.reason}`);
+			return { agent: peer.session, reopened: outcome.reopened, ...(outcome.reopened === "starting" ? { note: "Desk is still opening it." } : {}) };
 		},
 		async close(request, abort) {
 			const at = request.agent.lastIndexOf("@"), computer = at > 0 ? request.agent.slice(at + 1) : "local", target = at > 0 ? request.agent.slice(0, at) : request.agent;

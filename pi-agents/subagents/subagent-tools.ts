@@ -47,6 +47,10 @@ const listParameters = Type.Object({
 	offset: Type.Optional(Type.Integer({ minimum: 0 })),
 }, { additionalProperties: false });
 
+const resumeParameters = Type.Object({
+	agent: Type.String({ minLength: 1, description: "A primary agent's ID." }),
+}, { additionalProperties: false });
+
 const stopParameters = Type.Object({
 	agent: Type.String({ minLength: 1, description: "ID, or a secondary agent's path." }),
 	note: Type.Optional(Type.String({ maxLength: 2000, description: "Primary: why." })),
@@ -226,6 +230,18 @@ export function createSubagentToolDefinitions(
 				const primary = primaries(ctx)?.list({ query: params.query, offline: params.offline, offset: params.offset });
 				const value = { secondary: secondaryAgents, ...(primary ? { primary } : {}) };
 				return response(value as ToolJson, listText(value as Parameters<typeof listText>[0]));
+			},
+		}),
+		defineTool({
+			name: "agent_resume",
+			label: "Reopen conversation",
+			description: "Reopen a closed conversation without sending it anything.",
+			parameters: resumeParameters,
+			async execute(_id, params, signal, _onUpdate, ctx) {
+				const agents = primaries(ctx);
+				if (!agents) throw Error("Reopening conversations needs Desk.");
+				const value = await agents.resume({ agent: params.agent }, signal);
+				return response(value as ToolJson, value.reopened === "already open" ? `${params.agent} is already open.` : `Reopened ${params.agent}.`);
 			},
 		}),
 		defineTool({

@@ -7,7 +7,7 @@ import { Type, type TSchema } from "typebox";
 const ERROR = Type.Object({ error: Type.String() });
 const OBJECT = Type.Record(Type.String(), Type.Unknown());
 const OUTPUTS: Record<string, TSchema> = {
-  agent_start: OBJECT, agent_send: OBJECT, agent_list: OBJECT, agent_stop: OBJECT, agent_move: OBJECT,
+  agent_start: OBJECT, agent_send: OBJECT, agent_list: OBJECT, agent_stop: OBJECT, agent_resume: OBJECT, agent_move: OBJECT,
   create_plan: Type.Object({ plan: Type.Union([OBJECT, Type.Null()]) }),
   update_plan: Type.Object({ plan: Type.Union([OBJECT, Type.Null()]) }),
   ask_user: Type.Object({ response: Type.Unknown(), cancelled: Type.Boolean() }),
@@ -69,6 +69,7 @@ const INTROS: Record<string, string> = {
   agent_send: "Message any agent on Jordan's computers, or reply to one; its replies come back to you.",
   agent_list: "Find agents and computers by name or folder, and check on your helpers.",
   agent_stop: "Interrupt a helper's turn (it keeps its work) or close a primary agent you started.",
+  agent_resume: "Reopen a closed conversation without sending it anything, e.g. when Jordan asks to resume one.",
   agent_move: "Only when Jordan asks: move this conversation to another of his computers.",
   conversation_search: "Recall past conversations: an earlier decision, command, path or error.",
   conversation_read: "Read the passages around a conversation_search result.",

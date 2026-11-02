@@ -60,6 +60,7 @@ function harness(t, session, branch = [], child = false) {
 			const agents = primaryAgents(session), json = value => ({ content: [{ type: "text", text: JSON.stringify(value) }], details: {} });
 			if (name === "agent_send") return json(await agents.send({ to: input.to, message: input.message, wake: input.wake !== false, files: input.files }, undefined, ctx));
 			if (name === "agent_list") return json(agents.list(input));
+			if (name === "agent_resume") return json(await agents.resume({ agent: input.agent }, undefined));
 			throw Error(`No tool or primary-agent operation is named ${name}.`);
 		},
 	};
@@ -152,6 +153,27 @@ test("agent_send with wake has Desk reopen a closed conversation and says so", a
 	const sent = JSON.parse((await call).content[0].text).queued[0];
 	assert.equal(sent.reopened, "yes");
 	assert.match(sent.note, /Desk reopened it/);
+	} finally { host.close(); }
+});
+
+test("agent_resume reopens a closed conversation without sending it anything", async t => {
+	// Home found a closed conversation Jordan asked to resume, but could reopen it only by sending it a message.
+	environment(t);
+	const closed = "01a14825-a8ef-75c7-b0f6-71116b2a7886", a = harness(t, "01a14825-0000-7000-8000-000000000003"), old = harness(t, closed);
+	await a.emit("session_start"); await old.emit("session_start"); await old.emit("session_shutdown");
+	const host = new PartyOperations(join(process.env.PI_CODING_AGENT_DIR, "party"));
+	try {
+	host.startHost();
+	const call = a.call("agent_resume", { agent: closed });
+	let request;
+	for (let attempt = 0; attempt < 200 && !request; attempt++) { await new Promise(resolve => setImmediate(resolve)); request = host.outgoing("local")[0]; }
+	assert.equal(request.kind, "resume");
+	assert.equal(request.session, closed);
+	host.settle("local", { id: request.id, result: { session: closed, state: "resumed", key: "01a14825-0000-7000-8000-000000000004" } });
+	t.mock.timers.tick(1_000);
+	assert.deepEqual(JSON.parse((await call).content[0].text), { agent: closed, reopened: "yes" });
+	const listed = JSON.parse((await a.call("agent_list", { offline: true })).content[0].text);
+	assert.equal(JSON.stringify(listed).includes("unread"), false, "nothing was sent to it");
 	} finally { host.close(); }
 });
 
