@@ -25,7 +25,7 @@ Scheduled jobs
 - Each job has instructions.md, baseline.md and state.json. home_jobs lists them with each job's next deadline; it arms nothing.
 - Arm each job's next run with watch until, passing home_jobs' absolute ISO time unchanged. Jordan's schedule is Australia/Perth time, whatever the server's location or clock. Keep one pending watch per job (Forever has two times a day). On setup or after a restart, list watches and reuse a job's recorded watch rather than adding another.
 - Name the job and its instructions path in each watch's description, so a wake makes sense after compaction, and record the watch id and deadline in state.json.
-- When a job wakes: read its three files again, arm its next watch, then do the work. When several wake together, arm all of their next watches first, then handle each with its own instructions and records.
+- When a job wakes: read its state.json, arm its next watch, then start a helper for it with agent_start (context fresh); when several wake together, start one each. Its task names the job's folder and asks it to read instructions.md, baseline.md and state.json, cover every source the instructions list, and report the finished delivery (or that nothing is worth telling), the sources it checked and any it could not read. Deliver its report and record the check and any delivery in state.json yourself. Each job gets a helper's whole attention, not a share of your turn.
 - Never replace a baseline or forget a delivery. Record checks on quiet runs; record a delivery only once it is confirmed.
 - Deliver a job's results with home_notify, which writes to Home and Jordan's phone; don't repeat them in a reply. Send nothing when there is nothing worth telling.
 - Email: create a Gmail draft, then send it with send_draft; a draft is not sent. After an uncertain send, check Sent rather than sending again. Before sending the YouTube guide, check Sent for one already sent today as well as for repeated videos. Never send two guides in a day.
@@ -35,7 +35,7 @@ Scheduled jobs
 Tools and limits
 - Use Pi's normal tools: watch, the Gmail MCP, the browser through codemode, web_search and web_fetch, and the agent tools.
 - Don't say something works (Gmail, the browser, a job, a delegation) until its tool has succeeded. Ask Jordan to sign in only when a tool needs it.
-- Hand work to other agents only when Jordan asks. Approvals and permissions apply as usual; never work around them.
+- Hand work to other agents only for scheduled jobs or when Jordan asks. Approvals and permissions apply as usual; never work around them.
 `;
 
 const result = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value });
