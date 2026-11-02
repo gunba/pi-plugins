@@ -49,6 +49,8 @@ export class RemoteClient {
 	private socket?: WebSocket;
 	private channel?: SecureChannel;
 	private pending = new Map<string, Pending>();
+	/** Requests beyond the 32 in flight, waiting in order; each goes when an earlier one finishes. */
+	private queued: (() => void)[] = [];
 	private handlers = new Set<(event: HostEvent, sequence: number) => void>();
 	private connections = new Set<(online: boolean) => void>();
 	private timer?: ReturnType<typeof setTimeout>;
@@ -384,7 +386,7 @@ export class RemoteClient {
 		} else if (message.type === "response" && validId(message.id)) {
 			const pending = this.pending.get(message.id);
 			if (!pending) return;
-			this.pending.delete(message.id); clearTimeout(pending.timer); pending.resolve(message.response as ApiResponse);
+			this.pending.delete(message.id); clearTimeout(pending.timer); pending.resolve(message.response as ApiResponse); this.queued.shift()?.();
 		} else throw new Error("Unknown host message.");
 	}
 	request(request: ApiRequest): Promise<ApiResponse> {
@@ -398,7 +400,10 @@ export class RemoteClient {
 			this.waiters.add(waiter);
 		}).then(() => this.request(request));
 		if (!this.online || !this.channel || !this.valid()) return Promise.reject(new RemoteError(503, "The computer is not connected or its authorization expired."));
-		if (this.pending.size >= 32) return Promise.reject(new RemoteError(429, "Too many requests are waiting."));
+		if (this.pending.size >= 32) {
+			if (this.queued.length >= 1000) return Promise.reject(new RemoteError(429, "Too many requests are waiting."));
+			return new Promise<void>(resolve => this.queued.push(resolve)).then(() => this.request(request));
+		}
 		const id = crypto.randomUUID(), socket = this.socket;
 		return new Promise((resolve, reject) => {
 			// Abandoned only after a minute in which nothing at all arrived from the computer: on a slow link a large
@@ -406,7 +411,7 @@ export class RemoteClient {
 			const expire = () => {
 				const quiet = performance.now() - this.heard;
 				if (quiet < REQUEST_QUIET_MS) { const pending = this.pending.get(id); if (pending) pending.timer = setTimeout(expire, REQUEST_QUIET_MS - quiet); return; }
-				this.pending.delete(id); reject(new RemoteError(504, "Request timed out; delivery is uncertain. Check the session before retrying."));
+				this.pending.delete(id); this.queued.shift()?.(); reject(new RemoteError(504, "Request timed out; delivery is uncertain. Check the session before retrying."));
 			};
 			this.pending.set(id, { resolve, reject, timer: setTimeout(expire, REQUEST_QUIET_MS) });
 			void this.channel!.send({ type: "request", id, request }).catch(() => socket?.close());
@@ -434,6 +439,8 @@ export class RemoteClient {
 	private rejectPending(message: string): void {
 		for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new RemoteError(503, message)); }
 		this.pending.clear();
+		// Waiting requests try again: they fail now or wait for the connection, as new ones do.
+		for (const next of this.queued.splice(0)) next();
 	}
 	private disconnect(message: string, phase: ConnectionState = "reconnecting"): void {
 		this.generation++; this.starting = false;

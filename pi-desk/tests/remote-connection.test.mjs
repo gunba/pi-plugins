@@ -109,3 +109,37 @@ test("a stale directory cannot turn a reconnect into a claim that the PC is offl
 	assert.equal(connectionLabel({ connection: "reconnecting", presence: { ...presence, checked: now - 90_001 } }, now), "Reconnecting");
 	assert.equal(connectionLabel({ connection: "connected", presence }, now), "Connected");
 });
+
+
+test("requests beyond those in flight wait their turn instead of failing", { timeout: 15_000 }, async t => {
+	// A Work pane full of shown images asked for more than 32 file chunks at once, and the rest failed with
+	// "Too many requests are waiting".
+	const fixture = await accountFixture(), host = await fixture.device("host"), browser = await fixture.device("browser");
+	const relay = new RelayServer({ origin: fixture.config.relayOrigin, appOrigin: "https://app.example", account: fixture.config, verifier: fixture.verifier });
+	const window = new EventTarget(), document = Object.assign(new EventTarget(), { hidden: false }), navigator = { onLine: true };
+	const globals = { document, navigator, addEventListener: window.addEventListener.bind(window), removeEventListener: window.removeEventListener.bind(window),
+		WebSocket: class extends WebSocket { constructor(url) { super(url, { headers: { Origin: "https://app.example" } }); } } };
+	const saved = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+	for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, value });
+	let client, connector, started = 0;
+	const release = deferred(), available = deferred(), full = deferred();
+	t.after(async () => {
+		release.resolve(); client?.close(); connector?.close(); await relay.close();
+		for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; }
+	});
+	await relay.start(0);
+	fixture.config.relayOrigin = relay.origin = `http://127.0.0.1:${relay.server.address().port}`;
+	connector = new RelayConnector({ appOrigin: "https://app.example", account: host,
+		status: value => { if (value.state === "online") available.resolve(); },
+		request: async request => { if (++started === 32) full.resolve(); await release.promise; return { status: 200, body: { path: request.path } }; },
+		watch: () => () => {} });
+	connector.start(); await available.promise;
+	client = new RemoteClient(browser, host.device);
+	await state(client, "connected");
+	const answers = Array.from({ length: 40 }, (_, index) => client.request({ method: "GET", path: `/api/item/${index}` }).catch(error => error));
+	await full.promise;
+	assert.equal(started, 32, "no more than 32 are in flight");
+	release.resolve();
+	assert.deepEqual((await Promise.all(answers)).map(answer => answer.status), Array(40).fill(200));
+});
+

@@ -1,5 +1,5 @@
 import { HOUR_MINUTE, localTime } from "./local-format.ts";
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import Markdown from "react-markdown";
 import type { ChatBlock, ChatMessage } from "../shared/protocol.ts";
 import { OFFICE_PAGES, type FileInfo, type FileReference } from "../shared/files.ts";
@@ -244,10 +244,25 @@ function CodeExcerpt({ text, firstLine, path }: { text: string; firstLine: numbe
 }
 
 /** An image from the agent's computer: fitted, or at full size to inspect, when zoom is allowed. */
+/** Whether an element has come within a screen of the view; it stays true once it has. */
+function useNearView<T extends Element>(): [RefObject<T | null>, boolean] {
+	const element = useRef<T>(null), [near, setNear] = useState(false);
+	useEffect(() => {
+		if (near || !element.current) return;
+		const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) { observer.disconnect(); setNear(true); } }, { rootMargin: "100%" });
+		observer.observe(element.current);
+		return () => observer.disconnect();
+	}, [near]);
+	return [element, near];
+}
+
+/** A shown image, fetched once it comes near the view. */
 function InlineImage({ session, file, zoom }: { session: string; file: FileReference; zoom?: boolean }) {
 	const origin = useReferenceQuery();
 	const [url, setUrl] = useState(""), [error, setError] = useState(""), [full, setFull] = useState(false);
+	const [placeholder, near] = useNearView<HTMLParagraphElement>();
 	useEffect(() => {
+		if (!near) return;
 		const controller = new AbortController();
 		let created = "";
 		void (async () => {
@@ -259,8 +274,8 @@ function InlineImage({ session, file, zoom }: { session: string; file: FileRefer
 			} catch (error) { if (!controller.signal.aborted) setError(String(error)); }
 		})();
 		return () => { controller.abort(); if (created) URL.revokeObjectURL(created); };
-	}, [session, file.id, origin]);
-	if (!url) return <p className="muted">{error || "Loading image…"}</p>;
+	}, [session, file.id, origin, near]);
+	if (!url) return <p ref={placeholder} className="muted">{error || "Loading image…"}</p>;
 	return <div className={`shown-image-frame${full ? " full" : ""}`}>
 		<img className="shown-image" src={url} alt={file.name} onClick={zoom ? () => setFull(value => !value) : undefined}
 			title={zoom ? full ? "Fit to the window" : "Show at full size" : undefined} />
@@ -385,6 +400,9 @@ function ItemHeader({ item, session, children }: { item: WorkItem; session: stri
 	</header>;
 }
 
+/** Parts open in the Work pane before older ones stack closed. */
+const OPEN_PARTS = 3;
+
 /** Agent-arranged work is independent of the selected activity record. */
 export function WorkPane({ items, links, selected, select, expand, close, session }: {
 	items: WorkItem[]; links: LinkItem[]; selected?: string; select: (id: string) => void; expand: (item: WorkItem) => void; close: () => void; session: string;
@@ -392,6 +410,8 @@ export function WorkPane({ items, links, selected, select, expand, close, sessio
 	const parts = items.filter(item => !item.activity && ["shown", "brief"].includes(item.block.type));
 	const activity = items.filter(item => !parts.includes(item)).reverse();
 	const [pinnedLinks, setPinnedLinks] = useState<string[]>([]);
+	// Parts opened or closed by hand; otherwise the newest are open and older ones stack closed, loading nothing.
+	const [toggled, setToggled] = useState<Record<string, boolean>>({});
 	useEffect(() => { try { const value: unknown = JSON.parse(localStorage.getItem(`pi-desk:work-links:${session}`) ?? "[]"); setPinnedLinks(Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []); } catch { setPinnedLinks([]); } }, [session]);
 	const pin = (key: string) => setPinnedLinks(previous => { const next = previous.includes(key) ? previous.filter(value => value !== key) : [...previous, key]; localStorage.setItem(`pi-desk:work-links:${session}`, JSON.stringify(next)); return next; });
 	const width = useRef<HTMLElement>(null);
@@ -405,11 +425,13 @@ export function WorkPane({ items, links, selected, select, expand, close, sessio
 			<button type="button" aria-label={`${pinnedLinks.includes(link.key) ? "Unpin" : "Pin"} ${link.label}`} aria-pressed={pinnedLinks.includes(link.key)} onClick={() => pin(link.key)}>◇</button>
 		</span>)}</nav>}
 		<div className="work-board-scroll">
-			{parts.map(item => <ReferenceContext key={item.id} value={{ message: item.message, source: item.source }}><details className="work-part" open={item.block.type !== "shown" || !item.block.shown.collapsed}>
+			{parts.map((item, index) => { const open = toggled[item.id] ?? (index < OPEN_PARTS && !(item.block.type === "shown" && item.block.shown.collapsed));
+				return <ReferenceContext key={item.id} value={{ message: item.message, source: item.source }}><details className="work-part" open={open}
+				onToggle={event => { const now = event.currentTarget.open; if (now !== open) setToggled(previous => ({ ...previous, [item.id]: now })); }}>
 				<summary><strong>{itemTitle(item)}</strong>{item.block.type === "shown" && item.block.shown.pinned && <small>Pinned</small>}
 					<span className="change-actions"><Reply text={() => quoteFor(item)} /><button type="button" className="icon-button" title="Expand" aria-label={`Expand ${itemTitle(item)}`} onClick={() => expand(item)}><Icon name="expand" /></button></span></summary>
-				<div className="work-part-body"><WorkBody item={item} session={session} /></div>
-			</details></ReferenceContext>)}
+				{open && <div className="work-part-body"><WorkBody item={item} session={session} /></div>}
+			</details></ReferenceContext>; })}
 			{activity.length > 0 && <section className="work-activity" aria-label="Selected activity"><h3>Selected activity <small>{activity.length}</small></h3>
 				{activity.map(item => <ReferenceContext key={item.id} value={{ message: item.message, source: item.source }}><details open={item.id === selected} className="work-activity-item">
 					<summary onClick={event => { event.preventDefault(); select(item.id === selected ? "" : item.id); }}><Icon name={itemIcon(item)} /><span><strong>{itemTitle(item)}</strong>
