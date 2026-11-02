@@ -1,11 +1,10 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { planSteps, type PlanStep } from "./steps.ts";
 
 // A plain string is a pending step: agents write a fresh plan's steps as a list of strings.
 const Step = Type.Union([Type.String(), Type.Object({
 	content: Type.String(),
-	status: StringEnum(["pending", "in_progress", "completed"] as const),
+	status: Type.Enum(["pending", "in_progress", "completed"] as const, { type: "string" }),
 }, { additionalProperties: false })]);
 const Definition = {
 	objective: Type.Optional(Type.String()),
@@ -17,7 +16,7 @@ export const CreateParameters = Type.Object({
 	...Definition, objective: Type.String({ description: "What done means." }),
 }, { additionalProperties: false });
 export const UpdateParameters = Type.Object({
-	action: StringEnum(["edit", "pause", "resume", "complete", "blocked"] as const),
+	action: Type.Enum(["edit", "pause", "resume", "complete", "blocked"] as const, { type: "string" }),
 	...Definition,
 	blocked_reason: Type.Optional(Type.String()),
 }, { additionalProperties: false });

@@ -1,4 +1,3 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	defineTool,
 	type ToolDefinition,
@@ -30,8 +29,8 @@ const startParameters = Type.Object({
 	computer: Type.Optional(Type.String({ description: "Primary: name or ID." })),
 	cwd: Type.Optional(Type.String({ maxLength: 4096, description: "Primary: folder; required on another computer." })),
 	model: Type.Optional(Type.String({ minLength: 1, maxLength: 300, description: "provider/id. Default: yours, or the computer's for primary." })),
-	reasoning: Type.Optional(StringEnum(LEVELS)),
-	wake: Type.Optional(StringEnum(["each", "all"] as const, { description: "all: wake once, when the last \"all\" agent finishes. Default each." })),
+	reasoning: Type.Optional(Type.Enum(LEVELS, { type: "string" })),
+	wake: Type.Optional(Type.Enum(["each", "all"] as const, { type: "string", description: "all: wake once, when the last \"all\" agent finishes. Default each." })),
 }, { additionalProperties: false });
 
 const sendParameters = Type.Object({
