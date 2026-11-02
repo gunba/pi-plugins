@@ -312,13 +312,13 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 				const manual = userScroll.current; userScroll.current = false;
 				if (restoring.current) return;
 				const end = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 80; setAtEnd(end);
-				if (manual) {
-					if (!end || viewport.scrollTop < previous) hold();
-					if (!loadingRef.current && connected) {
-						const anchor = capture.current();
-						if (viewport.scrollTop < previous && viewport.scrollTop < 100 && older && anchor) void load({ before: older }, anchor);
-						else if (viewport.scrollTop > previous && end && !following.current) void load(moreRecent ? { after: moreRecent } : {}, moreRecent && anchor ? anchor : "end");
-					}
+				if (manual && (!end || viewport.scrollTop < previous)) hold();
+				// A gesture marks only the first scroll event as manual, but smooth scrolling and the scrollbar keep moving the
+				// view after it, so reaching the end by moving down resumes the latest messages whatever moved it.
+				if ((manual || viewport.scrollTop > previous) && !loadingRef.current && connected) {
+					const anchor = capture.current();
+					if (manual && viewport.scrollTop < previous && viewport.scrollTop < 100 && older && anchor) void load({ before: older }, anchor);
+					else if (viewport.scrollTop > previous && end && !following.current) void load(moreRecent ? { after: moreRecent } : {}, moreRecent && anchor ? anchor : "end");
 				}
 				clearTimeout(timer.current); timer.current = setTimeout(persist, 200);
 			}}>
