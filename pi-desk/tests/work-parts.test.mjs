@@ -40,6 +40,9 @@ test("parts reorder, pin, collapse and disappear independently of selected activ
 	assert.equal(visibleWorkItems(history)[1].block.shown.collapsed, true);
 	assert.deepEqual(visibleWorkItems([...history, message("delete", 5, { ...a, remove: true })]).map(item => item.id), ["selected:0", "part:b"]);
 	assert.deepEqual(visibleWorkItems([...history].reverse()).map(item => item.id), ["selected:0", "part:b", "part:a"]);
+	// The newest part comes first, and showing an older part again brings it back above the newer one.
+	assert.deepEqual(visibleWorkItems([message("a", 2, a), message("b", 3, b)]).map(item => item.id), ["part:b", "part:a"]);
+	assert.deepEqual(visibleWorkItems([message("a", 2, a), message("b", 3, b), message("a-again", 4, a)]).map(item => item.id), ["part:a", "part:b"]);
 });
 
 test("catalog validation rejects unknown props and unsafe chart capabilities", () => {

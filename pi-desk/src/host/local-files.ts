@@ -96,7 +96,9 @@ export class LocalFiles {
 		if (!grant) throw new ExpiredReference("This file link is no longer available in the message.");
 		this.grants.delete(command.id); this.grants.set(command.id, grant);
 		if (command.operation === "info") {
-			const path = await realpath(grant.path);
+			const path = await realpath(grant.path).catch((error: NodeJS.ErrnoException) => {
+				throw error.code === "ENOENT" ? new Error(`${grant.name} no longer exists.`) : error;
+			});
 			if (!localPath(path)) throw new Error("Network and device paths cannot be opened here.");
 			return this.opened(path, async file => {
 				const version = await stamp(file);
