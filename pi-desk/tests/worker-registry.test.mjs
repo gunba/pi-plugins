@@ -260,6 +260,18 @@ test("a recorded worker PID now used by an unrelated process does not block a re
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("a launch PID now held by another program does not block a relaunch", { timeout: 20000 }, async () => {
+	// On Windows the PID of a worker launch that never reported in went to msedgewebview2.exe, and the conversation
+	// stayed Unavailable: "The previous worker launch is still unconfirmed".
+	const root = await mkdtemp(join(tmpdir(), "desk-worker-foreign-pid-"));
+	const other = process.platform === "win32" ? spawn("ping", ["-n", "30", "127.0.0.1"], { stdio: "ignore", windowsHide: true }) : spawn("sleep", ["30"], { stdio: "ignore" });
+	try {
+		writeWorkerFile(root, "bootstrap.json", { version: 1, instance: randomUUID(), secret: randomBytes(32).toString("hex"), options: { cwd: root }, pid: other.pid });
+		await assert.rejects(attachWorker(root, { cwd: root }, () => {}, () => {}, { module: join(root, "missing-worker.mjs"), timeout: 5000 }),
+			error => !/unconfirmed/.test(error.message) && /stopped during launch/.test(error.message));
+	} finally { other.kill(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("a worker reports in before it loads the Pi SDK", async () => {
 	// The worker's start-up path loaded the Pi SDK's 1,600 modules before writing its record: a busy Windows computer
 	// missed the 30-second start-up window, and its conversations would not start.

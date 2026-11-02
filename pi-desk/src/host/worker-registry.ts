@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { uptime } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { SessionLease, SessionOwnedError } from "../../../pi-session-ownership/lease.ts";
@@ -89,6 +89,20 @@ function processStart(pid: number): number | undefined {
 	catch { return undefined; }
 }
 /**
+ * Windows and macOS: the executable a running process has, null when no process has the PID, undefined when it could
+ * not be read.
+ */
+function processImage(pid: number): string | null | undefined {
+	try {
+		if (process.platform === "win32") {
+			const row = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true, timeout: 10_000 }).trim();
+			// One CSV row starting with the image name, or a (localised) note that nothing matched.
+			return /^"([^"]+)"/.exec(row)?.[1] ?? null;
+		}
+		return execFileSync("ps", ["-p", String(pid), "-o", "comm="], { encoding: "utf8", timeout: 10_000 }).trim() || null;
+	} catch { return undefined; }
+}
+/**
  * Whether a recorded worker process has certainly exited. Its PID can later belong to something else: PIDs start low
  * again after a reboot, and on Linux kill(pid, 0) also answers for a thread inside another process.
  */
@@ -96,7 +110,11 @@ function workerGone(directory: string, pid: number, file: "bootstrap.json" | "wo
 	if (pidAbsent(pid)) return true;
 	// Recorded before this boot: that process ended with the restart, whatever has its number now.
 	try { if (statSync(join(directory, file)).mtimeMs < Date.now() - uptime() * 1000 - 60_000) return true; } catch { /* no record */ }
-	if (process.platform !== "linux") return false;
+	if (process.platform !== "linux") {
+		// Workers run the host's own Node executable; any other program now has this PID.
+		const image = processImage(pid);
+		return image === null || image !== undefined && basename(image).toLowerCase() !== basename(process.execPath).toLowerCase();
+	}
 	const now = processStart(pid);
 	if (now === undefined) return true;
 	// The same PID with another start time is a different process or thread. An exiting worker keeps its start time.
