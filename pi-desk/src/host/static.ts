@@ -3,7 +3,7 @@ import { readFile, stat } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 
 const mime: Record<string, string> = {
-	".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+	".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
 	".svg": "image/svg+xml", ".png": "image/png", ".webmanifest": "application/manifest+json",
 };
 export function securityHeaders(response: ServerResponse, pathname?: string): void {

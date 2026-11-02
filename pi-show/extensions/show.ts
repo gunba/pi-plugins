@@ -6,7 +6,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil
 import { Type } from "typebox";
 import { ChangeTracker, READ_ONLY, type CallChanges } from "./changes.ts";
 import { encodeContent, filtered, readVersion } from "./content.ts";
-import { diffOffice, officeKind, previewOffice, readOffice, unlistedCells, type OfficeDocument } from "./documents.ts";
+import { diffOffice, officeKind, readOffice, unlistedCells, type OfficeDocument } from "./documents.ts";
 import { lineDiff } from "./sequence-diff.ts";
 import { SHOWN_ENTRY, type DocumentChange, type Shown, type ShownItem } from "./types.ts";
 import { restoredParts, updatePart, type PartUpdate } from "./parts.ts";
@@ -92,10 +92,9 @@ export function documentChange(path: string, before: Buffer | null, after: Buffe
 export function documentDiff(path: string, before: OfficeDocument | null, now: OfficeDocument): DocumentChange | undefined {
 	const kind = now.kind;
 	if (!before) {
-		const preview = previewOffice(now);
 		const summary = now.kind === "xlsx" ? `New workbook: ${now.sheets.length} sheet${now.sheets.length === 1 ? "" : "s"}`
 			: now.kind === "docx" ? `New document: ${now.paragraphs.filter(text => text.trim()).length} paragraphs` : `New deck: ${now.slides.length} slides`;
-		return { path, kind, created: true, summary, preview };
+		return { path, kind, created: true, summary };
 	}
 	const changes = diffOffice(before, now);
 	return changes && { path, kind, summary: changes.summary, changes };
@@ -114,7 +113,7 @@ const SHOW_PARAMETERS = Type.Object({
 		file: Type.Optional(Type.String()),
 		url: Type.Optional(Type.String({ maxLength: 8000, description: "A web link, instead of file." })),
 		label: Type.Optional(Type.String({ maxLength: 200, description: "The link's text." })),
-		focus: Type.Optional(Type.String({ description: "Where to open it: Sheet!A1:C9, text to start at, or lines 40-80." })),
+		focus: Type.Optional(Type.String({ description: "Where to open a text file: text to start at, or lines 40-80." })),
 		changes: Type.Optional(Type.Array(Type.Object({ where: Type.String(), before: Type.Optional(Type.String()), after: Type.Optional(Type.String()) }))),
 	}))),
 });
@@ -270,7 +269,6 @@ export default function show(pi: ExtensionAPI) {
 						const first = base.first(path);
 						const earlier = first ? documentOf(first, path) : undefined;
 						if (earlier) shown.changes = diffOffice(earlier, readOffice(current.data, kind));
-						if (!shown.changes || item.focus) shown.preview = previewOffice(readOffice(current.data, kind), item.focus);
 						if (shown.changes?.kind === "xlsx" && shown.described) {
 							const missed = unlistedCells(shown.changes, shown.described.map(change => change.where));
 							if (missed.length) {

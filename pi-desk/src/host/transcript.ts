@@ -276,7 +276,7 @@ export class Transcript {
 				const output = message.blocks.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").slice(0, 16_000);
 				const changed = message.blocks.filter((block): block is Extract<ChatBlock, { type: "diff" | "document" }> => block.type === "diff" || block.type === "document");
 				const items: Shown["items"] = changed.map(block => block.type === "diff" ? { path: block.path, diff: { text: block.text, added: block.added ?? 0, removed: block.removed ?? 0, truncated: block.truncated } }
-					: { path: block.change.path, changes: block.change.changes, preview: block.change.preview });
+					: { path: block.change.path, kind: "office", changes: block.change.changes });
 				message.blocks = [{ type: "shown", files: changed.map(block => block.file ?? null), shown: { title: message.work.description, items, spec: { root: "output", elements: { output: { type: "Code", props: { text: output || (message.isError ? "Operation failed." : "Operation completed.") } } } } } }];
 			}
 			return message;

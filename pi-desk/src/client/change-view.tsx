@@ -2,11 +2,12 @@ import { HOUR_MINUTE, localTime } from "./local-format.ts";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import type { ChatBlock, ChatMessage } from "../shared/protocol.ts";
-import type { FileInfo, FileReference } from "../shared/files.ts";
-import type { CellChange, DocumentChanges, DocumentPreview, ParagraphOp } from "../../../pi-show/extensions/documents.ts";
+import { OFFICE_PAGES, type FileInfo, type FileReference } from "../shared/files.ts";
+import type { CellChange, DocumentChanges, ParagraphOp } from "../../../pi-show/extensions/documents.ts";
 import type { ShownItem } from "../../../pi-show/extensions/types.ts";
 import { diffSequences } from "../../../pi-show/extensions/sequence-diff.ts";
 import { FileLink, fileBlob } from "./file-view.tsx";
+import { OfficePages } from "./office-pages.tsx";
 import { AssetLink } from "./assets.tsx";
 import { CopyButton } from "./transcript-parts.tsx";
 import { SurfaceFrame } from "./surfaces.tsx";
@@ -111,25 +112,6 @@ export function DocumentChangesView({ changes, where }: { changes: DocumentChang
 	return <>{changes.slides.map(slide => <div key={slide.slide} className="change-slide"><h4>Slide {slide.slide}<small>{slide.status}</small></h4>
 		<Paragraphs ops={slide.paragraphs} where={`${where}, slide ${slide.slide}`} limit={8} /></div>)}</>;
 }
-export function PreviewView({ preview }: { preview: DocumentPreview }) {
-	if (preview.kind === "xlsx") {
-		const columns = preview.rows[0]?.map((_, index) => columnName(preview.firstColumn + index)) ?? [];
-		return <div className="sheet-preview"><p className="change-note">{preview.sheet}{preview.sheets.length > 1 && <small> · {preview.sheets.length} sheets</small>}</p>
-			<div className="sheet-scroll"><table><thead><tr><th />{columns.map(column => <th key={column}>{column}</th>)}</tr></thead>
-				<tbody>{preview.rows.map((row, index) => <tr key={index}><th>{preview.firstRow + index}</th>
-					{row.map((cell, column) => <td key={column} title={cell.formula ? `=${cell.formula}` : undefined} className={cell.formula ? "formula" : /^-?[\d.,]+%?$/.test(cell.value) ? "number" : undefined}>{cell.value}</td>)}</tr>)}</tbody></table></div>
-			{preview.truncated && <p className="muted">Part of the sheet.</p>}</div>;
-	}
-	if (preview.kind === "docx") return <div className="document-preview">{preview.paragraphs.map((text, index) => <p key={index}>{text}</p>)}{preview.truncated && <p className="muted">…</p>}</div>;
-	return <div className="document-preview">{preview.slides.map(slide => <div key={slide.slide} className="change-slide"><h4>Slide {slide.slide}</h4>{slide.paragraphs.map((text, index) => <p key={index}>{text}</p>)}</div>)}</div>;
-}
-function columnName(index: number): string {
-	let label = "";
-	for (let value = index + 1; value > 0; value = Math.floor((value - 1) / 26)) label = String.fromCharCode(65 + (value - 1) % 26) + label;
-	return label;
-}
-
-
 /* ── Work items: changes and shown work, listed in the side pane ─────────────────────────────────────────── */
 
 /** `message` and `source` locate the files it links to: the transcript message, and a sub-agent transcript if any. */
@@ -347,8 +329,8 @@ function ShownEntry({ item, file, session, title, large }: { item: ShownItem; fi
 		{item.kind === "image" && file && <InlineImage session={session} file={file} zoom={large} />}
 		{item.kind === "html" && file && <HtmlPage session={session} file={file} large={large} />}
 		{item.changes && <DocumentChangesView changes={item.changes} where={where} />}
+		{item.path && OFFICE_PAGES.test(item.path) && file && !item.missing && <OfficePages session={session} file={file} large={large} />}
 		{item.diff && <CodeDiff text={item.diff.text} path={item.path} limit={large ? undefined : 80} />}
-		{item.preview && <PreviewView preview={item.preview} />}
 		{item.excerpt && <CodeExcerpt text={item.excerpt.text} firstLine={item.excerpt.firstLine} path={item.path} />}
 		{item.described && <p className="change-source">Described by the agent</p>}
 		{item.described && <ul className="shown-described">{item.described.map((change, index) => <li key={index}>
@@ -370,7 +352,7 @@ export function WorkBody({ item, session, large }: { item: WorkItem; session: st
 	if (block.type === "brief") return <BriefView brief={block.brief} working={block.working} rewrite={block.rewrite} />;
 	if (block.type === "document") return <>
 		{block.change.changes && <DocumentChangesView changes={block.change.changes} where={name(block.change.path)} />}
-		{block.change.preview && <PreviewView preview={block.change.preview} />}
+		{block.file && <OfficePages session={session} file={block.file} large={large} />}
 	</>;
 	return <>
 		{block.shown.source && <p className={`work-source-state work-source-${block.shown.sourceStatus?.state ?? "waiting"}`}>

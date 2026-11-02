@@ -127,7 +127,7 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 		core.emit({ type: "session", session: managed.view });
 		return reply({});
 	}
-	const route = /^\/api\/sessions\/([a-f0-9-]+)\/(command|history|assets\/([a-f0-9]{64})|artifacts\/(sha256-[a-f0-9]{64})|files\/([a-f0-9]{64})(?:\/(text|chunk|open|reveal))?)$/.exec(url.pathname);
+	const route = /^\/api\/sessions\/([a-f0-9-]+)\/(command|history|assets\/([a-f0-9]{64})|artifacts\/(sha256-[a-f0-9]{64})|files\/([a-f0-9]{64})(?:\/(text|chunk|open|reveal|pages))?)$/.exec(url.pathname);
 	if (route) {
 		const managed = core.sessions.get(route[1]!);
 		if (!managed) return reply({ error: "Unknown session." }, 404);

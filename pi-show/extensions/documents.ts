@@ -14,11 +14,6 @@ export type DocumentChanges =
 	| { kind: "xlsx"; summary: string; sheetsAdded: string[]; sheetsRemoved: string[]; cells: CellChange[]; total: number }
 	| { kind: "docx"; summary: string; paragraphs: ParagraphOp[]; truncated: boolean }
 	| { kind: "pptx"; summary: string; slides: { slide: number; status: "added" | "removed" | "changed"; paragraphs: ParagraphOp[] }[] };
-export type DocumentPreview =
-	| { kind: "xlsx"; sheet: string; sheets: string[]; firstRow: number; firstColumn: number; rows: { value: string; formula?: string }[][]; truncated: boolean }
-	| { kind: "docx"; paragraphs: string[]; truncated: boolean }
-	| { kind: "pptx"; slides: { slide: number; paragraphs: string[] }[]; truncated: boolean };
-
 export const OFFICE = /\.(xlsx|xlsm|docx|docm|pptx|pptm)$/i;
 export const officeKind = (path: string): OfficeDocument["kind"] | undefined => {
 	const extension = OFFICE.exec(path)?.[1]?.toLowerCase();
@@ -145,40 +140,6 @@ export function diffOffice(before: OfficeDocument, after: OfficeDocument, limit 
 		if (!slides.length) return;
 		return { kind: "pptx", summary: `${plural(slides.length, "slide")} changed`, slides: slides.slice(0, 60) };
 	}
-}
-
-/** A readable excerpt: a sheet range, the document's paragraphs or the slides' text. `focus` names a sheet or range ("Totals!B2:F20"). */
-export function previewOffice(document: OfficeDocument, focus = "", maxRows = 40, maxColumns = 14): DocumentPreview {
-	if (document.kind === "docx") {
-		const paragraphs = document.paragraphs.filter(text => text.trim());
-		const start = focus ? Math.max(0, paragraphs.findIndex(text => text.toLowerCase().includes(focus.toLowerCase()))) : 0;
-		return { kind: "docx", paragraphs: paragraphs.slice(start, start + 80), truncated: paragraphs.length > start + 80 };
-	}
-	if (document.kind === "pptx") {
-		const slides = document.slides.map((paragraphs, index) => ({ slide: index + 1, paragraphs }));
-		return { kind: "pptx", slides: slides.slice(0, 30), truncated: slides.length > 30 };
-	}
-	const match = /^(?:'?([^'!]+)'?!)?(?:(\$?[A-Z]{1,3}\$?\d+)(?::(\$?[A-Z]{1,3}\$?\d+))?)?$/i.exec(focus.trim());
-	const named = match?.[1] ?? (match?.[2] ? undefined : focus.trim() || undefined);
-	const sheet = document.sheets.find(item => item.name.toLowerCase() === named?.toLowerCase()) ?? document.sheets[0] ?? { name: "Sheet", cells: new Map<string, Cell>() };
-	let [left, top] = match?.[2] ? cellPosition(match[2]) : [Infinity, Infinity], [right, bottom] = match?.[3] ? cellPosition(match[3]) : [-1, -1];
-	if (!match?.[2]) for (const ref of sheet.cells.keys()) {
-		const [column, row] = cellPosition(ref);
-		left = Math.min(left, column); top = Math.min(top, row); right = Math.max(right, column); bottom = Math.max(bottom, row);
-	}
-	if (!match?.[3] && match?.[2]) { right = left + maxColumns - 1; bottom = top + maxRows - 1; }
-	if (!Number.isFinite(left)) { left = 0; top = 0; right = 0; bottom = 0; }
-	const rows: { value: string; formula?: string }[][] = [];
-	for (let row = top; row <= Math.min(bottom, top + maxRows - 1); row++) {
-		const values: { value: string; formula?: string }[] = [];
-		for (let column = left; column <= Math.min(right, left + maxColumns - 1); column++) {
-			const cell = sheet.cells.get(`${columnName(column)}${row + 1}`);
-			values.push(cell ? { value: cell.value, ...(cell.formula ? { formula: cell.formula } : {}) } : { value: "" });
-		}
-		rows.push(values);
-	}
-	return { kind: "xlsx", sheet: sheet.name, sheets: document.sheets.map(item => item.name), firstRow: top + 1, firstColumn: left, rows,
-		truncated: bottom - top + 1 > maxRows || right - left + 1 > maxColumns };
 }
 
 /**

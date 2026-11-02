@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { diffOffice, previewOffice, readOffice, unlistedCells } from "../extensions/documents.ts";
+import { diffOffice, readOffice, unlistedCells } from "../extensions/documents.ts";
 import { diffSequences, lineDiff } from "../extensions/sequence-diff.ts";
 import show, { mentionedDocuments } from "../extensions/show.ts";
 import { document, workbook, zip } from "./fixtures.mjs";
@@ -48,9 +48,6 @@ test("spreadsheet changes are computed cell by cell, with formulas, and checked 
 	]);
 	assert.deepEqual(unlistedCells(changes, ["Totals!B2:B3"]).map(cell => cell.cell), ["C9"]);
 	assert.deepEqual(unlistedCells(changes, ["Notes!B2", "C9"]).map(cell => cell.cell), ["B2", "B3"]);
-	const preview = previewOffice(readOffice(after, "xlsx"), "Totals!A1:C3");
-	assert.deepEqual(preview.rows.map(row => row.map(cell => cell.value)), [["Client", "", ""], ["", "1350", ""], ["", "4050", ""]]);
-	assert.equal(preview.rows[2][1].formula, "B2*3");
 });
 
 test("document changes are computed paragraph by paragraph, folding unchanged ones", () => {
