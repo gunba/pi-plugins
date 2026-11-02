@@ -347,7 +347,9 @@ details[open] > summary:before {
 .sidebar-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .sidebar-actions > button { min-width:0; justify-content:center; padding:10px 8px; font-size:12px; background:var(--surface); font-weight:550; }
 .sidebar-actions .ui-icon { width:16px; height:16px; color:var(--accent); }
-.sidebar-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; margin:2px -6px 0; padding:0 6px; }
+/* The opaque background lets Chrome composite this scroller at any display scale, so the animated status rings, which
+   get layers of their own, scroll in step with the computer headings and rows. */
+.sidebar-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; margin:2px -6px 0; padding:0 6px; background:var(--sidebar); }
 .brand {
   display: flex;
   gap: 9px;
