@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -298,4 +298,17 @@ test("progress reaches Desk while a fresh conversation is blocked and finishes w
   assert.equal(finished.shown.spec.state.done, 340);
   assert.equal(finished.shown.sourceStatus.state, 'complete');
   assert.equal(h.declarations.length, 2);
+});
+
+test("a watch starts after pruning released another branch's watch entries", async t => {
+  const h = await harness(t, watch);
+  // pi-session-memory empties the data of other branches' entries in a compacted session; their logs stay in the folder.
+  h.session.sessionManager.appendCustomEntry("pi-watch/v1");
+  const folder = join(h.root, "watch", h.session.sessionManager.getSessionId());
+  await mkdir(folder, { recursive: true }); await writeFile(join(folder, "w7.log"), "");
+  const result = await h.run(`
+    const started = await tools.watch({until:"2099-01-01T09:00:00Z"});
+    await tools.watch({stop:started.watches[0].id});
+    return {id: started.watches[0].id};`);
+  assert.deepEqual(data(result), { id: "w8" });
 });

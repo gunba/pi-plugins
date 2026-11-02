@@ -363,13 +363,18 @@ class Watches {
 		return `Active watches:\n${[...this.active.values()].map(({ spec }) => `- ${spec.id}: ${briefWatch(spec)}${spec.mode !== "time" && spec.expires ? `; ends ${when(spec.expires)}` : ""}`).join("\n")}`;
 	}
 
+	/**
+	 * An id no watch in this session has had, on any branch, since ids name files in this folder. pi-session-memory
+	 * releases the data of other branches' entries in a compacted session, so the folder's files count too.
+	 */
 	private nextId(): string {
 		let highest = 0;
 		for (const entry of this.ctx.sessionManager.getEntries()) {
 			if (entry.type !== "custom" || entry.customType !== WATCH_ENTRY) continue;
-			const record = entry.data as WatchRecord;
-			if (record.op === "start") highest = Math.max(highest, Number(record.watch.id.slice(1)) || 0);
+			const record = entry.data as WatchRecord | undefined;
+			if (record?.op === "start") highest = Math.max(highest, Number(record.watch.id.slice(1)) || 0);
 		}
+		for (const name of existsSync(this.folder) ? readdirSync(this.folder) : []) highest = Math.max(highest, Number(/^w(\d+)\./.exec(name)?.[1]) || 0);
 		return `w${highest + 1}`;
 	}
 
