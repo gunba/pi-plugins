@@ -2054,8 +2054,10 @@ details[open] > summary:before {
 .message-copy:disabled { opacity:0; }
 .message:hover .message-copy:disabled { opacity:.4; }
 @media (hover:none) { .message-copy:disabled { opacity:0; } }
-/* An earlier turn's brief being written, or written, stays in view like the latest reply's button. */
-.message-copy.brief-writing, .message-copy.brief-writing:disabled, .message-copy.brief-ready { opacity:1; color:var(--accent); }
+/* An earlier turn's brief being written stays in view like the latest reply's button; a written one shows on hover,
+   like copy and rewind. */
+.message-copy.brief-writing, .message-copy.brief-writing:disabled { opacity:1; color:var(--accent); }
+.message-copy.brief-ready { color:var(--accent); }
 .message-copy.brief-writing { cursor:progress; }
 .message-summarised { opacity:.55; transition:opacity .15s; }
 .message-summarised:hover, .message-summarised:focus-within { opacity:1; }
@@ -2421,7 +2423,7 @@ details[open] > summary:before {
 .brief-button .ui-icon { width:13px; height:13px; }
 .brief-button:hover:not(:disabled) { color:var(--accent); border-color:var(--focus-border); background:var(--hover); }
 /* Being written or ready to read: shown without hovering. */
-.brief-button.brief-writing, .brief-button.brief-ready { opacity:1; }
+.brief-button.brief-writing { opacity:1; }
 .brief-button.brief-writing { cursor:progress; color:var(--accent); }
 .brief-body { font-size:14px; line-height:1.6; }
 .brief-body h2 { margin:18px 0 6px; font-size:13px; font-weight:650; letter-spacing:.02em; color:var(--accent); }
