@@ -17,7 +17,8 @@ export const WATCH_MESSAGE = "pi-watch/event";
 /** Emitted on the extension event bus with `{ sessionId, count }` whenever a conversation's watches change. */
 export const WATCH_CHANGED = "pi-watch/changed";
 
-const MAX_ACTIVE = 8;
+/** Command watches each run a process; time watches are only timers, so a conversation can schedule many more. */
+const MAX_COMMANDS = 8, MAX_TIMES = 64;
 /** Times are checked against the clock this often, so a computer that slept still acts on time. */
 const CLOCK_MS = 60_000;
 /** A time watch reached later than this, because the conversation wasn't running, says so. */
@@ -336,7 +337,9 @@ class Watches {
 		if (params.until !== undefined && given.length > 1) throw new Error("until wakes you after a delay or at a time (5m, HH:MM or an ISO time) and takes nothing else; to check something repeatedly, give command with every. Either way, end your turn and you are woken.");
 		const command = params.command?.trim(), wakeWhen = params.wake_when?.trim() || undefined;
 		if (params.command !== undefined && !command) throw new Error("command is empty.");
-		if (this.active.size >= MAX_ACTIVE) throw new Error(`At most ${MAX_ACTIVE} watches can run at once. ${this.list()}`);
+		const times = [...this.active.values()].filter(active => active.spec.mode === "time").length;
+		if (params.until !== undefined ? times >= MAX_TIMES : this.active.size - times >= MAX_COMMANDS)
+			throw new Error(`At most ${params.until !== undefined ? `${MAX_TIMES} time` : `${MAX_COMMANDS} command`} watches can run at once. ${this.list()}`);
 		if (wakeWhen && !(await classifier(ctx)))
 			throw new Error("wake_when needs a classifier model, such as System One's Jev (/login typesafe). Leave wake_when out to be woken for every event.");
 		const now = Date.now(), at = params.until !== undefined ? parseTime(params.until, now) : undefined;

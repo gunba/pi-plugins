@@ -74,7 +74,7 @@ These watches wake conversations, not powered-off computers. The host must be ru
   the output, the command and the log) beside the agent's text; Desk titles the notice with the label and what
   happened, and shows the output under it.
 - **Moves.** A conversation moved to another computer doesn't take its watches along: they end with a note.
-- **Limits.** At most 8 watches can run at once in a conversation. `pi-plan` holds automatic plan rounds while any
+- **Limits.** A conversation can run at most 8 command watches, which each run a process, and 64 time watches at once. `pi-plan` holds automatic plan rounds while any
   watch is active.
 - **Status.** Desk shows a "Watching" badge by the message box; its view lists the watches with a Stop action. The
   terminal shows `watching N` in the footer.

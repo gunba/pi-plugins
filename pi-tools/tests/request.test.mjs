@@ -332,3 +332,15 @@ test("a program reads a long file whole, or exactly the lines it asks for", asyn
   assert.deepEqual(data(result), { count: 1300, first: lines[1499], last: lines[2798], tail: lines.slice(2998).join("\n") });
 });
 
+
+
+test("a conversation keeps more than eight time watches", async t => {
+  // Home schedules one watch per daily job, and a ninth job was refused: "At most 8 watches can run at once".
+  const h = await harness(t, watch);
+  const result = await h.run(`
+    const ids = [];
+    for (let day = 1; day <= 10; day++) ids.push((await tools.watch({until: "2099-01-" + String(day).padStart(2, "0") + "T09:00:00Z"})).watches.at(-1).id);
+    for (const id of ids) await tools.watch({stop: id});
+    return {ids};`);
+  assert.deepEqual(data(result), { ids: ["w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10"] });
+});
