@@ -40,7 +40,32 @@ jobs:
           set-safe-directory: false
       - name: Select image-cached Node
         id: node
-        run: node .github/ci/select-node.mjs ${{ matrix.node }}
+        env:
+          CI_NODE_MAJOR: ${{ matrix.node }}
+        run: |
+          cache="$RUNNER_TOOL_CACHE"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then cache="$(cygpath -u "$cache")"; fi
+          arch="$(printf '%s' "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')"
+          echo "hit=false" >> "$GITHUB_OUTPUT"
+          while IFS= read -r directory; do
+            version="$(basename "$directory")"
+            [[ "$version" =~ ^$CI_NODE_MAJOR\.[0-9]+\.[0-9]+$ ]] || continue
+            IFS=. read -r major minor patch <<< "$version"
+            if [[ "$major" == 22 && "$minor" -lt 19 ]]; then continue; fi
+            [[ -f "$directory/$arch.complete" ]] || continue
+            bin="$directory/$arch"
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              [[ -f "$bin/node.exe" && -f "$bin/node_modules/npm/bin/npm-cli.js" ]] || continue
+              bin="$(cygpath -w "$bin")"
+            else
+              bin="$bin/bin"
+              [[ -x "$bin/node" && -f "$bin/../lib/node_modules/npm/bin/npm-cli.js" ]] || continue
+            fi
+            printf '%s\n' "$bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Selected image-cached Node $version ($arch)"
+            break
+          done < <(printf '%s\n' "$cache"/node/* | sort -Vr)
       # v7.0.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         if: steps.node.outputs.hit != 'true'
@@ -50,7 +75,7 @@ jobs:
       - name: Fingerprint exact installed dependencies
         id: dependency-key
         shell: bash
-        run: node .github/ci/dependencies.mjs outputs
+        run: node .github/ci/dependencies.mjs outputs ${{ matrix.node }}
       # v5
       - name: Restore installed dependencies
         id: dependencies

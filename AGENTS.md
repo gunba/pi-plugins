@@ -17,10 +17,11 @@ Do not run the full suite by default. Reserve `npm run check`, plus Desk's
 typecheck/build, for integration or release validation.
 
 Main pushes run Linux/Node 22 and Windows/Node 24 CI. `workflow_dispatch` runs
-all four OS/Node combinations. Duration-balanced test shards use six Windows
-runners with two workers each and two Linux runners with four workers each.
-Typechecks and builds run in parallel in one separate job per OS/Node combination;
-Linux also checks the performance contract. Installed dependencies are reused only
+all four OS/Node combinations. Main uses eight Windows and four Linux test
+shards; manual validation uses four Windows and three Linux shards per Node
+version. Each shard has two file workers. Typechecks and builds have a separate
+job per OS/Node combination; Linux performance checks have an isolated job.
+The main matrix has 15 jobs; the full manual matrix has 20. Installed dependencies are reused only
 for identical locked inputs, runner image, Node version and installation recipe.
 Project installation hooks and copied file dependencies disable this reuse.
 Feature pushes and pull requests do not run CI. The four-way native runtime build

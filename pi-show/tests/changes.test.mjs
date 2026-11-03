@@ -165,7 +165,7 @@ test("a file a command names outside any followed folder is compared directly", 
 
 test("a folder a command creates and enters is followed by the calls after it", limit, async t => {
 	const { base, tracker } = setup(t), project = join(base, "proj"), cwd = parse(base).root;
-	// Use the native drive root: "/" is drive-relative on Windows, not this fixture\'s root.
+	// "/" is not fully qualified on Windows; this starting folder must never be followed.
 	await tracker.start("c1", `mkdir -p ${project} && cd ${project} && echo hi > notes.txt`, cwd, "s1");
 	mkdirSync(project); writeFileSync(join(project, "notes.txt"), "hi\n");
 	await tracker.finish("c1");

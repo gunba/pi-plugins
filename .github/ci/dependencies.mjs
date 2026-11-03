@@ -128,6 +128,9 @@ function pruneForeignBinaries() {
 const command = process.argv[2];
 if (command === "key") console.log(inputs().key);
 else if (command === "outputs") {
+  if (process.argv[3] && process.versions.node.split(".")[0] !== process.argv[3]) throw new Error("Selected Node has the wrong major version");
+  if (process.env.RUNNER_ARCH && process.arch !== process.env.RUNNER_ARCH.toLowerCase()) throw new Error("Selected Node has the wrong architecture");
+  console.log("Verified Node " + process.versions.node + " (" + process.arch + ")");
   const { key, cacheable } = inputs();
   appendFileSync(process.env.GITHUB_OUTPUT, `key=${key}\ncacheable=${cacheable}\npaths<<CI_DEPENDENCY_PATHS\n${cachePaths()}\nCI_DEPENDENCY_PATHS\n`);
 } else if (command === "npm-cache") console.log(invoke(["config", "get", "cache"], true).trim());
@@ -155,7 +158,7 @@ else if (command === "install") {
   // Only pristine installed dependencies are saved, before checks can generate source caches.
   for (const path of ["node_modules/.cache", "pi-desk/node_modules/.cache"]) rmSync(join(root, path), { recursive: true, force: true });
   if (process.platform === "win32") {
-    // Actions' MSYS tar handles one file; native Windows tar handles the many filesystem entries.
+    // Actions' MSYS tar handles only the outer archives; native tar handles their filesystem entries.
     // Recreate workspace junctions from the current lockfiles rather than archiving absolute links.
     const excludes = workspaceLinks().map(({ installed }) => "--exclude=" + relative(root, installed).split(sep).join("/"));
     // The two independent npm installations occupy disjoint trees and can be extracted concurrently.
