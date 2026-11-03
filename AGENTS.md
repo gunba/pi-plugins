@@ -17,10 +17,13 @@ Do not run the full suite by default. Reserve `npm run check`, plus Desk's
 typecheck/build, for integration or release validation.
 
 Main pushes run Linux/Node 22 and Windows/Node 24 CI. `workflow_dispatch` runs
-all four OS/Node combinations. Windows tests use three separate runner shards
-with two workers each; typechecks and builds run once per OS/Node combination. Feature pushes and pull
-requests do not run CI. The four-way native runtime build runs only for
-`pi-desk-v*` release tags.
+all four OS/Node combinations. Duration-balanced test shards use five Windows
+runners with two workers each and three Linux runners with four workers each.
+Typechecks and builds run in parallel in one separate job per OS/Node combination;
+Linux also checks the performance contract. Installed dependencies are reused only
+for identical locked inputs, runner image, Node ABI and installation recipe.
+Feature pushes and pull requests do not run CI. The four-way native runtime build
+runs only for `pi-desk-v*` release tags.
 
 # Releasing and deploying
 
