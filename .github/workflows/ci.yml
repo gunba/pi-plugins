@@ -80,9 +80,21 @@ jobs:
         with:
           path: ${{ steps.dependency-key.outputs.paths }}
           key: ${{ steps.dependency-key.outputs.key }}
+      - name: Record Windows scratch filesystems
+        if: runner.os == 'Windows' && matrix.task == 'checks'
+        shell: pwsh
+        run: |
+          Write-Output "Default TEMP=$env:TEMP; runner scratch=$env:RUNNER_TEMP"
+          [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady } | Select-Object Name, DriveFormat, DriveType, AvailableFreeSpace | Format-Table
       - name: Typechecks, build and performance contract
         if: matrix.task == 'checks'
+        env:
+          TEMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
+          TMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
         run: node .github/ci/quality.mjs
       - name: Run every test in this duration-balanced shard
         if: matrix.task != 'checks'
+        env:
+          TEMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
+          TMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
         run: node .github/ci/run-tests.mjs ${{ matrix.task }}/${{ runner.os == 'Windows' && 6 || 2 }}

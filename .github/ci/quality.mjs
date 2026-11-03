@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,19 +10,22 @@ const npm = [
 ].find(existsSync);
 if (!npm) throw new Error("npm must be installed alongside Node");
 
-const command = (label, args) => new Promise((accept, reject) => {
+const command = (label, directory, name, expected, direct, extra = []) => new Promise((accept, reject) => {
+  const cwd = join(root, directory), pkg = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
+  // Preserve future lifecycle hooks and script changes; simple Node tools need no npm/cmd wrapper.
+  const simple = pkg.scripts?.[name] === expected && !pkg.scripts?.["pre" + name] && !pkg.scripts?.["post" + name];
+  const args = simple ? [...direct, ...extra] : [npm, "run", name, ...(extra.length ? ["--", ...extra] : [])];
   console.log("Checking " + label);
-  const child = spawn(process.execPath, [npm, ...args], { cwd: root, windowsHide: true, stdio: "inherit" });
+  const child = spawn(process.execPath, args, { cwd, windowsHide: true, stdio: "inherit" });
   child.once("error", reject);
   child.once("close", code => code === 0 ? accept() : reject(new Error(label + " exited " + code)));
 });
 // Typechecks do not emit files; the build writes only dist. None consumes another's output.
 const results = await Promise.allSettled([
-  command("extensions", ["run", "typecheck"]),
-  command("Desk types", ["--prefix", "pi-desk", "run", "typecheck"]),
-  command("Desk build", ["--prefix", "pi-desk", "run", "build"]),
+  command("extensions", ".", "typecheck", "tsc --noEmit", ["node_modules/typescript/bin/tsc", "--noEmit"]),
+  command("Desk types", "pi-desk", "typecheck", "tsc --noEmit", ["node_modules/typescript/bin/tsc", "--noEmit"]),
+  command("Desk build", "pi-desk", "build", "node build.mjs", ["build.mjs"]),
 ]);
 const errors = results.filter(result => result.status === "rejected").map(result => result.reason);
 if (errors.length) throw new AggregateError(errors, "A required quality check failed");
-// Run the benchmark after the other checks so contention cannot distort its measurements.
-if (process.platform === "linux") await command("performance contract", ["--prefix", "pi-desk", "run", "bench", "--", "--check"]);
+if (process.platform === "linux") await command("performance contract", "pi-desk", "bench", "node bench/performance.mjs", ["bench/performance.mjs"], ["--check"]);

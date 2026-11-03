@@ -255,4 +255,3 @@ test("a real managed wrapper survives public host replacement with the same busy
 		assert.equal(retained.checkpoint().state, "complete");
 	} finally { retained.close(); }
 });
-
