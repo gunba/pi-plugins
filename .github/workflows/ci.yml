@@ -12,6 +12,10 @@ concurrency:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   verify:
     timeout-minutes: 10
@@ -20,37 +24,113 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         node: [22, 24]
-        # Native Windows subprocess fixtures need spare CPU; use more VMs, not more workers.
-        shard: [1, 2, 3]
-        exclude: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"ubuntu-latest","shard":2},{"os":"ubuntu-latest","shard":3}]' || '[{"os":"ubuntu-latest","node":24},{"os":"windows-latest","node":22},{"os":"ubuntu-latest","shard":2},{"os":"ubuntu-latest","shard":3}]') }}
+        task: [checks, bench, 1, 2, 3, 4, 5, 6, 7, 8]
+        exclude: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"windows-latest","task":"bench"},{"os":"windows-latest","task":5},{"os":"ubuntu-latest","task":4},{"os":"ubuntu-latest","task":5},{"os":"ubuntu-latest","task":6},{"os":"ubuntu-latest","task":7},{"os":"ubuntu-latest","task":8},{"os":"windows-latest","task":6},{"os":"windows-latest","task":7},{"os":"windows-latest","task":8}]' || '[{"os":"windows-latest","task":"bench"},{"os":"ubuntu-latest","node":24},{"os":"windows-latest","node":22},{"os":"ubuntu-latest","task":5},{"os":"ubuntu-latest","task":6},{"os":"ubuntu-latest","task":7},{"os":"ubuntu-latest","task":8}]') }}
+        include:
+          - os: ubuntu-latest
+            shards: ${{ github.event_name == 'workflow_dispatch' && 3 || 4 }}
+          - os: windows-latest
+            shards: ${{ github.event_name == 'workflow_dispatch' && 4 || 8 }}
     runs-on: ${{ matrix.os }}
     steps:
       # v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          set-safe-directory: false
+      - name: Select image-cached Node
+        id: node
+        env:
+          CI_NODE_MAJOR: ${{ matrix.node }}
+        run: |
+          cache="$RUNNER_TOOL_CACHE"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then cache="$(cygpath -u "$cache")"; fi
+          arch="$(printf '%s' "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')"
+          echo "hit=false" >> "$GITHUB_OUTPUT"
+          while IFS= read -r directory; do
+            version="$(basename "$directory")"
+            [[ "$version" =~ ^$CI_NODE_MAJOR\.[0-9]+\.[0-9]+$ ]] || continue
+            IFS=. read -r major minor patch <<< "$version"
+            if [[ "$major" == 22 && "$minor" -lt 19 ]]; then continue; fi
+            [[ -f "$directory/$arch.complete" ]] || continue
+            bin="$directory/$arch"
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              [[ -f "$bin/node.exe" && -f "$bin/node_modules/npm/bin/npm-cli.js" ]] || continue
+              bin="$(cygpath -w "$bin")"
+            else
+              bin="$bin/bin"
+              [[ -x "$bin/node" && -f "$bin/../lib/node_modules/npm/bin/npm-cli.js" ]] || continue
+            fi
+            printf '%s\n' "$bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Selected image-cached Node $version ($arch)"
+            break
+          done < <(printf '%s\n' "$cache"/node/* | sort -Vr)
       # v7.0.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        if: steps.node.outputs.hit != 'true'
         with:
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            pi-desk/package-lock.json
           node-version: ${{ matrix.node }}
-      - name: Install Linux keyring runtime
+          package-manager-cache: false
+      - name: Fingerprint exact installed dependencies
+        id: dependency-key
+        shell: bash
+        run: node .github/ci/dependencies.mjs outputs ${{ matrix.node }}
+      # v5
+      - name: Restore installed dependencies
+        id: dependencies
+        if: steps.dependency-key.outputs.cacheable == 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: ${{ steps.dependency-key.outputs.paths }}
+          key: ${{ steps.dependency-key.outputs.key }}
+      - name: Locate npm download cache
+        if: matrix.task == 'checks' || steps.dependencies.outputs.cache-hit != 'true'
+        id: npm-cache
+        shell: bash
+        run: echo "path=$(node .github/ci/dependencies.mjs npm-cache)" >> "$GITHUB_OUTPUT"
+      # Keep release builds' existing npm cache warm without adding it to test shards' critical path.
+      - name: Restore npm downloads
+        if: matrix.task == 'checks' || steps.dependencies.outputs.cache-hit != 'true'
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: ${{ steps.npm-cache.outputs.path }}
+          key: node-cache-${{ runner.os }}-x64-npm-${{ hashFiles('package-lock.json', 'pi-desk/package-lock.json') }}
+          restore-keys: node-cache-${{ runner.os }}-x64-npm-
+      - name: Ensure Linux keyring runtime
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsecret-1-0
-      - run: npm ci
-      - run: npm --prefix pi-desk ci --ignore-scripts
-      - run: npm --prefix pi-desk rebuild keytar
-      - if: matrix.shard == 1
-        run: npm run typecheck
-      # Stream failure details even if a process fixture leaves a worker alive.
-      - run: node --test --test-concurrency=${{ runner.os == 'Windows' && 2 || 4 }} --test-shard=${{ matrix.shard }}/${{ runner.os == 'Windows' && 3 || 1 }} --test-reporter=tap --test-timeout=120000
-      - if: matrix.shard == 1
-        run: npm --prefix pi-desk run typecheck
-      - if: matrix.shard == 1
-        run: npm --prefix pi-desk run build
-      # Wire bytes, bundle size and search-store work against pi-desk/bench/baseline.json.
-      - if: runner.os == 'Linux'
-        run: npm --prefix pi-desk run bench -- --check
+        shell: bash
+        run: |
+          if ! ldconfig -p | grep -F libsecret-1.so.0 >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends libsecret-1-0
+          fi
+      - name: Install locked dependencies on a cache miss
+        if: steps.dependencies.outputs.cache-hit != 'true'
+        run: node .github/ci/dependencies.mjs install
+      - name: Restore and verify installed dependencies
+        if: steps.dependencies.outputs.cache-hit == 'true'
+        run: node .github/ci/dependencies.mjs restore
+      - name: Prepare pristine installed-dependency cache
+        if: steps.dependency-key.outputs.cacheable == 'true' && steps.dependencies.outputs.cache-hit != 'true'
+        run: node .github/ci/dependencies.mjs prepare-cache
+      - name: Save pristine installed dependencies
+        if: steps.dependency-key.outputs.cacheable == 'true' && steps.dependencies.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: ${{ steps.dependency-key.outputs.paths }}
+          key: ${{ steps.dependency-key.outputs.key }}
+      - name: Typechecks and production build
+        if: matrix.task == 'checks'
+        env:
+          TEMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
+          TMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
+        run: node .github/ci/quality.mjs checks
+      - name: Isolated performance contract
+        if: matrix.task == 'bench'
+        run: node .github/ci/quality.mjs bench
+      - name: Run every test in this duration-balanced shard
+        if: matrix.task != 'checks' && matrix.task != 'bench'
+        env:
+          TEMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
+          TMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
+        run: node .github/ci/run-tests.mjs ${{ matrix.task }}/${{ matrix.shards }}

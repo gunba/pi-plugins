@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 import test from "node:test";
 import { ChangeTracker, gitProcesses } from "../extensions/changes.ts";
 import { workbook } from "./fixtures.mjs";
@@ -164,12 +164,12 @@ test("a file a command names outside any followed folder is compared directly", 
 });
 
 test("a folder a command creates and enters is followed by the calls after it", limit, async t => {
-	const { base, tracker } = setup(t), project = join(base, "proj");
-	// Started from a folder that is not followed itself, as a conversation in the home folder is.
-	await tracker.start("c1", `mkdir -p ${project} && cd ${project} && echo hi > notes.txt`, "/", "s1");
+	const { base, tracker } = setup(t), project = join(base, "proj"), cwd = parse(base).root;
+	// "/" is not fully qualified on Windows; this starting folder must never be followed.
+	await tracker.start("c1", `mkdir -p ${project} && cd ${project} && echo hi > notes.txt`, cwd, "s1");
 	mkdirSync(project); writeFileSync(join(project, "notes.txt"), "hi\n");
 	await tracker.finish("c1");
-	await tracker.start("c2", `cd ${project} && echo more >> notes.txt`, "/", "s1");
+	await tracker.start("c2", `cd ${project} && echo more >> notes.txt`, cwd, "s1");
 	writeFileSync(join(project, "notes.txt"), "hi\nmore\n");
 	assert.equal(byPath(await tracker.finish("c2"))["notes.txt"]?.action, "updated");
 });
