@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { enableBytecodeCache } from "./compile-cache.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const npm = [
@@ -25,7 +26,7 @@ const within = path => { const part = relative(root, path); return !isAbsolute(p
  */
 function cacheKey() {
   const npmVersion = invoke(root, ["--version"], true).trim();
-  const files = new Set([...manifests, ...locks, ".npmrc", "pi-desk/.npmrc", ".github/ci/dependencies.mjs"]);
+  const files = new Set([...manifests, ...locks, ".npmrc", "pi-desk/.npmrc", ".github/ci/dependencies.mjs", ".github/ci/compile-cache.mjs"]);
   const pending = [...manifests];
   const localManifests = new Set(manifests);
   for (const lock of locks) for (const info of Object.values(json(lock).packages ?? {})) {
@@ -64,7 +65,7 @@ function cacheKey() {
     if (path) files.add(path);
   }
   const hash = createHash("sha256").update(JSON.stringify([
-    1, process.platform, process.arch, process.versions.modules, npmVersion,
+    1, process.platform, process.arch, process.versions.node, process.versions.modules, npmVersion,
     process.env.ImageOS ?? "", process.env.ImageVersion ?? "", realpathSync(root),
   ]));
   for (const path of [...files].sort()) {
@@ -126,9 +127,15 @@ else if (command === "install") {
   invoke(root, ["--prefix", "pi-desk", "ci", "--ignore-scripts"]);
   invoke(root, ["--prefix", "pi-desk", "rebuild", "keytar"]);
   pruneForeignBinaries();
+  enableBytecodeCache(root);
+  // Both SDK installations have distinct module URLs. Prime each without starting a session.
+  for (const cwd of [root, join(root, "pi-desk")]) execFileSync(process.execPath,
+    ["--input-type=module", "-e", 'await import("@earendil-works/pi-coding-agent"); const {flushCompileCache} = await import("node:module"); flushCompileCache();'],
+    { cwd, windowsHide: true, stdio: "inherit" });
   writeFileSync(stamp, JSON.stringify({ format: 1, key }) + "\n");
   verify(key);
 } else if (command === "verify") {
+  enableBytecodeCache(root);
   verify(cacheKey());
   console.log("Verified exact-input installed dependency cache");
 } else throw new Error("Usage: dependencies.mjs <key|npm-cache|install|verify>");

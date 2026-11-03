@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { finished } from "node:stream/promises";
 import { run } from "node:test";
 import { tap } from "node:test/reporters";
+import { enableBytecodeCache } from "./compile-cache.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const timings = JSON.parse(readFileSync(new URL("./timings.json", import.meta.url), "utf8"));
@@ -32,15 +33,16 @@ export function partition(files, count, platform = process.platform) {
 /** Process isolation and the original timeout are retained; any failure makes CI fail. */
 export async function execute(files) {
   process.chdir(root);
+  enableBytecodeCache(root);
   const events = run({
     files: files.map(file => resolve(root, file)), isolation: "process",
     concurrency: workers, timeout: 120000,
     execArgv: ["--test-timeout=120000", "--test-concurrency=" + workers],
   });
   events.on("test:fail", () => { process.exitCode = 1; });
-  events.on("test:summary", data => {
-    if (data.file) console.log("# CI_FILE_TIMING " + JSON.stringify({
-      file: relative(root, data.file).split(sep).join("/"), milliseconds: data.duration_ms,
+  events.on("test:complete", data => {
+    if (data.file && resolve(root, data.name) === resolve(data.file)) console.log("# CI_FILE_TIMING " + JSON.stringify({
+      file: relative(root, data.file).split(sep).join("/"), milliseconds: data.details.duration_ms,
     }));
   });
   const output = events.compose(tap);
