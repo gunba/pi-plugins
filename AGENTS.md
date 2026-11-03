@@ -25,7 +25,9 @@ The main matrix has 15 jobs; the full manual matrix has 20. Installed dependenci
 for identical locked inputs, runner image, Node version and installation recipe.
 Project installation hooks and copied file dependencies disable this reuse.
 Feature pushes and pull requests do not run CI. The four-way native runtime build
-runs only for `pi-desk-v*` release tags.
+runs for `pi-desk-v*` release tags. For non-publishing validation after CI passes,
+dispatch `desk-release.yml` on the branch with `verify-only: true`; this skips
+artifact uploads and publication without bypassing the native runtime checks.
 
 # Releasing and deploying
 

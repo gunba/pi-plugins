@@ -5,6 +5,11 @@ on:
     tags: ["pi-desk-v*"]
   # The Pi update workflow starts releases this way: tags it pushes start no workflows.
   workflow_dispatch:
+    inputs:
+      verify-only:
+        description: Build and verify without uploading artifacts or publishing
+        type: boolean
+        default: false
 
 concurrency:
   group: desk-release-${{ github.ref }}
@@ -20,7 +25,7 @@ env:
 
 jobs:
   prepare:
-    if: startsWith(github.ref, 'refs/tags/pi-desk-v')
+    if: startsWith(github.ref, 'refs/tags/pi-desk-v') || inputs.verify-only
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -28,6 +33,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Check release source
+        if: inputs.verify-only != true
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -35,6 +41,16 @@ jobs:
           git merge-base --is-ancestor HEAD origin/main
           node -e 'if ("pi-desk-v" + require("./pi-desk/package.json").version !== process.env.RELEASE_TAG) process.exit(1)'
           passed=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --branch main --json conclusion --jq 'any(.conclusion == "success")')
+          test "$passed" = true
+      - name: Require passing CI for verification-only builds
+        if: inputs.verify-only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          branch="$GITHUB_REF_NAME"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then branch=main; fi
+          passed=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --branch "$branch" --json conclusion --jq 'any(.conclusion == "success")')
           test "$passed" = true
 
   build:
@@ -71,10 +87,13 @@ jobs:
       - name: Build and verify portable runtime
         env:
           PI_DESK_DEPENDENCY_CACHE: ${{ runner.temp }}/desk-dependency-cache
+          TEMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
+          TMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
         shell: bash
         run: node pi-desk/manage/pack-release.ts "$RUNNER_TEMP/desk-release"
       # v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: inputs.verify-only != true
         with:
           name: runtime-${{ matrix.os }}-${{ matrix.node }}
           path: ${{ runner.temp }}/desk-release
@@ -84,7 +103,7 @@ jobs:
 
   publish:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/pi-desk-v')
+    if: startsWith(github.ref, 'refs/tags/pi-desk-v') && inputs.verify-only != true
     runs-on: ubuntu-24.04
     permissions:
       contents: write
