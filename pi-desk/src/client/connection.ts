@@ -153,6 +153,15 @@ export function dispose(): void {
 function convert(error: unknown): Error {
 	return error instanceof RemoteError ? new ApiError(error.status, error.message) : error instanceof Error ? error : new Error(String(error));
 }
+/**
+ * The computer this window runs on. Undefined in a window a computer serves itself, which shows only that computer's
+ * conversations; in the account app, the computer it reaches over the loopback port, or null when it reaches none.
+ */
+export function computerHere(): { id: string; name: string } | null | undefined {
+	if (mode !== "account") return undefined;
+	for (const [id, remote] of remotes) if (remote.client.direct) return { id, name: remote.device.name };
+	return null;
+}
 export function fileComputerName(session: string): string | undefined {
 	const computer = /^([a-f0-9-]{36}):/.exec(session)?.[1];
 	return computer ? remotes.get(computer)?.device.name : undefined;

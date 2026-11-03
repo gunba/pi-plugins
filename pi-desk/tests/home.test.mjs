@@ -54,7 +54,7 @@ function controller(t, notify) {
 		createSession(cwd, file, existing) {
 			sessions.set(existing.view.key, { view: { ...existing.view, state: "ready", activation: "activation", snapshot: { model: HOME_MODEL, thinking: "low", activity: "idle" } },
 				worker: { generation: "generation", command: async () => {} } }); return existing.view.key;
-		}, waitForSession: async key => sessions.get(key), inputEvent() {}, drainInputs: managed => admitted.push(inputs.next(managed.view.key)), attachments: () => ({ check() {} }) };
+		}, waitForSession: async key => sessions.get(key), inputEvent() {}, drainInputs: managed => admitted.push(inputs.next(managed.view.key)), attachments: () => ({ check: ids => ids.map(id => `${id}.png`) }) };
 	let enabled = true;
 	const work = [], home = new Home(core, () => enabled, () => work, notify); home.startsAlone = () => true;
 	t.after(() => { home.close(); inputs.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -74,6 +74,16 @@ test("Home reuses one conversation and receipt after a lost response and worker 
 	new SessionCatalog(core.directory).write([managed.view]);
 	assert.equal(new SessionCatalog(core.directory).read()[0].home, true);
 	disable(); await assert.rejects(home.open(), /workspace server/);
+});
+
+test("Home gives browsers the activation its uploads need and keeps the names of attached files", async t => {
+	// Jordan could not attach images to Home: the browser looked for the activation in a list keyed by computer and
+	// conversation, found none, and the host refused every upload as stale.
+	const { home, core } = controller(t);
+	const opened = await home.open();
+	assert.equal(opened.activation, core.sessions.get(opened.session).view.activation);
+	await home.message(randomUUID(), "What is this rash?", ["photo"]);
+	assert.deepEqual(home.snapshot().messages.at(-1).files, ["photo.png"]);
 });
 
 test("scheduled Home alerts use an explicit phone delivery path", async t => {

@@ -4,6 +4,11 @@ import { pathToFileURL } from "node:url";
 
 export type DesktopFileAction = "open" | "reveal";
 const executable = /^(?:\.exe|\.com|\.bat|\.cmd|\.msi|\.msp|\.scr|\.cpl|\.lnk|\.url|\.desktop|\.app|\.ps1|\.psm1|\.vbs|\.vbe|\.wsf|\.wsh|\.hta|\.reg|\.jar|\.sh|\.bash|\.zsh)$/i;
+/** Whether opening a file would run code: a program or script by its name, or a Linux or Windows program by its first bytes. */
+export function runsCode(path: string, head: Uint8Array, platform = process.platform): boolean {
+	return executable.test(extname(path)) || platform === "win32" && /\.(?:js|jse|py|pyw|rb|pl)$/i.test(path)
+		|| head[0] === 0x7f && head[1] === 0x45 && head[2] === 0x4c && head[3] === 0x46 || head[0] === 0x4d && head[1] === 0x5a;
+}
 export function desktopFileCommand(path: string, action: DesktopFileAction, platform = process.platform, systemRoot = process.env.SystemRoot ?? "C:\\Windows") {
 	if (action === "open" && (executable.test(extname(path)) || platform === "win32" && /\.(?:js|jse|py|pyw|rb|pl)$/i.test(path)))
 		throw new Error("Desk does not launch executable files. Show the containing folder or use Preview instead.");

@@ -73,10 +73,16 @@ observed in a conversation.
 Native file open/reveal actions require that same observed reference and a
 current file-version check. They use authenticated POST requests, never paths
 supplied by the browser, and launch OS handlers with literal arguments rather
-than shell commands. Opening happens on the file's computer; downloading copies
-it to the browser's computer. Executable binaries, executable Linux files and
-known launcher/script file types are rejected. Associated applications still
-process document content under the host user's permissions.
+than shell commands. Opening happens on the computer the window runs on. A file
+on another computer is fetched by the browser and handed to this computer's
+Desk, which saves it in Downloads (reusing an identical copy, never overwriting
+another file) and opens it there. Only a window on that computer may hand it
+files: one its host serves on loopback, or the account app connected over the
+loopback port; relayed requests are refused. With no Desk reachable there, the
+browser downloads the file instead. Executable binaries, executable Linux files
+and known launcher/script file types are never launched: a received one is saved
+and its folder shown. Associated applications still process document content
+under the host user's permissions.
 
 ## Encrypted connections
 

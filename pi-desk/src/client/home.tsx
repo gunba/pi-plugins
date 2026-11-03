@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { HomeMessage, HomeSnapshot, HomeWork } from "../shared/home.ts";
@@ -39,8 +39,22 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 	// The conversation with Home sits beside the canvas; closed, only its latest reply shows above the box.
 	const [chatOpen, setChatOpen] = useState(() => { try { return (localStorage.getItem("pi-desk:home:chat") ?? (innerWidth > 760 ? "open" : "closed")) === "open"; } catch { return true; } });
 	const toggleChat = () => setChatOpen(open => { try { localStorage.setItem("pi-desk:home:chat", open ? "closed" : "open"); } catch { /* Kept for this visit. */ } return !open; });
-	const log = useRef<HTMLDivElement>(null);
-	useEffect(() => { if (chatOpen) log.current?.scrollTo({ top: log.current.scrollHeight }); }, [chatOpen, snapshot.messages.length]);
+	// The log follows new messages while it is at its end; reading further up, it stays put. Its length is capped, so
+	// the newest message, not the count, says when there is something new.
+	const log = useRef<HTMLDivElement>(null), follow = useRef(true);
+	const newest = snapshot.messages.at(-1)?.id;
+	useLayoutEffect(() => { const node = log.current; if (chatOpen && node && follow.current) node.scrollTop = node.scrollHeight; }, [chatOpen, newest, snapshot.busy, pending]);
+	// On a phone the open conversation shares the screen with the page, split where Jordan drags it.
+	const body = useRef<HTMLDivElement>(null);
+	const [share, setShare] = useState(() => { try { const saved = Number(localStorage.getItem("pi-desk:home:split")); return saved >= 0.2 && saved <= 0.85 ? saved : 0.5; } catch { return 0.5; } });
+	const resize = (next: number) => { const value = Math.min(0.85, Math.max(0.2, next)); setShare(value); try { localStorage.setItem("pi-desk:home:split", value.toFixed(3)); } catch { /* Kept for this visit. */ } };
+	const drag = (event: ReactPointerEvent<HTMLDivElement>) => {
+		const box = body.current?.getBoundingClientRect(); if (!box) return;
+		event.currentTarget.setPointerCapture(event.pointerId);
+		const move = (moved: PointerEvent) => resize((box.bottom - moved.clientY) / box.height);
+		const end = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); window.removeEventListener("pointercancel", end); };
+		window.addEventListener("pointermove", move); window.addEventListener("pointerup", end); window.addEventListener("pointercancel", end);
+	};
 	const saveDraft = (text: string) => { setDraft(text); draftRef.current = text; try { localStorage.setItem(`${storageKey}:draft`, text); } catch { setError("Your draft could not be saved on this device."); } };
 	useEffect(() => {
 		const generation = ++epoch.current;
@@ -98,14 +112,12 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 			if (attachments.files.length) {
 				const current = await open();
 				const sessionId = referenceKey(computer, current.session!);
-				const state = await api<{ sessions: WorkspaceState["sessions"] }>("/state", undefined, computer);
-				const activation = state.sessions.find(item => item.key === current.session)?.activation;
-				uploaded = await attachments.upload(sessionId, command => api(`/sessions/${sessionId}/uploads`, { activation, command }));
+				uploaded = await attachments.upload(sessionId, command => api(`/sessions/${sessionId}/uploads`, { activation: current.activation, command }));
 			}
 			if (epoch.current !== generation) return;
 			const input: Pending = { id: crypto.randomUUID(), text: dictated.current ? withDictationNote(text.trim()) : text.trim(), draft: text,
 				attachments: uploaded, files: attachments.files.map(file => file.id) };
-			localStorage.setItem(`${storageKey}:pending`, JSON.stringify(input)); pendingRef.current = input; setPending(input); dictated.current = false;
+			localStorage.setItem(`${storageKey}:pending`, JSON.stringify(input)); pendingRef.current = input; setPending(input); dictated.current = false; follow.current = true;
 			await deliver(input);
 		} catch (error) { if (epoch.current === generation) setError(failure(error)); }
 		finally { if (epoch.current === generation) setBusy(false); }
@@ -122,10 +134,15 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 				}}>History</button><button className={`icon-button${chatOpen ? " selected" : ""}`} aria-label={chatOpen ? "Hide the conversation" : "Show the conversation"} aria-pressed={chatOpen} onClick={toggleChat}><Icon name="chat" /></button></div>
 		</header>
 		{(!online || error || snapshot.error) && <div className="connection-banner" role="status">{error || snapshot.error || (host.computers && !server ? "Choose a workspace server under Computers → Keep conversation copies to use Home." : "Workspace server offline. Your canvas and draft stay here.")}</div>}
-		<div className={`home-body${chatOpen ? " chat-open" : ""}`}>
-		<HomePage page={snapshot.page ?? ""} work={snapshot.work ?? []} open={openWork} />
+		<div ref={body} className={`home-body${chatOpen ? " chat-open" : ""}`} style={{ "--home-chat-share": `${share * 100}%` } as CSSProperties}>
+		<HomePage page={snapshot.page ?? ""} work={snapshot.work ?? []} watches={snapshot.watches ?? []} open={openWork}
+			openWatches={() => { if (key) openConversation(key, "pi-watch"); }} />
 		<section className="home-chat" aria-label="Talk to Home">
-			{chatOpen && <div className="home-log" ref={log} role="log" aria-live="polite">
+			{chatOpen && <div className="home-split" role="separator" aria-orientation="horizontal" aria-label="Resize the conversation" tabIndex={0}
+				aria-valuemin={20} aria-valuemax={85} aria-valuenow={Math.round(share * 100)} onPointerDown={drag}
+				onKeyDown={event => { if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); resize(share + (event.key === "ArrowUp" ? 0.05 : -0.05)); } }} />}
+			{chatOpen && <div className="home-log" ref={log} role="log" aria-live="polite"
+				onScroll={event => { const node = event.currentTarget; follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48; }}>
 				{snapshot.messages.length ? snapshot.messages.map((message, index) => <MessageView key={message.id} message={chatMessage(message, index)} sessionKey={key ?? "home"} />)
 					: <p className="home-log-empty">Ask Home to add, change or rearrange anything.</p>}
 				{snapshot.busy && <p className="home-log-busy">Working…</p>}
@@ -156,5 +173,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 }
 /** Home's messages in the main chat's own message view. */
 function chatMessage(message: HomeMessage, order: number): ChatMessage {
-	return { id: message.id, order, revision: 0, role: message.role, blocks: [{ type: "text", text: message.text }], timestamp: message.at };
+	return { id: message.id, order, revision: 0, role: message.role, timestamp: message.at, blocks: [
+		...(message.text ? [{ type: "text" as const, text: message.text }] : []),
+		...(message.files?.length ? [{ type: "text" as const, text: `Attached ${message.files.join(", ")}` }] : [])] };
 }

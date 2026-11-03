@@ -41,7 +41,8 @@ function forBrowser(peer: Peer, event: HostEvent): HostEvent | SessionPatchEvent
 	peer.sent.set(event.session.key, event.session);
 	return before ? { type: "session_patch", key: event.session.key, changes: sessionChanges(before, event.session, [], peer.compact) } : event;
 }
-export interface RemoteAccess { id: string; authorized: () => boolean }
+/** local: the browser reached this host over its loopback port, so it runs on this computer. */
+export interface RemoteAccess { id: string; authorized: () => boolean; local?: boolean }
 export interface HostAccount extends ChannelIdentity {
 	config: AccountConfiguration; device: { id: string; thumbprint: string };
 	verifier(): CredentialVerifier;
@@ -399,7 +400,7 @@ export class RelayConnector {
 			!request.path.startsWith("/api/") || Buffer.byteLength(JSON.stringify(request)) > 1_100_000) throw new Error("Invalid remote request.");
 		peer.pending++;
 		try {
-			const response = await this.options.request({ id: device.id, authorized: () => peer.ready && this.valid(peer) }, {
+			const response = await this.options.request({ id: device.id, authorized: () => peer.ready && this.valid(peer), local: !!peer.local }, {
 				method: request.method, path: request.path, ...(request.body === undefined ? {} : { body: object(request.body) }),
 			});
 			if (this.valid(peer)) await peer.channel!.send({ type: "response", id: message.id, response } satisfies RemotePayload);

@@ -669,9 +669,10 @@ Preview resolves the link on its host and shows the actual path, size and type.
 UTF-8 text uses 32,000-byte pages with line navigation and copying. PNG, JPEG,
 GIF and WebP previews are limited to 16 MiB; selecting an image opens its full
 size. Preview displays HTML, SVG and scripts as text, never executed in Desk. Other
-binary files, including PDFs, can be downloaded or opened by their host's
-associated application. Executable formats and launcher files are not launched
-from Desk.
+binary files, including PDFs, can be downloaded or opened by the associated
+application of the computer the window runs on; a file on another computer is
+first saved in that computer's Downloads. Executable formats and launcher files
+are not launched from Desk.
 
 Downloads use checked, bounded chunks over the same authenticated local or
 encrypted remote connection. The browser assembles at most 128 MiB per file.

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { SurfaceFrame } from "./surfaces.tsx";
-import { api, fileComputerName } from "./connection.ts";
+import { api, computerHere, fileComputerName } from "./connection.ts";
+import { encoded } from "./attachments.tsx";
+import { CHUNK_BYTES } from "../shared/attachments.ts";
 import { Icon } from "./icons.tsx";
 import { CopyButton } from "./transcript-parts.tsx";
 import { useReferenceQuery } from "./reference-origin.tsx";
@@ -26,8 +28,26 @@ export async function fileBlob(session: string, file: FileInfo, origin: string, 
 	return new Blob(pieces, { type: "application/octet-stream" });
 }
 
+/** Hands a file to the Desk of the computer this window runs on, which saves it in Downloads and opens it. */
+async function openHere(computer: string, name: string, blob: Blob, signal: AbortSignal): Promise<{ action: "open" | "reveal" }> {
+	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()));
+	const sha256 = [...digest].map(byte => byte.toString(16).padStart(2, "0")).join("");
+	const { id } = await api<{ id: string }>("/open-here", { command: { kind: "begin", name, size: blob.size } }, computer);
+	for (let offset = 0; offset < blob.size; offset += CHUNK_BYTES) {
+		signal.throwIfAborted();
+		await api("/open-here", { command: { kind: "chunk", id, offset, base64: await encoded(blob.slice(offset, offset + CHUNK_BYTES)) } }, computer);
+	}
+	return api("/open-here", { command: { kind: "finish", id, sha256 } }, computer);
+}
+const saveBlob = (blob: Blob, name: string) => {
+	const url = URL.createObjectURL(blob), link = document.createElement("a");
+	link.href = url; link.download = name; document.body.append(link); link.click(); link.remove();
+	setTimeout(() => URL.revokeObjectURL(url), 60_000);
+};
+
 export function FileLink({ session, file, children }: { session: string; file: FileReference; children?: ReactNode }) {
 	const origin = useReferenceQuery(), computer = fileComputerName(session) ?? (session.includes(":") ? "the file’s computer" : "this computer");
+	const fileComputer = /^([a-f0-9-]{36}):/.exec(session)?.[1];
 	const mobile = typeof navigator !== "undefined" && /Android|iPhone|iPad/i.test(navigator.userAgent);
 	const [open, setOpen] = useState(false), [pending, setPending] = useState(false), [status, setStatus] = useState(""), [error, setError] = useState("");
 	const transfer = useRef<AbortController | undefined>(undefined), statusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -37,13 +57,19 @@ export function FileLink({ session, file, children }: { session: string; file: F
 		clearTimeout(statusTimer.current); setPending(true); setError(""); setStatus(operation === "download" ? "Downloading…" : "Opening…");
 		try {
 			const info = await api<FileInfo>(`/sessions/${session}/files/${file.id}?${origin}`);
-			if (operation === "download") {
+			// A file on another computer opens on this one: its Desk saves it in Downloads and opens it, or, with no
+			// Desk here to reach, the browser downloads it.
+			const here = computerHere(), elsewhere = operation === "open" && here !== undefined && here?.id !== fileComputer;
+			if (operation === "download" || elsewhere) {
 				const controller = transfer.current = new AbortController();
 				const blob = await fileBlob(session, info, origin, controller.signal, bytes => setStatus(`Downloading ${Math.round(bytes / Math.max(info.size, 1) * 100)}%`));
 				controller.signal.throwIfAborted();
-				const url = URL.createObjectURL(blob), link = document.createElement("a");
-				link.href = url; link.download = info.name; document.body.append(link); link.click(); link.remove();
-				setTimeout(() => URL.revokeObjectURL(url), 60_000); setStatus("");
+				if (elsewhere && here) {
+					setStatus("Opening…");
+					const opened = await openHere(here.id, info.name, blob, controller.signal);
+					setStatus(opened.action === "open" ? `Opened on ${here.name}` : `Saved to Downloads on ${here.name}. Desk shows programs in their folder rather than running them.`);
+					statusTimer.current = setTimeout(() => setStatus(""), opened.action === "open" ? 2500 : 8000);
+				} else { saveBlob(blob, info.name); setStatus(""); }
 			} else {
 				await api(`/sessions/${session}/files/${file.id}/${operation}?${origin}`, { id: crypto.randomUUID(), version: info.version });
 				setStatus(`Open requested on ${computer}`);
@@ -54,7 +80,7 @@ export function FileLink({ session, file, children }: { session: string; file: F
 	};
 	return <span className="file-link-wrap">
 		{/* On a phone a tap previews: Open and Show folder would act on the computer, not the phone, and the preview has Download. */}
-		<button type="button" className="file-link" disabled={pending} title={mobile ? "Preview file" : `Open on ${computer}`}
+		<button type="button" className="file-link" disabled={pending} title={mobile ? "Preview file" : "Open on this computer"}
 			onClick={event => { event.stopPropagation(); if (mobile) setOpen(true); else void action("open"); }}>{children ?? file.name}</button>
 		{!mobile && <span className="file-link-actions">
 			<button type="button" className="icon-button" disabled={pending} aria-label={`Show containing folder on ${computer}`} title={`Show containing folder on ${computer}`}

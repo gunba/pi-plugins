@@ -22,10 +22,14 @@ that open their conversations. The agent keeps the page organised: each `##`
 section is a column, side by side on a wide screen and stacked on a phone, in the
 order written, with Today first; `###` groups things within a column; text before
 the first `##` spans the page; HTML comments hold the agent's own notes and are not
-shown. Live work comes from Desk directly, so it never needs an agent turn.
+shown. Live work comes from Desk directly, so it never needs an agent turn. A
+timeline of next wakes follows the chips: other conversations' watches, and Home's
+own, labelled with their job; one of Home's opens its list of watches.
 
-The composer supports files, dictation and a saved delivery receipt, using normal
-Desk uploads and input admission. **History** opens the complete native
+The conversation sits beside the page on a wide screen. On a phone it shares the
+screen with the page, split by a bar Jordan drags. It follows new messages while
+it is scrolled to its end. The composer supports files, dictation and a saved
+delivery receipt, using normal Desk uploads and input admission. **History** opens the complete native
 conversation, including questions, approvals, tool activity and recovery
 controls. The last turn's cost is shown in the header.
 

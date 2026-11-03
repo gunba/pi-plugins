@@ -62,7 +62,7 @@ export async function copyDraftAttachments(source: string, target: string, commi
 	});
 	dispatchEvent(new CustomEvent("pi-desk:draft-changed", { detail: target }));
 }
-const encoded = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+export const encoded = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
 	const reader = new FileReader();
 	reader.onload = () => resolve(String(reader.result).split(",")[1]!);
 	reader.onerror = () => reject(reader.error);

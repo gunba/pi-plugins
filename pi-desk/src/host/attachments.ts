@@ -135,7 +135,8 @@ export class Attachments {
 		}
 		return files;
 	}
-	check(ids: string[]): void { this.files(ids); }
+	/** Checks that the files are ready to send and returns their names. */
+	check(ids: string[]): string[] { return this.files(ids).map(file => file.name); }
 	/** Only the host writes metadata; the worker's image preparation is read-only. */
 	retain(ids: string[]): void {
 		const files = this.files(ids);

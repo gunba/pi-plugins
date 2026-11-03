@@ -14,6 +14,7 @@ import { MAX_DICTATION_BYTES, type Dictation } from "./dictation.ts";
 import { ServiceUsage } from "../../../pi-service-usage/index.ts";
 import { exaSettings, saveExaKey } from "../../../pi-web-search/extensions/settings.ts";
 import type { Home } from "./home.ts";
+import { OpenHere, type OpenHereCommand } from "./open-here.ts";
 import type { EfficiencyReports } from "./efficiency.ts";
 import type { Folders } from "./folders.ts";
 import { reply, type HostCore } from "./host-core.ts";
@@ -53,6 +54,7 @@ interface ApiHost {
 export class HostApi {
 	private readonly core: HostCore;
 	private readonly host: ApiHost;
+	private readonly openHere = new OpenHere();
 	constructor(core: HostCore, host: ApiHost) { this.core = core; this.host = host; }
 
 	async handle(device: string | RemoteAccess, request: ApiRequest): Promise<ApiResponse> {
@@ -68,6 +70,12 @@ export class HostApi {
 			if (request.method !== "GET" && (this.core.held || this.core.restoringUpdate && !restorationControl))
 				return reply({ error: "Desk is checkpointing or restoring conversations. Wait for the update to finish." }, 503);
 			if (url.pathname === "/api/state" && request.method === "GET") return reply(this.core.state());
+			if (url.pathname === "/api/open-here" && request.method === "POST") {
+				// It writes to Downloads and opens apps here, so only a window on this computer may ask: one served by
+				// this host, which listens on loopback only, or the account app connected over the loopback port.
+				if (typeof device !== "string" && !device.local) return reply({ error: "Only a window on this computer can open files on it." }, 403);
+				return reply(await this.openHere.command(object(data.command) as OpenHereCommand));
+			}
 			if (url.pathname === "/api/conversations/search" && request.method === "POST") {
 				const search = this.host.search?.();
 				if (!search) return reply({ error: "Conversation search is unavailable on this host." }, 503);

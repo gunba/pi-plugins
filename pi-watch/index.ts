@@ -660,7 +660,7 @@ class Watches {
 			...(specs.some(spec => spec.mode !== "time") ? { watching: true } : {}),
 			...(specs.some(spec => spec.mode === "change") ? { watchEvery: Math.min(...specs.flatMap(spec => spec.mode === "change" ? [spec.every!] : [])) } : {}),
 			...(files.length ? { wakeFiles: files } : {}), ...(this.closing ? { close: true } : {}),
-			data: { items: specs.map(spec => ({ id: spec.id, title: spec.label ?? describeWatch(spec),
+			data: { items: specs.map(spec => ({ id: spec.id, title: spec.label ?? describeWatch(spec), ...(spec.mode === "time" ? { at: spec.at } : {}),
 				subtitle: [spec.id, ...(spec.label ? [describeWatch(spec)] : []), ...(spec.mode !== "time" && spec.expires ? [`ends ${when(spec.expires)}`] : [])].join(" · "),
 				actions: [{ id: `stop:${spec.id}`, label: "Stop", destructive: true }] })) },
 			...(specs.length ? { badges: [{ label: "Watching", value: String(specs.length), icon: "eye" as const, compact: true,

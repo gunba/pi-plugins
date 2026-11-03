@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { InputSubmission } from "../shared/inputs.ts";
 import type { SessionView } from "../shared/protocol.ts";
-import { HOME_MODEL, type HomeSnapshot, type HomeWork, type HomeRun } from "../shared/home.ts";
+import { HOME_MODEL, type HomeSnapshot, type HomeWatch, type HomeWork, type HomeRun } from "../shared/home.ts";
 import type { HostCore, ManagedSession } from "./host-core.ts";
 import { HomeStore } from "./home-store.ts";
 
@@ -31,6 +31,12 @@ export function homeWork(sessions: SessionView[]): HomeWork[] {
 			detail: questions.map(item => item.form.title).join(" · ").slice(0, 1000) || (blocked ? JSON.stringify(blocked.data).slice(0, 1500) : ""),
 			...(blocked ? { view: blocked.id } : {}), ...(session.wakes ? { wakes: session.wakes } : {}) }, ...children];
 	}).slice(0, 200);
+}
+
+/** The watches Home's conversation has set, from the list pi-watch shows in it. */
+export function homeWatches(view: SessionView | undefined): HomeWatch[] {
+	const watches = view?.ui?.views?.find(item => item.id === "pi-watch")?.data as { items?: { id: string; title: string; at?: number }[] } | undefined;
+	return (watches?.items ?? []).map(item => ({ id: item.id, title: item.title, ...(typeof item.at === "number" ? { at: item.at } : {}) }));
 }
 
 /** Owns one normal Desk conversation; all browsers address the same workspace-server instance. */
@@ -87,8 +93,8 @@ export class Home {
 		const managed = this.current();
 		return { messages: this.store.messages(), busy: !!this.starting || managed?.view.snapshot?.activity === "running",
 			error: this.error || managed?.view.error || (managed?.view.snapshot?.activity === "error" ? "Home’s last turn failed. Open History to see the error and continue." : undefined),
-			run: this.store.get<HomeRun>("run"), session: managed?.view.key,
-			work: [...homeWork([...this.core.sessions.values()].map(item => item.view)), ...this.remote()], page: this.page() };
+			run: this.store.get<HomeRun>("run"), session: managed?.view.key, activation: managed?.view.activation,
+			work: [...homeWork([...this.core.sessions.values()].map(item => item.view)), ...this.remote()], watches: homeWatches(managed?.view), page: this.page() };
 	}
 	/** Jordan's tasks file, which the Home conversation keeps and Home shows as his page. */
 	private page(): string {
@@ -107,12 +113,12 @@ export class Home {
 		const managed = await this.ensure();
 		if (saved && (saved.session !== managed.view.key || saved.input.activation !== managed.view.activation || saved.input.generation !== managed.worker!.generation))
 			throw Error("Home restarted before accepting this message. Check History before sending it again.");
-		this.core.attachments(managed.view.key).check(attachments ?? []);
+		const files = this.core.attachments(managed.view.key).check(attachments ?? []);
 		saved ??= { session: managed.view.key, input: { id, activation: managed.view.activation!, generation: managed.worker!.generation, command } };
 		this.store.set(`input:${id}`, saved);
 		this.core.inputs.admit(saved.session, saved.input);
 		this.core.inputEvent(managed); this.core.drainInputs(managed);
-		this.store.message({ id, role: "user", text, at: Date.now() }); this.error = undefined;
+		this.store.message({ id, role: "user", text, at: Date.now(), ...(files.length ? { files } : {}) }); this.error = undefined;
 		return this.snapshot();
 	}
 	async tick(): Promise<void> {
