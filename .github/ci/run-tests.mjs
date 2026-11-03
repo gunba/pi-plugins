@@ -29,15 +29,16 @@ export function partition(files, count, platform = process.platform) {
   return bins;
 }
 
-/** Process isolation and the original timeout are retained; any failure makes CI fail. */
+/** Run an ordered shard and propagate test failures to the process exit status. */
 export async function execute(files) {
   process.chdir(root);
+  // The CLI re-sorts explicit files; run() preserves longest-first scheduling.
   const events = run({
     files: files.map(file => resolve(root, file)), isolation: "process",
     concurrency: workers, timeout: 120000,
     execArgv: ["--test-timeout=120000", "--test-concurrency=" + workers],
   });
-  events.on("test:fail", () => { process.exitCode = 1; });
+  events.on("test:fail", data => { if (!data.todo) process.exitCode = 1; });
   events.on("test:complete", data => {
     if (data.file && resolve(root, data.name) === resolve(data.file)) console.log("# CI_FILE_TIMING " + JSON.stringify({
       file: relative(root, data.file).split(sep).join("/"), milliseconds: data.details.duration_ms,
