@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, ci/warm-fast-pipeline]
   workflow_dispatch:
 
 concurrency:
@@ -40,13 +40,28 @@ jobs:
       - name: Install Linux keyring runtime
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsecret-1-0
-      - run: npm ci
-      - run: npm --prefix pi-desk ci --ignore-scripts
-      - run: npm --prefix pi-desk rebuild keytar
+      - name: Fingerprint exact installed dependencies
+        id: dependency-key
+        shell: bash
+        run: echo "key=$(node .github/ci/dependencies.mjs key)" >> "$GITHUB_OUTPUT"
+      - name: Restore installed dependencies
+        id: dependencies
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            node_modules
+            pi-desk/node_modules
+          key: ${{ steps.dependency-key.outputs.key }}
+      - name: Install locked dependencies on a cache miss
+        if: steps.dependencies.outputs.cache-hit != 'true'
+        run: node .github/ci/dependencies.mjs install
+      - name: Verify restored dependencies
+        if: steps.dependencies.outputs.cache-hit == 'true'
+        run: node .github/ci/dependencies.mjs verify
       - if: matrix.shard == 1
         run: npm run typecheck
       # Stream failure details even if a process fixture leaves a worker alive.
-      - run: node --test --test-concurrency=${{ runner.os == 'Windows' && 2 || 4 }} --test-shard=${{ matrix.shard }}/${{ runner.os == 'Windows' && 3 || 1 }} --test-reporter=tap --test-timeout=120000
+      - run: node --test --test-concurrency=${{ runner.os == 'Windows' && 2 || 4 }} --test-shard=${{ matrix.shard }}/${{ runner.os == 'Windows' && 3 || 1 }} --test-reporter=tap --test-reporter=./.github/ci/profile.mjs --test-reporter-destination=stdout --test-reporter-destination=stdout --test-timeout=120000
       - if: matrix.shard == 1
         run: npm --prefix pi-desk run typecheck
       - if: matrix.shard == 1
