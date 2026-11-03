@@ -12,6 +12,10 @@ concurrency:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   verify:
     timeout-minutes: 10
@@ -33,6 +37,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          set-safe-directory: false
       - name: Select image-cached Node
         id: node
         run: node .github/ci/select-node.mjs ${{ matrix.node }}
@@ -89,13 +94,7 @@ jobs:
         with:
           path: ${{ steps.dependency-key.outputs.paths }}
           key: ${{ steps.dependency-key.outputs.key }}
-      - name: Record Windows scratch filesystems
-        if: runner.os == 'Windows' && matrix.task == 'checks'
-        shell: pwsh
-        run: |
-          Write-Output "Default TEMP=$env:TEMP; runner scratch=$env:RUNNER_TEMP"
-          [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady } | Select-Object Name, DriveFormat, DriveType, AvailableFreeSpace | Format-Table
-      - name: Typechecks, build and performance contract
+      - name: Typechecks and production build
         if: matrix.task == 'checks'
         env:
           TEMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
