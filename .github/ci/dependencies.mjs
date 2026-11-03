@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,14 +27,26 @@ function cacheKey() {
   const npmVersion = invoke(root, ["--version"], true).trim();
   const files = new Set([...manifests, ...locks, ".npmrc", "pi-desk/.npmrc", ".github/ci/dependencies.mjs"]);
   const pending = [...manifests];
+  const localManifests = new Set(manifests);
+  for (const lock of locks) for (const info of Object.values(json(lock).packages ?? {})) {
+    if (!info.link) continue;
+    const directory = resolve(root, dirname(lock), info.resolved);
+    if (!within(directory)) throw new Error("A workspace link escapes the checkout");
+    const manifest = relative(root, join(directory, "package.json")).replaceAll("\\", "/");
+    if (!localManifests.has(manifest)) { localManifests.add(manifest); pending.push(manifest); }
+    files.add(manifest);
+  }
+  let installationHooks = false;
   while (pending.length) {
     const path = pending.pop(), pkg = json(path);
+    installationHooks ||= Object.keys(pkg.scripts ?? {}).some(name => /^(?:pre|post)?(?:install|prepare|publish)(?:Only)?$/.test(name));
     for (const spec of [pkg.dependencies, pkg.devDependencies, pkg.optionalDependencies].flatMap(group => Object.values(group ?? {}))) {
       if (typeof spec !== "string" || !spec.startsWith("file:")) continue;
       const directory = resolve(root, dirname(path), spec.slice(5));
       if (!within(directory)) throw new Error("Local CI dependencies must remain in the checkout");
       const manifest = relative(root, join(directory, "package.json")).replaceAll("\\", "/");
-      if (!files.has(manifest)) { files.add(manifest); pending.push(manifest); }
+      if (!localManifests.has(manifest)) { localManifests.add(manifest); pending.push(manifest); }
+      files.add(manifest);
       files.add(relative(root, join(directory, ".npmrc")).replaceAll("\\", "/"));
     }
   }
@@ -47,6 +59,10 @@ function cacheKey() {
     files.add(relative(root, join(directory, "package.json")).replaceAll("\\", "/"));
     files.add(relative(root, join(directory, ".npmrc")).replaceAll("\\", "/"));
   }
+  // A local lifecycle hook may compile any tracked source, not only its manifest.
+  if (installationHooks) for (const path of execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\0")) {
+    if (path) files.add(path);
+  }
   const hash = createHash("sha256").update(JSON.stringify([
     1, process.platform, process.arch, process.versions.modules, npmVersion,
     process.env.ImageOS ?? "", process.env.ImageVersion ?? "", realpathSync(root),
@@ -54,7 +70,7 @@ function cacheKey() {
   for (const path of [...files].sort()) {
     let data;
     if (!existsSync(join(root, path))) data = Buffer.from("<absent>");
-    else if ([...manifests, ...locks].includes(path)) {
+    else if (!installationHooks && [...manifests, ...locks].includes(path)) {
       const value = json(path);
       delete value.version;
       if (value.packages?.[""]) delete value.packages[""].version;
@@ -86,6 +102,21 @@ function verify(key) {
     { cwd: join(root, "pi-desk"), windowsHide: true, stdio: "inherit" });
 }
 
+// Match release staging: foreign ONNX binaries cannot run on this runner.
+function pruneForeignBinaries() {
+  const bin = join(root, "pi-desk/node_modules/onnxruntime-node/bin");
+  if (!existsSync(bin)) return;
+  for (const napi of readdirSync(bin, { withFileTypes: true })) {
+    if (!napi.isDirectory()) continue;
+    for (const platform of readdirSync(join(bin, napi.name), { withFileTypes: true })) {
+      const directory = join(bin, napi.name, platform.name);
+      if (platform.name !== process.platform) { rmSync(directory, { recursive: true, force: true }); continue; }
+      for (const arch of readdirSync(directory)) if (arch !== process.arch)
+        rmSync(join(directory, arch), { recursive: true, force: true });
+    }
+  }
+}
+
 const command = process.argv[2];
 if (command === "key") console.log(cacheKey());
 else if (command === "npm-cache") console.log(invoke(root, ["config", "get", "cache"], true).trim());
@@ -94,6 +125,7 @@ else if (command === "install") {
   invoke(root, ["ci"]);
   invoke(root, ["--prefix", "pi-desk", "ci", "--ignore-scripts"]);
   invoke(root, ["--prefix", "pi-desk", "rebuild", "keytar"]);
+  pruneForeignBinaries();
   writeFileSync(stamp, JSON.stringify({ format: 1, key }) + "\n");
   verify(key);
 } else if (command === "verify") {
