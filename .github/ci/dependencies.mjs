@@ -10,6 +10,9 @@ const npm = [
   resolve(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js"),
 ].find(existsSync);
 if (!npm) throw new Error("npm must be installed alongside the selected Node executable");
+// The selected CLI reports this package version; reading it avoids bootstrapping npm on cache hits.
+const npmVersion = JSON.parse(readFileSync(resolve(dirname(npm), "../package.json"), "utf8")).version;
+if (typeof npmVersion !== "string") throw new Error("npm package version is missing");
 const invoke = (args, capture = false) => execFileSync(process.execPath, [npm, ...args],
   { cwd: root, windowsHide: true, encoding: "utf8", stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit" });
 const manifests = ["package.json", "pi-desk/package.json"];
@@ -49,7 +52,7 @@ function inputs() {
       Object.values(group ?? {}).some(spec => typeof spec === "string" && spec.startsWith("file:")))) cacheable = false;
   }
   const hash = createHash("sha256").update(JSON.stringify([
-    2, process.platform, process.arch, process.versions.node, invoke(["--version"], true).trim(),
+    2, process.platform, process.arch, process.versions.node, npmVersion,
     process.env.ImageOS ?? "", process.env.ImageVersion ?? "", realpathSync(root),
   ]));
   for (const path of [...files].sort()) {
