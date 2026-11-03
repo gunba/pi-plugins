@@ -20,6 +20,13 @@ const command = (label, directory, name, expected, direct, extra = []) => new Pr
   child.once("error", reject);
   child.once("close", code => code === 0 ? accept() : reject(new Error(label + " exited " + code)));
 });
+if (process.argv[2] === "bench") {
+  // Search metrics are timing ratios: keep the benchmark isolated from the typecheck processes.
+  await command("Desk build", "pi-desk", "build", "node build.mjs", ["build.mjs"]);
+  await command("performance contract", "pi-desk", "bench", "node bench/performance.mjs", ["bench/performance.mjs"], ["--check"]);
+  process.exit(0);
+}
+if (process.argv[2] !== "checks") throw new Error("Expected checks or bench");
 // Typechecks do not emit files; the build writes only dist. None consumes another's output.
 const results = await Promise.allSettled([
   command("extensions", ".", "typecheck", "tsc --noEmit", ["node_modules/typescript/bin/tsc", "--noEmit"]),
@@ -28,4 +35,3 @@ const results = await Promise.allSettled([
 ]);
 const errors = results.filter(result => result.status === "rejected").map(result => result.reason);
 if (errors.length) throw new AggregateError(errors, "A required quality check failed");
-if (process.platform === "linux") await command("performance contract", "pi-desk", "bench", "node bench/performance.mjs", ["bench/performance.mjs"], ["--check"]);

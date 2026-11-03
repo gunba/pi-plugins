@@ -7,7 +7,7 @@ import { tap } from "node:test/reporters";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const timings = JSON.parse(readFileSync(new URL("./timings.json", import.meta.url), "utf8"));
-const workers = process.platform === "win32" ? 2 : 4;
+const workers = 2;
 
 /** Discover Node's default test patterns, including newly added unprofiled files. */
 export function discover() {

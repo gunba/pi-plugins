@@ -20,16 +20,25 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         node: [22, 24]
-        task: [checks, 1, 2, 3, 4, 5, 6]
-        exclude: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"ubuntu-latest","task":3},{"os":"ubuntu-latest","task":4},{"os":"ubuntu-latest","task":5},{"os":"ubuntu-latest","task":6}]' || '[{"os":"ubuntu-latest","node":24},{"os":"windows-latest","node":22},{"os":"ubuntu-latest","task":3},{"os":"ubuntu-latest","task":4},{"os":"ubuntu-latest","task":5},{"os":"ubuntu-latest","task":6}]') }}
+        task: [checks, bench, 1, 2, 3, 4, 5, 6, 7, 8]
+        exclude: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"windows-latest","task":"bench"},{"os":"windows-latest","task":5},{"os":"ubuntu-latest","task":4},{"os":"ubuntu-latest","task":5},{"os":"ubuntu-latest","task":6},{"os":"ubuntu-latest","task":7},{"os":"ubuntu-latest","task":8},{"os":"windows-latest","task":6},{"os":"windows-latest","task":7},{"os":"windows-latest","task":8}]' || '[{"os":"windows-latest","task":"bench"},{"os":"ubuntu-latest","node":24},{"os":"windows-latest","node":22},{"os":"ubuntu-latest","task":5},{"os":"ubuntu-latest","task":6},{"os":"ubuntu-latest","task":7},{"os":"ubuntu-latest","task":8}]') }}
+        include:
+          - os: ubuntu-latest
+            shards: ${{ github.event_name == 'workflow_dispatch' && 3 || 4 }}
+          - os: windows-latest
+            shards: ${{ github.event_name == 'workflow_dispatch' && 4 || 8 }}
     runs-on: ${{ matrix.os }}
     steps:
       # v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Select image-cached Node
+        id: node
+        run: node .github/ci/select-node.mjs ${{ matrix.node }}
       # v7.0.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        if: steps.node.outputs.hit != 'true'
         with:
           node-version: ${{ matrix.node }}
           package-manager-cache: false
@@ -91,10 +100,13 @@ jobs:
         env:
           TEMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
           TMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
-        run: node .github/ci/quality.mjs
+        run: node .github/ci/quality.mjs checks
+      - name: Isolated performance contract
+        if: matrix.task == 'bench'
+        run: node .github/ci/quality.mjs bench
       - name: Run every test in this duration-balanced shard
-        if: matrix.task != 'checks'
+        if: matrix.task != 'checks' && matrix.task != 'bench'
         env:
           TEMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
           TMP: ${{ runner.os == 'Windows' && runner.temp || '/tmp' }}
-        run: node .github/ci/run-tests.mjs ${{ matrix.task }}/${{ runner.os == 'Windows' && 6 || 2 }}
+        run: node .github/ci/run-tests.mjs ${{ matrix.task }}/${{ matrix.shards }}

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,16 +66,20 @@ function inputs() {
   return { key: `ci-tree-v2-${process.platform}-${process.arch}-node${process.versions.modules}-${hash.digest("hex")}`, cacheable };
 }
 
-function archivePath() {
+function archivePaths() {
   if (!process.env.RUNNER_TEMP) throw new Error("RUNNER_TEMP is required for Windows CI caching");
-  return join(process.env.RUNNER_TEMP, "ci-dependencies.tar");
+  return ["root", "desk"].map(name => join(process.env.RUNNER_TEMP, "ci-" + name + "-dependencies.tar"));
 }
 function cachePaths() {
-  return process.platform === "win32" ? archivePath() : [join(root, "node_modules"), join(root, "pi-desk/node_modules")].join("\n");
+  return process.platform === "win32" ? archivePaths().join("\n") : [join(root, "node_modules"), join(root, "pi-desk/node_modules")].join("\n");
 }
 function nativeTar(args) {
-  execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe"), args,
-    { cwd: root, windowsHide: true, stdio: "inherit" });
+  return new Promise((accept, reject) => {
+    const child = spawn(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe"), args,
+      { cwd: root, windowsHide: true, stdio: "inherit" });
+    child.once("error", reject);
+    child.once("close", code => code === 0 ? accept() : reject(new Error("Native cache archive operation exited " + code)));
+  });
 }
 function restoreWorkspaceLinks() {
   for (const { installed, target } of workspaceLinks()) {
@@ -139,7 +143,7 @@ else if (command === "install") {
   }
 } else if (command === "restore") {
   if (process.platform === "win32") {
-    nativeTar(["-xf", archivePath(), "-C", root]);
+    await Promise.all(archivePaths().map(file => nativeTar(["-xf", file, "-C", root])));
     restoreWorkspaceLinks();
   }
   verify(inputs().key);
@@ -154,6 +158,8 @@ else if (command === "install") {
     // Actions' MSYS tar handles one file; native Windows tar handles the many filesystem entries.
     // Recreate workspace junctions from the current lockfiles rather than archiving absolute links.
     const excludes = workspaceLinks().map(({ installed }) => "--exclude=" + relative(root, installed).split(sep).join("/"));
-    nativeTar(["-cf", archivePath(), "--format=pax", ...excludes, "-C", root, "node_modules", "pi-desk/node_modules"]);
+    // The two independent npm installations occupy disjoint trees and can be extracted concurrently.
+    const trees = ["node_modules", "pi-desk/node_modules"];
+    await Promise.all(archivePaths().map((file, index) => nativeTar(["-cf", file, "--format=pax", ...excludes, "-C", root, trees[index]])));
   }
 } else throw new Error("Usage: dependencies.mjs <key|outputs|npm-cache|install|restore|prepare-cache>");
