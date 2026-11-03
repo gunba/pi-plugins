@@ -20,8 +20,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         node: [22, 24]
-        task: [checks, 1, 2, 3, 4, 5]
-        exclude: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"ubuntu-latest","task":4},{"os":"ubuntu-latest","task":5}]' || '[{"os":"ubuntu-latest","node":24},{"os":"windows-latest","node":22},{"os":"ubuntu-latest","task":4},{"os":"ubuntu-latest","task":5}]') }}
+        task: [checks, 1, 2, 3, 4, 5, 6]
+        exclude: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"ubuntu-latest","task":3},{"os":"ubuntu-latest","task":4},{"os":"ubuntu-latest","task":5},{"os":"ubuntu-latest","task":6}]' || '[{"os":"ubuntu-latest","node":24},{"os":"windows-latest","node":22},{"os":"ubuntu-latest","task":3},{"os":"ubuntu-latest","task":4},{"os":"ubuntu-latest","task":5},{"os":"ubuntu-latest","task":6}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       # v7.0.1
@@ -85,4 +85,4 @@ jobs:
         run: node .github/ci/quality.mjs
       - name: Run every test in this duration-balanced shard
         if: matrix.task != 'checks'
-        run: node .github/ci/run-tests.mjs ${{ matrix.task }}/${{ runner.os == 'Windows' && 5 || 3 }}
+        run: node .github/ci/run-tests.mjs ${{ matrix.task }}/${{ runner.os == 'Windows' && 6 || 2 }}

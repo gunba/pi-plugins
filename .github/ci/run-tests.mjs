@@ -20,7 +20,7 @@ export function discover() {
 /** Longest-first bins keep expensive files on different VMs; every file occurs once. */
 export function partition(files, count, platform = process.platform) {
   if (!Number.isSafeInteger(count) || count < 1) throw new Error("A shard count must be positive");
-  const measured = timings[platform] ?? {}, cost = file => (measured[file] ?? 1000) + 750;
+  const measured = timings[platform] ?? {}, cost = file => measured[file] ?? 1000;
   const bins = Array.from({ length: count }, () => ({ files: [], milliseconds: 0 }));
   for (const file of [...files].sort((a, b) => cost(b) - cost(a) || (a < b ? -1 : a > b ? 1 : 0))) {
     const bin = bins.reduce((a, b) => a.milliseconds <= b.milliseconds ? a : b);
