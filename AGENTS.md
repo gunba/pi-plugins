@@ -17,8 +17,10 @@ Do not run the full suite by default. Reserve `npm run check`, plus Desk's
 typecheck/build, for integration or release validation.
 
 Main pushes run Linux/Node 22 and Windows/Node 24 CI. `workflow_dispatch` runs
-all four OS/Node combinations. Feature pushes and pull requests do not run CI.
-The four-way native runtime build runs only for `pi-desk-v*` release tags.
+all four OS/Node combinations. Windows tests use three separate runner shards;
+typechecks and builds run once per OS/Node combination. Feature pushes and pull
+requests do not run CI. The four-way native runtime build runs only for
+`pi-desk-v*` release tags.
 
 # Releasing and deploying
 

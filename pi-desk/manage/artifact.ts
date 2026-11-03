@@ -73,8 +73,10 @@ async function unpack(root: string, archives: { file: string; dependency: boolea
 	let bytes = 0, entries = 0;
 	for (const { file, dependency } of archives) {
 		progress?.(dependency ? "Extracting runtime dependencies" : "Extracting Desk code");
+		// node-tar serializes Windows entries even in async mode. Extraction runs
+		// in the staging/controller process, not the live host.
 		await tar.extract({
-			cwd: root, file, strict: true, preservePaths: false,
+			cwd: root, file, strict: true, preservePaths: false, sync: process.platform === "win32",
 			filter(path, entry) {
 				if (!sourcePath(path) || !("type" in entry) || !["File", "Directory"].includes(entry.type) || dependencyPath(path) !== dependency
 					|| ++entries > 100_000 || (bytes += entry.size ?? 0) > 2 * 1024 * 1024 * 1024)

@@ -20,7 +20,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         node: [22, 24]
-        exclude: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[]' || '[{"os":"ubuntu-latest","node":24},{"os":"windows-latest","node":22}]') }}
+        # Separate VMs avoid the contention from increasing per-runner concurrency.
+        shard: [1, 2, 3]
+        exclude: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"ubuntu-latest","shard":2},{"os":"ubuntu-latest","shard":3}]' || '[{"os":"ubuntu-latest","node":24},{"os":"windows-latest","node":22},{"os":"ubuntu-latest","shard":2},{"os":"ubuntu-latest","shard":3}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       # v7.0.1
@@ -41,11 +43,14 @@ jobs:
       - run: npm ci
       - run: npm --prefix pi-desk ci --ignore-scripts
       - run: npm --prefix pi-desk rebuild keytar
-      - run: npm run typecheck
+      - if: matrix.shard == 1
+        run: npm run typecheck
       # Stream failure details even if a process fixture leaves a worker alive.
-      - run: npm test -- --test-reporter=tap --test-timeout=120000
-      - run: npm --prefix pi-desk run typecheck
-      - run: npm --prefix pi-desk run build
+      - run: npm test -- --test-shard=${{ matrix.shard }}/${{ runner.os == 'Windows' && 3 || 1 }} --test-reporter=tap --test-timeout=120000
+      - if: matrix.shard == 1
+        run: npm --prefix pi-desk run typecheck
+      - if: matrix.shard == 1
+        run: npm --prefix pi-desk run build
       # Wire bytes, bundle size and search-store work against pi-desk/bench/baseline.json.
       - if: runner.os == 'Linux'
         run: npm --prefix pi-desk run bench -- --check
