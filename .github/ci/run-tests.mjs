@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { finished } from "node:stream/promises";
 import { run } from "node:test";
 import { tap } from "node:test/reporters";
-import { enableBytecodeCache } from "./compile-cache.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const timings = JSON.parse(readFileSync(new URL("./timings.json", import.meta.url), "utf8"));
@@ -23,7 +22,7 @@ export function partition(files, count, platform = process.platform) {
   if (!Number.isSafeInteger(count) || count < 1) throw new Error("A shard count must be positive");
   const measured = timings[platform] ?? {}, cost = file => (measured[file] ?? 1000) + 750;
   const bins = Array.from({ length: count }, () => ({ files: [], milliseconds: 0 }));
-  for (const file of [...files].sort((a, b) => cost(b) - cost(a) || a.localeCompare(b))) {
+  for (const file of [...files].sort((a, b) => cost(b) - cost(a) || (a < b ? -1 : a > b ? 1 : 0))) {
     const bin = bins.reduce((a, b) => a.milliseconds <= b.milliseconds ? a : b);
     bin.files.push(file); bin.milliseconds += cost(file);
   }
@@ -33,7 +32,6 @@ export function partition(files, count, platform = process.platform) {
 /** Process isolation and the original timeout are retained; any failure makes CI fail. */
 export async function execute(files) {
   process.chdir(root);
-  enableBytecodeCache(root);
   const events = run({
     files: files.map(file => resolve(root, file)), isolation: "process",
     concurrency: workers, timeout: 120000,
@@ -55,7 +53,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (!match) throw new Error("Usage: run-tests.mjs <shard>/<total> [--list]");
   const index = Number(match[1]), total = Number(match[2]);
   if (index < 1 || index > total) throw new Error("Shard index is outside its range");
-  const files = discover(), bins = partition(files, total);
+  const files = discover();
+  if (!files.length) throw new Error("No tests were discovered");
+  const bins = partition(files, total);
   console.log("# CI_SHARD " + JSON.stringify({ index, total, workers, files: bins[index - 1].files.length, discovered: files.length }));
   if (process.argv.includes("--list")) console.log(JSON.stringify(bins, null, 2));
   else await execute(bins[index - 1].files);

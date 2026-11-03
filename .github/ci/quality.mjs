@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { enableBytecodeCache } from "./compile-cache.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const npm = [
@@ -10,7 +9,6 @@ const npm = [
   resolve(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js"),
 ].find(existsSync);
 if (!npm) throw new Error("npm must be installed alongside Node");
-enableBytecodeCache(root);
 
 const command = (label, args) => new Promise((accept, reject) => {
   console.log("Checking " + label);

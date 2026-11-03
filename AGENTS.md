@@ -21,7 +21,8 @@ all four OS/Node combinations. Duration-balanced test shards use five Windows
 runners with two workers each and three Linux runners with four workers each.
 Typechecks and builds run in parallel in one separate job per OS/Node combination;
 Linux also checks the performance contract. Installed dependencies are reused only
-for identical locked inputs, runner image, Node ABI and installation recipe.
+for identical locked inputs, runner image, Node version and installation recipe.
+Project installation hooks and copied file dependencies disable this reuse.
 Feature pushes and pull requests do not run CI. The four-way native runtime build
 runs only for `pi-desk-v*` release tags.
 

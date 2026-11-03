@@ -36,15 +36,14 @@ jobs:
       - name: Fingerprint exact installed dependencies
         id: dependency-key
         shell: bash
-        run: echo "key=$(node .github/ci/dependencies.mjs key)" >> "$GITHUB_OUTPUT"
+        run: node .github/ci/dependencies.mjs outputs
       # v5
       - name: Restore installed dependencies
         id: dependencies
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        if: steps.dependency-key.outputs.cacheable == 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
-          path: |
-            node_modules
-            pi-desk/node_modules
+          path: ${{ steps.dependency-key.outputs.paths }}
           key: ${{ steps.dependency-key.outputs.key }}
       - name: Locate npm download cache
         if: matrix.task == 'checks' || steps.dependencies.outputs.cache-hit != 'true'
@@ -69,9 +68,18 @@ jobs:
       - name: Install locked dependencies on a cache miss
         if: steps.dependencies.outputs.cache-hit != 'true'
         run: node .github/ci/dependencies.mjs install
-      - name: Verify restored dependencies
+      - name: Restore and verify installed dependencies
         if: steps.dependencies.outputs.cache-hit == 'true'
-        run: node .github/ci/dependencies.mjs verify
+        run: node .github/ci/dependencies.mjs restore
+      - name: Prepare pristine installed-dependency cache
+        if: steps.dependency-key.outputs.cacheable == 'true' && steps.dependencies.outputs.cache-hit != 'true'
+        run: node .github/ci/dependencies.mjs prepare-cache
+      - name: Save pristine installed dependencies
+        if: steps.dependency-key.outputs.cacheable == 'true' && steps.dependencies.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: ${{ steps.dependency-key.outputs.paths }}
+          key: ${{ steps.dependency-key.outputs.key }}
       - name: Typechecks, build and performance contract
         if: matrix.task == 'checks'
         run: node .github/ci/quality.mjs

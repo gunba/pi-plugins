@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { enableBytecodeCache } from "./compile-cache.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const npm = [
@@ -11,67 +10,52 @@ const npm = [
   resolve(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js"),
 ].find(existsSync);
 if (!npm) throw new Error("npm must be installed alongside the selected Node executable");
-const invoke = (cwd, args, capture = false) => execFileSync(process.execPath, [npm, ...args],
-  { cwd, windowsHide: true, encoding: "utf8", stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit" });
+const invoke = (args, capture = false) => execFileSync(process.execPath, [npm, ...args],
+  { cwd: root, windowsHide: true, encoding: "utf8", stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit" });
 const manifests = ["package.json", "pi-desk/package.json"];
 const locks = ["package-lock.json", "pi-desk/package-lock.json"];
 const stamp = join(root, "node_modules/.pi-ci-dependencies.json");
 const json = path => JSON.parse(readFileSync(join(root, path), "utf8"));
-const within = path => { const part = relative(root, path); return !isAbsolute(part) && part !== ".." && !part.startsWith("../") && !part.startsWith("..\\"); };
+const within = path => { const part = relative(root, path); return !isAbsolute(part) && part !== ".." && !part.startsWith(".." + sep); };
+
+function workspaceLinks() {
+  const result = [];
+  for (const lock of locks) for (const [path, info] of Object.entries(json(lock).packages ?? {})) {
+    if (!info.link) continue;
+    const installed = resolve(root, dirname(lock), path), target = resolve(root, dirname(lock), info.resolved);
+    if (!within(installed) || !within(target)) throw new Error("A workspace link escapes the checkout");
+    result.push({ installed, target });
+  }
+  return result;
+}
 
 /*
- * npm creates absolute Windows workspace junctions. Reuse requires the same
- * workspace, runner image, Node ABI, npm, locked inputs and installation recipe.
- * A release-version bump alone does not alter the installed dependency tree.
+ * Absolute Windows junctions require the same workspace. Native dependencies
+ * require the same runner image, Node, npm, locked inputs and install recipe.
+ * Local install hooks or copied file dependencies can have additional inputs,
+ * so those projects always use a fresh installation rather than a cached tree.
  */
-function cacheKey() {
-  const npmVersion = invoke(root, ["--version"], true).trim();
-  const files = new Set([...manifests, ...locks, ".npmrc", "pi-desk/.npmrc", ".github/ci/dependencies.mjs", ".github/ci/compile-cache.mjs"]);
-  const pending = [...manifests];
-  const localManifests = new Set(manifests);
-  for (const lock of locks) for (const info of Object.values(json(lock).packages ?? {})) {
-    if (!info.link) continue;
-    const directory = resolve(root, dirname(lock), info.resolved);
-    if (!within(directory)) throw new Error("A workspace link escapes the checkout");
-    const manifest = relative(root, join(directory, "package.json")).replaceAll("\\", "/");
-    if (!localManifests.has(manifest)) { localManifests.add(manifest); pending.push(manifest); }
-    files.add(manifest);
+function inputs() {
+  const files = new Set([...manifests, ...locks, ".npmrc", "pi-desk/.npmrc", ".github/ci/dependencies.mjs"]);
+  for (const { target } of workspaceLinks()) {
+    files.add(relative(root, join(target, "package.json")).split(sep).join("/"));
+    files.add(relative(root, join(target, ".npmrc")).split(sep).join("/"));
   }
-  let installationHooks = false;
-  while (pending.length) {
-    const path = pending.pop(), pkg = json(path);
-    installationHooks ||= Object.keys(pkg.scripts ?? {}).some(name => /^(?:pre|post)?(?:install|prepare|publish)(?:Only)?$/.test(name));
-    for (const spec of [pkg.dependencies, pkg.devDependencies, pkg.optionalDependencies].flatMap(group => Object.values(group ?? {}))) {
-      if (typeof spec !== "string" || !spec.startsWith("file:")) continue;
-      const directory = resolve(root, dirname(path), spec.slice(5));
-      if (!within(directory)) throw new Error("Local CI dependencies must remain in the checkout");
-      const manifest = relative(root, join(directory, "package.json")).replaceAll("\\", "/");
-      if (!localManifests.has(manifest)) { localManifests.add(manifest); pending.push(manifest); }
-      files.add(manifest);
-      files.add(relative(root, join(directory, ".npmrc")).replaceAll("\\", "/"));
-    }
-  }
-  // npm workspaces are links rather than copied packages, but their manifests
-  // can contain installation scripts and must participate in invalidation.
-  for (const lock of locks) for (const info of Object.values(json(lock).packages ?? {})) {
-    if (!info.link) continue;
-    const directory = resolve(root, dirname(lock), info.resolved);
-    if (!within(directory)) throw new Error("A workspace link escapes the checkout");
-    files.add(relative(root, join(directory, "package.json")).replaceAll("\\", "/"));
-    files.add(relative(root, join(directory, ".npmrc")).replaceAll("\\", "/"));
-  }
-  // A local lifecycle hook may compile any tracked source, not only its manifest.
-  if (installationHooks) for (const path of execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\0")) {
-    if (path) files.add(path);
+  let cacheable = true;
+  for (const path of [...files].filter(path => path.endsWith("package.json"))) {
+    const pkg = json(path);
+    if (Object.keys(pkg.scripts ?? {}).some(name => /^(?:pre|post)?(?:install|prepare|publish)(?:Only)?$/.test(name))) cacheable = false;
+    if ([pkg.dependencies, pkg.devDependencies, pkg.optionalDependencies].some(group =>
+      Object.values(group ?? {}).some(spec => typeof spec === "string" && spec.startsWith("file:")))) cacheable = false;
   }
   const hash = createHash("sha256").update(JSON.stringify([
-    1, process.platform, process.arch, process.versions.node, process.versions.modules, npmVersion,
+    2, process.platform, process.arch, process.versions.node, invoke(["--version"], true).trim(),
     process.env.ImageOS ?? "", process.env.ImageVersion ?? "", realpathSync(root),
   ]));
   for (const path of [...files].sort()) {
     let data;
     if (!existsSync(join(root, path))) data = Buffer.from("<absent>");
-    else if (!installationHooks && [...manifests, ...locks].includes(path)) {
+    else if (cacheable && [...manifests, ...locks].includes(path)) {
       const value = json(path);
       delete value.version;
       if (value.packages?.[""]) delete value.packages[""].version;
@@ -79,31 +63,50 @@ function cacheKey() {
     } else data = readFileSync(join(root, path));
     hash.update(JSON.stringify([path, data.length])).update(data);
   }
-  return `ci-tree-v1-${process.platform}-${process.arch}-node${process.versions.modules}-${hash.digest("hex")}`;
+  return { key: `ci-tree-v2-${process.platform}-${process.arch}-node${process.versions.modules}-${hash.digest("hex")}`, cacheable };
 }
 
+function archivePath() {
+  if (!process.env.RUNNER_TEMP) throw new Error("RUNNER_TEMP is required for Windows CI caching");
+  return join(process.env.RUNNER_TEMP, "ci-dependencies.tar");
+}
+function cachePaths() {
+  return process.platform === "win32" ? archivePath() : [join(root, "node_modules"), join(root, "pi-desk/node_modules")].join("\n");
+}
+function nativeTar(args) {
+  execFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe"), args,
+    { cwd: root, windowsHide: true, stdio: "inherit" });
+}
+function restoreWorkspaceLinks() {
+  for (const { installed, target } of workspaceLinks()) {
+    try {
+      if (!lstatSync(installed).isSymbolicLink() || realpathSync(installed) !== realpathSync(target))
+        throw new Error("A cached workspace link points outside this checkout");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      mkdirSync(dirname(installed), { recursive: true });
+      symlinkSync(target, installed, process.platform === "win32" ? "junction" : "dir");
+    }
+  }
+}
 function verify(key) {
   const saved = JSON.parse(readFileSync(stamp, "utf8"));
-  if (saved.format !== 1 || saved.key !== key) throw new Error("Installed dependency cache is incomplete or belongs to different inputs");
-  for (const lock of locks) for (const [path, info] of Object.entries(json(lock).packages ?? {})) {
-    if (!info.link) continue;
-    const installed = join(root, dirname(lock), path), target = resolve(root, dirname(lock), info.resolved);
-    if (realpathSync(installed) !== realpathSync(target)) throw new Error("Cached workspace junction points outside this checkout");
-  }
+  if (saved.format !== 2 || saved.key !== key) throw new Error("Installed dependency cache is incomplete or belongs to different inputs");
+  for (const { installed, target } of workspaceLinks())
+    if (realpathSync(installed) !== realpathSync(target)) throw new Error("Cached workspace junction is invalid");
   for (const manifest of manifests) {
     const pkg = json(manifest), installed = json(join(dirname(manifest), "node_modules/@earendil-works/pi-coding-agent/package.json"));
     const expected = pkg.dependencies?.["@earendil-works/pi-coding-agent"] ?? pkg.devDependencies?.["@earendil-works/pi-coding-agent"];
     if (installed.version !== expected) throw new Error("Cached SDK does not match the pinned package");
   }
-  for (const file of ["node_modules/typescript/lib/tsc.js", "pi-desk/node_modules/typescript/lib/tsc.js", "pi-desk/node_modules/esbuild/bin/esbuild"]) {
+  for (const file of ["node_modules/typescript/lib/tsc.js", "pi-desk/node_modules/typescript/lib/tsc.js", "pi-desk/node_modules/esbuild/bin/esbuild"])
     if (!existsSync(join(root, file))) throw new Error("Cached build tools are incomplete");
-  }
-  // A child releases the native DLL before a later cold installation can run.
+  // Keep the DLL in a child, so no later installation or archive step encounters a parent-held lock.
   execFileSync(process.execPath, ["-e", "require('keytar')"],
     { cwd: join(root, "pi-desk"), windowsHide: true, stdio: "inherit" });
 }
 
-// Match release staging: foreign ONNX binaries cannot run on this runner.
+// Match release staging: a runner never loads another platform's ONNX binaries.
 function pruneForeignBinaries() {
   const bin = join(root, "pi-desk/node_modules/onnxruntime-node/bin");
   if (!existsSync(bin)) return;
@@ -119,23 +122,38 @@ function pruneForeignBinaries() {
 }
 
 const command = process.argv[2];
-if (command === "key") console.log(cacheKey());
-else if (command === "npm-cache") console.log(invoke(root, ["config", "get", "cache"], true).trim());
+if (command === "key") console.log(inputs().key);
+else if (command === "outputs") {
+  const { key, cacheable } = inputs();
+  appendFileSync(process.env.GITHUB_OUTPUT, `key=${key}\ncacheable=${cacheable}\npaths<<CI_DEPENDENCY_PATHS\n${cachePaths()}\nCI_DEPENDENCY_PATHS\n`);
+} else if (command === "npm-cache") console.log(invoke(["config", "get", "cache"], true).trim());
 else if (command === "install") {
-  const key = cacheKey();
-  invoke(root, ["ci"]);
-  invoke(root, ["--prefix", "pi-desk", "ci", "--ignore-scripts"]);
-  invoke(root, ["--prefix", "pi-desk", "rebuild", "keytar"]);
-  pruneForeignBinaries();
-  enableBytecodeCache(root);
-  // Both SDK installations have distinct module URLs. Prime each without starting a session.
-  for (const cwd of [root, join(root, "pi-desk")]) execFileSync(process.execPath,
-    ["--input-type=module", "-e", 'await import("@earendil-works/pi-coding-agent"); const {flushCompileCache} = await import("node:module"); flushCompileCache();'],
-    { cwd, windowsHide: true, stdio: "inherit" });
-  writeFileSync(stamp, JSON.stringify({ format: 1, key }) + "\n");
-  verify(key);
-} else if (command === "verify") {
-  enableBytecodeCache(root);
-  verify(cacheKey());
+  const { key, cacheable } = inputs();
+  invoke(["ci"]);
+  invoke(["--prefix", "pi-desk", "ci", "--ignore-scripts"]);
+  invoke(["--prefix", "pi-desk", "rebuild", "keytar"]);
+  if (cacheable) {
+    pruneForeignBinaries();
+    writeFileSync(stamp, JSON.stringify({ format: 2, key }) + "\n");
+    verify(key);
+  }
+} else if (command === "restore") {
+  if (process.platform === "win32") {
+    nativeTar(["-xf", archivePath(), "-C", root]);
+    restoreWorkspaceLinks();
+  }
+  verify(inputs().key);
   console.log("Verified exact-input installed dependency cache");
-} else throw new Error("Usage: dependencies.mjs <key|npm-cache|install|verify>");
+} else if (command === "prepare-cache") {
+  const { key, cacheable } = inputs();
+  if (!cacheable) throw new Error("Project installation hooks require a fresh dependency tree");
+  verify(key);
+  // Only pristine installed dependencies are saved, before checks can generate source caches.
+  for (const path of ["node_modules/.cache", "pi-desk/node_modules/.cache"]) rmSync(join(root, path), { recursive: true, force: true });
+  if (process.platform === "win32") {
+    // Actions' MSYS tar handles one file; native Windows tar handles the many filesystem entries.
+    // Recreate workspace junctions from the current lockfiles rather than archiving absolute links.
+    const excludes = workspaceLinks().map(({ installed }) => "--exclude=" + relative(root, installed).split(sep).join("/"));
+    nativeTar(["-cf", archivePath(), "--format=pax", ...excludes, "-C", root, "node_modules", "pi-desk/node_modules"]);
+  }
+} else throw new Error("Usage: dependencies.mjs <key|outputs|npm-cache|install|restore|prepare-cache>");
