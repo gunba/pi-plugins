@@ -1,5 +1,5 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
-import Markdown from "react-markdown";
+import { createContext, memo, useContext, useMemo, useState, type ComponentProps } from "react";
+import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import type { HomeWatch, HomeWork } from "../shared/home.ts";
 import { wakeLabel } from "./activity.ts";
 import { markdownPlugins, markdownUrl } from "./markdown-links.ts";
@@ -45,6 +45,8 @@ interface Editing { lines: string[]; save: (lines: string[]) => void; busy: bool
 const EditContext = createContext<Editing | undefined>(undefined);
 /** The file line of the list item a checkbox belongs to. */
 const ItemContext = createContext<number | undefined>(undefined);
+/** The file line of the first line of the Markdown being shown. */
+const LineContext = createContext(1);
 
 function TaskBox({ checked }: { checked: boolean }) {
 	const edit = useContext(EditContext), line = useContext(ItemContext);
@@ -58,22 +60,28 @@ function TaskBox({ checked }: { checked: boolean }) {
 	return <input type="checkbox" checked={checked} disabled={!edit || edit.busy || line === undefined} onChange={toggle} aria-label={checked ? "Mark not done" : "Mark done"} />;
 }
 
-function Text({ children, line }: { children: string; line: number }) {
-	const edit = useContext(EditContext);
-	return <div className="markdown"><Markdown remarkPlugins={markdownPlugins()} urlTransform={url => markdownUrl(undefined, url)}
-		components={{
-			a: ({ children: label, href }) => href ? <a href={href} target="_blank" rel="noopener noreferrer">{label}</a> : <span>{label}</span>,
-			input: ({ type, checked }) => type === "checkbox" ? <TaskBox checked={!!checked} /> : null,
-			li: ({ node, children: content, className }) => {
-				const start = node?.position?.start.line, end = node?.position?.end.line;
-				const first = start === undefined ? undefined : line + start - 1, last = end === undefined ? undefined : line + end - 1;
-				return <ItemContext.Provider value={first}><li className={className}>{content}
-					{edit && first !== undefined && last !== undefined && <button type="button" className="home-item-delete" disabled={edit.busy}
-						aria-label="Delete" title="Delete" onClick={() => edit.save(edit.lines.filter((_, index) => index < first - 1 || index > last - 1))}>×</button>}
-				</li></ItemContext.Provider>;
-			},
-		}}>{children}</Markdown></div>;
+function Item({ node, children, className }: ComponentProps<"li"> & ExtraProps) {
+	const edit = useContext(EditContext), line = useContext(LineContext);
+	const start = node?.position?.start.line, end = node?.position?.end.line;
+	const first = start === undefined ? undefined : line + start - 1, last = end === undefined ? undefined : line + end - 1;
+	return <ItemContext.Provider value={first}><li className={className}>{children}
+		{edit && first !== undefined && last !== undefined && <button type="button" className="home-item-delete" disabled={edit.busy}
+			aria-label="Delete" title="Delete" onClick={() => edit.save(edit.lines.filter((_, index) => index < first - 1 || index > last - 1))}>×</button>}
+	</li></ItemContext.Provider>;
 }
+// Constant, so React updates the rendered page in place rather than replacing elements whose component changed.
+const COMPONENTS: Components = {
+	a: ({ children, href }) => href ? <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> : <span>{children}</span>,
+	input: ({ type, checked }) => type === "checkbox" ? <TaskBox checked={!!checked} /> : null,
+	li: Item,
+};
+const PLUGINS = markdownPlugins();
+const pageUrl = (url: string) => markdownUrl(undefined, url);
+/** A part of the page; it is parsed again only when its text changes. */
+const Text = memo(function Text({ children, line }: { children: string; line: number }) {
+	return <LineContext.Provider value={line}><div className="markdown">
+		<Markdown remarkPlugins={PLUGINS} urlTransform={pageUrl} components={COMPONENTS}>{children}</Markdown></div></LineContext.Provider>;
+});
 
 /** A line Jordan adds to a column, as an open task after the column's last line. */
 function AddTask({ after }: { after: number }) {
@@ -100,15 +108,14 @@ function Wakes({ title, items }: { title: string; items: { key: string; at: numb
  * lays out. Each ## section is a column, side by side when there is room and stacked on a phone. Jordan can tick,
  * delete, add and edit lines himself; change saves the whole file over the version shown, and is absent when it can't.
  */
-export function HomePage({ page, work, watches, open, openWatches, change }: {
+export const HomePage = memo(function HomePage({ page, work, watches, open, openWatches, change }: {
 	page: string; work: HomeWork[]; watches: HomeWatch[]; open: (work: HomeWork) => void; openWatches: () => void;
 	change?: (text: string) => Promise<void>;
 }) {
-	const { lead, columns } = sections(page);
+	const { lead, columns } = useMemo(() => sections(page), [page]), lines = useMemo(() => page.split("\n"), [page]);
 	const [busy, setBusy] = useState(false), [draft, setDraft] = useState<string>();
 	const save = (text: string) => { if (!change) return; setBusy(true); void change(text).then(() => setDraft(undefined), () => {}).finally(() => setBusy(false)); };
-	const lines = page.split("\n");
-	const editing: Editing | undefined = change ? { lines, busy, save: next => save(next.join("\n")) } : undefined;
+	const editing = useMemo<Editing | undefined>(() => change ? { lines, busy, save: next => save(next.join("\n")) } : undefined, [lines, busy, change]);
 	// Secondary agents follow the conversation that started them.
 	const now = Date.now(), sameConversation = (a: HomeWork, b: HomeWork) => a.id === b.id && (a.computer ?? "") === (b.computer ?? "");
 	// A conversation can run dozens of agents: the first few show, then a count that opens the conversation.
@@ -146,4 +153,4 @@ export function HomePage({ page, work, watches, open, openWatches, change }: {
 			})}</div> : !hasPage && <p className="home-empty muted">No tasks yet.</p>}
 		</EditContext.Provider>}
 	</div></div>;
-}
+});

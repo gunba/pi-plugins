@@ -15,4 +15,6 @@ export interface HomeWork { id: string; computer?: string; title: string; status
 export interface HomeSnapshot { messages: HomeMessage[]; busy: boolean; error?: string; run?: HomeRun; session?: string; activation?: string;
 	work?: HomeWork[]; watches?: HomeWatch[]; page?: string;
 	/** Present when Jordan can change the page: what a change must be made over (POST /api/home/page). */
-	pageVersion?: string }
+	pageVersion?: string;
+	/** Names this snapshot. GET /api/home?known=<revision> answers only { revision, unchanged: true } while it is current. */
+	revision?: string; unchanged?: true }

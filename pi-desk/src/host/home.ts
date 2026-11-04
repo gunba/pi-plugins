@@ -92,13 +92,16 @@ export class Home {
 		return this.starting;
 	}
 	async open(): Promise<HomeSnapshot> { this.assertEnabled(); await this.ensure(); this.error = undefined; return this.snapshot(); }
-	snapshot(): HomeSnapshot {
+	/** Home as browsers show it, named by a revision that changes with any of it; known is the revision a browser shows. */
+	snapshot(known?: string): HomeSnapshot {
 		this.assertEnabled();
 		const managed = this.current();
-		return { messages: this.store.messages(), busy: !!this.starting || managed?.view.snapshot?.activity === "running",
+		const snapshot: HomeSnapshot = { messages: this.store.messages(), busy: !!this.starting || managed?.view.snapshot?.activity === "running",
 			error: this.error || managed?.view.error || (managed?.view.snapshot?.activity === "error" ? "Home’s last turn failed. Open History to see the error and continue." : undefined),
 			run: this.store.get<HomeRun>("run"), session: managed?.view.key, activation: managed?.view.activation,
 			work: [...homeWork([...this.core.sessions.values()].map(item => item.view)), ...this.remote()], watches: homeWatches(managed?.view), ...this.page() };
+		const revision = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex").slice(0, 16);
+		return revision === known ? { messages: [], busy: false, revision, unchanged: true } : { ...snapshot, revision };
 	}
 	private get pageFile(): string { return join(this.core.options.agentDir, "home", "tasks.md"); }
 	/**

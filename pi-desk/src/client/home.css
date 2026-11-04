@@ -98,6 +98,7 @@
 .home-compose textarea:focus { outline:none; box-shadow:none; }
 .home-compose .icon-button, .home-compose .send-button { flex:none; width:34px; height:34px; }
 .home-pending { display:flex; align-items:center; justify-content:space-between; padding:4px 12px 8px; color:var(--muted); font-size:12px; }
+.home-outgoing { opacity:.6; }
 .home-navigation { padding:6px 0 12px; }
 .home-navigation .session-item { width:100%; gap:10px; align-items:center; }
 .home-navigation-icon { color:var(--accent); display:grid; place-items:center; background:var(--accent-soft); border-radius:9px; width:32px; height:32px; }

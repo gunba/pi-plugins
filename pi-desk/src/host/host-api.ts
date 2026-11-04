@@ -132,7 +132,7 @@ export class HostApi {
 			return reply({ error: "Home runs on the workspace server, the computer that keeps conversation copies." }, 409);
 		const home = this.host.home();
 		if (!home) return reply({ error: "Home is starting." }, 503);
-		if (url.pathname === "/api/home" && request.method === "GET") return reply(home.snapshot());
+		if (url.pathname === "/api/home" && request.method === "GET") return reply(home.snapshot(url.searchParams.get("known") ?? undefined));
 		if (url.pathname === "/api/home/open" && request.method === "POST") return reply(await home.open());
 		if (url.pathname === "/api/home/messages" && request.method === "POST") return reply(await home.message(
 			string(data.id, 36), string(data.text, 32_000), Array.isArray(data.attachments) ? data.attachments.map(file => string(file, 36)) : undefined));
