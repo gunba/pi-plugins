@@ -32,6 +32,8 @@ wakes the agent anyway with a note; after three failures in a row the watch ends
 
 Use `watch({until: "09:00", close: true})` for a one-off wake at the next 09:00 on this computer. Use an ISO timestamp with an explicit offset when a particular date or time zone matters. `close` is optional and changes only whether Desk may close the conversation while it waits.
 
+A watch doesn't pause a program: it returns at once and wakes the agent after its turn. From a program, `until` less than a minute away is refused, since it can only be an attempt to pause; a program looping to wait for a page had set ten such watches, which all woke the agent together.
+
 Use `watch({command: "git ls-remote origin HEAD", every: 300})` to poll a programmatic event source. The first output establishes a baseline; a changed output wakes the agent and ends the watch. With `wake_when`, the classifier also evaluates the first result and can wake immediately if it already matches. `every` is the polling interval, **not** a recurring timer that starts a model turn on every tick.
 
 For recurring calendar work, use successive time watches through the same tool. On each wake, schedule the next occurrence before carrying out the current task, then end the turn when finished. This keeps future work scheduled even if the current task fails. It also lets the agent account for calendar dates and daylight-saving changes rather than treating a week as an elapsed-seconds timer. No cron job, OS task, or second wake primitive is needed.

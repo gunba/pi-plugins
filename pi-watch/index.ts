@@ -178,6 +178,8 @@ export function describeWatch(spec: WatchSpec): string {
 }
 
 const UNIT: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+/** A time watch from a program sooner than this is an attempt to pause the program, which watches can't do. */
+const SHORT_WAIT_MS = 60_000;
 
 /**
  * Milliseconds since the epoch for a delay from now ("90s", "5m", "1.5h", "in 2 hours"), "HH:MM" (its next occurrence
@@ -906,6 +908,12 @@ export default function watch(pi: ExtensionAPI): void {
 			const label = labels.get(id);
 			labels.delete(id);
 			if (!watches || watches.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("Watches are not ready in this conversation.");
+			// A program's calls have ids "<program call>/<n>". There, a short until reads as a pause, but it only queues a
+			// wake for after the turn: a program looping to wait for a page set ten, all arriving together.
+			if (id.includes("/") && params.until !== undefined && parseTime(params.until) - Date.now() < SHORT_WAIT_MS)
+				throw new Error("watch doesn't pause a program: it returns at once and wakes you after your turn, so this would only "
+					+ "queue a wake. To wait for a page, have chrome_devtools_evaluate await it in the page (awaitPromise: true), "
+					+ "e.g. new Promise(r => setTimeout(r, 4000)); to wait longer, end your turn with a watch.");
 			watches.useContext(ctx);
 			const text = await watches.call(params, ctx, label);
 			return { content: [{ type: "text", text }], details: {},
