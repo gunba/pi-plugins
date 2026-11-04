@@ -22,9 +22,15 @@ that open their conversations. The agent keeps the page organised: each `##`
 section is a column, side by side on a wide screen and stacked on a phone, in the
 order written, with Today first; `###` groups things within a column; text before
 the first `##` spans the page; HTML comments hold the agent's own notes and are not
-shown. Live work comes from Desk directly, so it never needs an agent turn. A
-timeline of next wakes follows the chips: other conversations' watches, and Home's
-own, labelled with their job; one of Home's opens its list of watches.
+shown. Live work comes from Desk directly, so it never needs an agent turn. Two
+timelines of next wakes follow the chips: Home's own watches, labelled with their
+job, which open its list of watches; and other conversations' watches.
+
+Jordan can change the page himself: tick checkboxes, delete an item (× beside it),
+add a task at the end of a column (+ Add), or edit the whole file (Edit page). Each
+change is saved over the version of the file he sees; if Home changed it meanwhile,
+nothing is written and he is told to make the change again. Home is told to re-read
+the file right before each change it makes, so it doesn't undo his.
 
 The conversation sits beside the page on a wide screen. On a phone it shares the
 screen with the page, split by a bar Jordan drags. It follows new messages while

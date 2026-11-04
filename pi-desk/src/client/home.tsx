@@ -123,6 +123,14 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 		finally { if (epoch.current === generation) setBusy(false); }
 	};
 	const openWork = (work: HomeWork) => openConversation(referenceKey(work.computer ?? computer, work.id), work.view);
+	/** Jordan's own change to his page, saved over the version he sees; a conflict leaves the page as it now is. */
+	const changePage = online && snapshot.pageVersion ? async (text: string) => {
+		const generation = epoch.current;
+		try {
+			const next = await api<HomeSnapshot>("/home/page", { version: snapshot.pageVersion, text }, computer);
+			if (epoch.current === generation) { setSnapshot(next); setError(""); }
+		} catch (error) { if (epoch.current === generation) setError(failure(error)); throw error; }
+	} : undefined;
 	return <>
 		<header className="topbar home-topbar"><button className="icon-button mobile-nav" aria-label="Open navigation" onClick={openNavigation}>☰</button>
 			<div className="conversation-heading"><strong>Home</strong>{snapshot.busy && <span>Working…</span>}</div>
@@ -136,7 +144,7 @@ export function Home({ host, connected, openConversation, openNavigation }: {
 		{(!online || error || snapshot.error) && <div className="connection-banner" role="status">{error || snapshot.error || (host.computers && !server ? "Choose a workspace server under Computers → Keep conversation copies to use Home." : "Workspace server offline. Your canvas and draft stay here.")}</div>}
 		<div ref={body} className={`home-body${chatOpen ? " chat-open" : ""}`} style={{ "--home-chat-share": `${share * 100}%` } as CSSProperties}>
 		<HomePage page={snapshot.page ?? ""} work={snapshot.work ?? []} watches={snapshot.watches ?? []} open={openWork}
-			openWatches={() => { if (key) openConversation(key, "pi-watch"); }} />
+			openWatches={() => { if (key) openConversation(key, "pi-watch"); }} change={changePage} />
 		<section className="home-chat" aria-label="Talk to Home">
 			{chatOpen && <div className="home-split" role="separator" aria-orientation="horizontal" aria-label="Resize the conversation" tabIndex={0}
 				aria-valuemin={20} aria-valuemax={85} aria-valuenow={Math.round(share * 100)} onPointerDown={drag}

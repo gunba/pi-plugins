@@ -1,7 +1,7 @@
 import type { UiConversation } from "../../../pi-ui/index.ts";
-import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { InputSubmission } from "../shared/inputs.ts";
 import type { SessionView } from "../shared/protocol.ts";
 import { HOME_MODEL, type HomeSnapshot, type HomeWatch, type HomeWork, type HomeRun } from "../shared/home.ts";
@@ -12,6 +12,10 @@ import { HomeStore } from "./home-store.ts";
  * The conversations Home lists: every open one, and closed ones a watch will reopen (status Closed, shown only on the
  * timeline of wakes), each with what it is doing and when a watch next wakes it; secondary agents that are working are listed too. Token and usage changes don't change it.
  */
+/** The longest tasks file the page shows and lets Jordan change. */
+const PAGE_LIMIT = 200_000;
+const pageVersion = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
+
 export function homeWork(sessions: SessionView[]): HomeWork[] {
 	return sessions.filter(session => !session.home && (session.state !== "closed" || !!session.wakes)).flatMap(session => {
 		const questions = session.ui?.interactions?.filter(item => !item.settings) ?? [];
@@ -94,12 +98,27 @@ export class Home {
 		return { messages: this.store.messages(), busy: !!this.starting || managed?.view.snapshot?.activity === "running",
 			error: this.error || managed?.view.error || (managed?.view.snapshot?.activity === "error" ? "Home’s last turn failed. Open History to see the error and continue." : undefined),
 			run: this.store.get<HomeRun>("run"), session: managed?.view.key, activation: managed?.view.activation,
-			work: [...homeWork([...this.core.sessions.values()].map(item => item.view)), ...this.remote()], watches: homeWatches(managed?.view), page: this.page() };
+			work: [...homeWork([...this.core.sessions.values()].map(item => item.view)), ...this.remote()], watches: homeWatches(managed?.view), ...this.page() };
 	}
-	/** Jordan's tasks file, which the Home conversation keeps and Home shows as his page. */
-	private page(): string {
-		try { return readFileSync(join(this.core.options.agentDir, "home", "tasks.md"), "utf8").slice(0, 200_000); }
-		catch { return ""; }
+	private get pageFile(): string { return join(this.core.options.agentDir, "home", "tasks.md"); }
+	/**
+	 * Jordan's tasks file, which the Home conversation keeps and Home shows as his page. Its version lets him change it
+	 * from the page; a file too long to show whole has none, so a change can't drop its end.
+	 */
+	private page(): Pick<HomeSnapshot, "page" | "pageVersion"> {
+		let text = "";
+		try { text = readFileSync(this.pageFile, "utf8"); } catch { /* No tasks yet. */ }
+		return text.length > PAGE_LIMIT ? { page: text.slice(0, PAGE_LIMIT) } : { page: text, pageVersion: pageVersion(text) };
+	}
+	/** Jordan's own change to his page, saved only over the version he changed; otherwise undefined, and nothing is written. */
+	savePage(version: string, text: string): HomeSnapshot | undefined {
+		this.assertEnabled();
+		if (this.page().pageVersion !== version) return undefined;
+		const file = this.pageFile, temp = `${file}.${randomUUID()}.tmp`;
+		mkdirSync(dirname(file), { recursive: true });
+		try { writeFileSync(temp, text); renameSync(temp, file); }
+		finally { rmSync(temp, { force: true }); }
+		return this.snapshot();
 	}
 	async message(id: string, text: string, attachments?: string[]): Promise<HomeSnapshot> {
 		this.assertEnabled();

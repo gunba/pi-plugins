@@ -13,4 +13,6 @@ export interface HomeWork { id: string; computer?: string; title: string; status
  * the Home conversation's, which uploads to it need.
  */
 export interface HomeSnapshot { messages: HomeMessage[]; busy: boolean; error?: string; run?: HomeRun; session?: string; activation?: string;
-	work?: HomeWork[]; watches?: HomeWatch[]; page?: string }
+	work?: HomeWork[]; watches?: HomeWatch[]; page?: string;
+	/** Present when Jordan can change the page: what a change must be made over (POST /api/home/page). */
+	pageVersion?: string }
