@@ -1,6 +1,6 @@
 import { HOUR_MINUTE, localTime } from "./local-format.ts";
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import Markdown from "react-markdown";
+import { createContext, memo, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import Markdown, { type Components } from "react-markdown";
 import type { ChatBlock, ChatMessage } from "../shared/protocol.ts";
 import { OFFICE_PAGES, type FileInfo, type FileReference } from "../shared/files.ts";
 import type { CellChange, DocumentChanges, ParagraphOp } from "../../../pi-show/extensions/documents.ts";
@@ -183,13 +183,15 @@ function itemPreview(item: WorkItem): string {
 	const changed = lines.map(line => text(line, "+")).find(Boolean) ?? lines.map(line => text(line, "-")).find(Boolean);
 	return (changed ?? lines[0]!).slice(0, 160);
 }
-function ShownNote({ note }: { note: string }) {
-	return <div className="markdown shown-note"><Markdown remarkPlugins={markdownPlugins()}
-		components={{ a: ({ href, children }) => {
-			const url = href && shownUrl(href);
-			return url ? <a href={url} target="_blank" rel="noopener noreferrer">{children}</a> : <span>{children}</span>;
-		} }}>{note}</Markdown></div>;
-}
+// Constant, so React updates a note's links in place rather than replacing them on each render.
+const NOTE_PLUGINS = markdownPlugins();
+const NOTE_COMPONENTS: Components = { a: ({ href, children }) => {
+	const url = href && shownUrl(href);
+	return url ? <a href={url} target="_blank" rel="noopener noreferrer">{children}</a> : <span>{children}</span>;
+} };
+const ShownNote = memo(function ShownNote({ note }: { note: string }) {
+	return <div className="markdown shown-note"><Markdown remarkPlugins={NOTE_PLUGINS} components={NOTE_COMPONENTS}>{note}</Markdown></div>;
+});
 function ShownLink({ item }: { item: ShownItem }) {
 	const url = item.url && shownUrl(item.url);
 	return url ? <a className="shown-link" href={url} target="_blank" rel="noopener noreferrer" title={url}>

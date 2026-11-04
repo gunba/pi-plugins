@@ -1,6 +1,6 @@
 import { HOUR_MINUTE, localDate, localDateTime, localTime } from "./local-format.ts";
-import { createContext, memo, useContext, useState, type CSSProperties } from "react";
-import Markdown from "react-markdown";
+import { createContext, memo, useContext, useMemo, useState, type CSSProperties } from "react";
+import Markdown, { type Components } from "react-markdown";
 import type { ChatBlock, ChatMessage, NestedCall } from "../shared/protocol.ts";
 import { FileLink } from "./file-view.tsx";
 import { ReferenceContext, useReferenceQuery } from "./reference-origin.tsx";
@@ -187,28 +187,34 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 	return items.length || nested ? <>{pill}{nested}{items.length > 0 && <div className="tool-changes">{items.map(item => <WorkChip key={item.id} item={item} />)}</div>}</> : pill;
 }
 type TextBlock = Extract<ChatBlock, { type: "text" | "thinking" }>;
-function RenderedText({ message, block, sessionKey }: { message: ChatMessage; block: TextBlock; sessionKey: string }) {
-	return <div className="markdown">{message.notice?.kind === "process" ? <CodeBlock><code>{block.text}</code></CodeBlock> : <Markdown
-		remarkPlugins={markdownPlugins(message.links)} urlTransform={url => markdownUrl(message.links, url)}
-		components={{
-			pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-			a: ({ children, href, node }) => {
-				const file = markdownFile(message.links, href);
-				const label = node?.children.some(child => child.type === "element" && child.tagName === "img")
-					? node.children.map(child => child.type === "text" ? child.value : child.type === "element" && child.tagName === "img" ? String(child.properties.alt ?? "Image") : "").join("") : children;
-				return file ? <FileLink session={sessionKey} file={file}>{label}</FileLink>
-					: href ? <a href={href} target={href.startsWith("#") ? undefined : "_blank"} rel="noopener noreferrer">{label}</a> : <span>{label}</span>;
-			},
-			img: ({ alt, src }) => {
-				const file = markdownFile(message.links, src);
-				return file ? <FileLink session={sessionKey} file={file}>{alt || file.name}</FileLink>
-					: src ? <a href={src} target="_blank" rel="noreferrer">{alt || "Open image"}</a> : <span>{alt}</span>;
-			},
-		}}>{block.text}</Markdown>}
+/**
+ * A text block as Markdown. It is parsed again only when the block, its links or the conversation change, and its
+ * components keep their identity meanwhile, so React updates code blocks and links in place instead of rebuilding them.
+ */
+const RenderedText = memo(function RenderedText({ message, block, sessionKey }: { message: ChatMessage; block: TextBlock; sessionKey: string }) {
+	const links = message.links;
+	const markdown = useMemo(() => ({ plugins: markdownPlugins(links), url: (url: string) => markdownUrl(links, url), components: {
+		pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+		a: ({ children, href, node }) => {
+			const file = markdownFile(links, href);
+			const label = node?.children.some(child => child.type === "element" && child.tagName === "img")
+				? node.children.map(child => child.type === "text" ? child.value : child.type === "element" && child.tagName === "img" ? String(child.properties.alt ?? "Image") : "").join("") : children;
+			return file ? <FileLink session={sessionKey} file={file}>{label}</FileLink>
+				: href ? <a href={href} target={href.startsWith("#") ? undefined : "_blank"} rel="noopener noreferrer">{label}</a> : <span>{label}</span>;
+		},
+		img: ({ alt, src }) => {
+			const file = markdownFile(links, src);
+			return file ? <FileLink session={sessionKey} file={file}>{alt || file.name}</FileLink>
+				: src ? <a href={src} target="_blank" rel="noreferrer">{alt || "Open image"}</a> : <span>{alt}</span>;
+		},
+	} satisfies Components }), [links, sessionKey]);
+	return <div className="markdown">{message.notice?.kind === "process" ? <CodeBlock><code>{block.text}</code></CodeBlock>
+		: <Markdown remarkPlugins={markdown.plugins} urlTransform={markdown.url} components={markdown.components}>{block.text}</Markdown>}
 		{block.full && <AssetLink session={sessionKey} asset={block.full} />}
 		{block.truncated && !block.full && <p className="muted">Preview only. Complete output exceeds the viewer's asset limit.</p>}
 	</div>;
-}
+}, (before, after) => before.block === after.block && before.sessionKey === after.sessionKey && before.message.links === after.message.links
+	&& before.message.notice?.kind === after.message.notice?.kind);
 function ThinkingGroup({ parts, sessionKey, source }: {
 	parts: { message: ChatMessage; block: TextBlock; index: number }[]; sessionKey: string; source?: string;
 }) {
