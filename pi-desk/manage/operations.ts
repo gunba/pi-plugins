@@ -92,7 +92,7 @@ export function runtimeUpdateState(home: string): RuntimeUpdateState | undefined
 		available: check?.available, checkedAt: check?.checkedAt, checkError: check?.error,
 		phase: operation?.phase === "running" ? ["apply-now", "update", "update-now"].includes(operation.action) ? "applying" : "preparing"
 			: operation && ["failed", "interrupted"].includes(operation.phase) ? "failed" : "idle",
-		message: operation?.message };
+		message: operation?.message, ...(operation?.phase === "running" ? { since: Date.parse(operation.updated) } : {}) };
 }
 function armUpdate(home: string, id: string): void {
 	const lock = new SessionLease(join(home, "manage"));

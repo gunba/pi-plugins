@@ -4,6 +4,8 @@ export interface RuntimeUpdateState {
 	pendingId?: string;
 	phase: "idle" | "preparing" | "applying" | "failed";
 	message?: string;
+	/** When the running update reached its current step, `message`. */
+	since?: number;
 	activeSessions?: number;
 	available?: string;
 	checkedAt?: number;

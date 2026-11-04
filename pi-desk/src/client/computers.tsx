@@ -129,6 +129,7 @@ export function SoftwareUpdate({ computer }: { computer: Pick<Computer, "name" |
 				? <button className="primary" disabled={busy || checking || !computer.connected} onClick={() => check("update")}>{checking ? "Checking…" : "Update now"}</button>
 				: <button className="quiet-action" disabled={busy || checking || !computer.connected} onClick={() => check("check")}>{checking ? "Checking…" : "Check now"}</button>)}
 		</div>
+		{working && updates.message && <p className="muted">{updates.message}{updates.since ? ` · since ${new Date(updates.since).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}</p>}
 		{updates.phase === "failed" && updates.message && <p role="alert" className="error-text">{/published release changed/i.test(updates.message)
 			? "A newer release replaced the one offered. Update now checks again and offers the latest." : updates.message}</p>}
 		{updates.checkError && <p className="error-text">Couldn't check for updates: {updates.checkError}</p>}
