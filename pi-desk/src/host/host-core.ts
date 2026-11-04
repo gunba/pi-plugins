@@ -18,7 +18,11 @@ export interface ManagedSession { view: SessionView; worker?: SessionWorker; ini
 	/** When it was last seen idle while it may go back to sleep. */
 	idleSince?: number;
 	/** It has worked since it was last marked finished (shared/attention.ts settle). */
-	settling?: boolean }
+	settling?: boolean;
+	/** The computer stopped while its agent was working: Desk reopens it and has the agent carry on, once (wakeDue). */
+	resume?: boolean;
+	/** The turn Desk continued after a stop has started running; it is over once the agent is idle again. */
+	resumeRunning?: boolean }
 
 /** The host's conversations and the operations on them that its other parts use; DeskHost (server.ts) provides it. */
 export interface HostCore {

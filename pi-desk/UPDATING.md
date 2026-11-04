@@ -123,7 +123,8 @@ finish work or explicitly accept its interruption, then run `/desk restart`.
 Questions, tools, children and automatic plans count as live work even when the
 main conversation is idle.
 Open sessions remain listed as interrupted after restart; resume or close them
-explicitly. No restart replays
+explicitly. A conversation whose agent was working continues by itself, once, with
+a note to check its work. No restart replays
 unfinished prompts or controls. Check receipts/history before repeating
 uncertain work.
 

@@ -49,6 +49,9 @@ import { HostHttp } from "./host-http.ts";
 import { HostUpdates } from "./host-updates.ts";
 import { settle } from "../shared/attention.ts";
 
+/** What an agent is told when Desk continues its work after the computer stopped mid-turn. */
+const RESUME_NOTE = "Desk restarted after this computer stopped while you were working. Commands, tools and helpers that were running then were stopped and are not run again. Check where your work stands (files, processes, partial results) before carrying on.";
+
 /**
  * Desk's host on this computer: its conversations, each run by an independent worker process, their inputs and saved
  * references, and its lifecycle, from startup and reattaching workers after an update to shutdown. Its other parts
@@ -224,7 +227,9 @@ export class DeskHost {
 				if (live) adoption.set(view.key, record.instance);
 				else this.inputs.interrupt(view.key, "No live worker was attached");
 				this.sessions.set(view.key, { view: { ...view, activation: live ? view.activation ?? randomUUID() : randomUUID(),
-					inputs: this.inputs.pending(view.key) } });
+					inputs: this.inputs.pending(view.key) },
+					// Its agent was working when the computer stopped; a turn Desk already continued once is left stopped.
+					...(!live && view.working && !view.resumedAt ? { resume: true } : {}) });
 			}
 			const restoreTicket = this.recoverUpdateReferences();
 			this.restoringUpdate = !!restoreTicket || adoption.size > 0;
@@ -446,6 +451,10 @@ export class DeskHost {
 			if (message.type === "event" && (message.event as { type?: string }).type === "agent_end") managed.settling = true;
 			this.events.emit({ type: "worker", key, message }); return;
 		}
+		if (message.type === "snapshot" && managed.view.resumedAt) {
+			if (message.snapshot.activity === "running") managed.resumeRunning = true;
+			else if (message.snapshot.activity === "idle" && managed.resumeRunning) { managed.resumeRunning = undefined; managed.view = { ...managed.view, resumedAt: undefined }; }
+		}
 		settle(managed);
 		this.events.emit({ type: "session", session: managed.view });
 		this.persist();
@@ -469,6 +478,7 @@ export class DeskHost {
 			const { view } = managed;
 			if (managed.worker || !view.file || view.moved || !isOpenSession(view)) continue;
 			const sleeping = view.state === "closed" && view.kept === true && !view.interrupted;
+			if (managed.resume) { this.resumeStopped(managed); continue; }
 			const due = view.wakes && view.wakes <= now ? view.wakes : view.watching && view.interrupted ? 0
 				: sleeping && view.asleep && hasNews(view.asleep) ? -1 : undefined;
 			const tried = this.wakeTried.get(view.key);
@@ -481,6 +491,22 @@ export class DeskHost {
 				if (reopened && sleeping) reopened.sleepWhenIdle = true;
 			} catch (error) { console.error(`Could not reopen ${view.title ?? view.key} for its watch:`, error instanceof Error ? error.message : String(error)); }
 		}
+	}
+
+	/**
+	 * Reopens a conversation whose agent was working when the computer stopped, and tells the agent to check where its
+	 * work stands and carry on. It happens once for a turn: resumedAt stays set until that turn has run to its end.
+	 */
+	private resumeStopped(managed: ManagedSession): void {
+		const { view } = managed;
+		managed.resume = undefined;
+		managed.view = { ...view, resumedAt: Date.now() };
+		this.persistEvent(true);
+		try {
+			const key = this.createSession(view.cwd, view.file, managed);
+			void this.waitForSession(key).then(opened => opened.worker!.command({ kind: "continue", text: RESUME_NOTE }))
+				.catch(error => console.error(`Could not continue ${view.title ?? view.key} after the computer stopped:`, error instanceof Error ? error.message : String(error)));
+		} catch (error) { console.error(`Could not reopen ${view.title ?? view.key} after the computer stopped:`, error instanceof Error ? error.message : String(error)); }
 	}
 
 	/**

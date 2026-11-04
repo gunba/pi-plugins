@@ -184,7 +184,11 @@ messages still queued for delivery are discarded; unresolved host admissions
 remain available for review. A host restart restores
 session references and marks interrupted sessions; it does not replay browser
 prompts. An interrupted session can be resumed or closed; its composer is unavailable
-until Pi starts again. A message from another agent with `wake` reopens a closed
+until Pi starts again. A conversation whose agent was working when the computer
+or Desk stopped (the catalog records `working`) is reopened by itself, and its agent
+is told to check where its work stands before carrying on. That happens once for a
+turn: `resumedAt` stays saved until the continued turn has run to its end, so a
+second stop during it leaves the conversation interrupted. A message from another agent with `wake` reopens a closed
 conversation, which then starts on it; other messages wait until it runs again.
 
 **Waiting and scheduled work** use the single `watch` tool. “Wake” describes starting a turn with an event, or reopening a kept conversation so its watch can deliver one; it is not another scheduler. `agent_send` has a `wake` delivery option, not a timer. See [watch versus wake](../pi-watch/README.md#watch-versus-wake) for one-off, polling, classifier-filtered, and recurring work.

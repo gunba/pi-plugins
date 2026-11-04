@@ -179,6 +179,10 @@ export interface SessionView {
 	title?: string;
 	pinned?: boolean;
 	interrupted?: boolean;
+	/** The agent was working when the catalog was last saved; read back only for a conversation that didn't close. */
+	working?: boolean;
+	/** When Desk last continued it after the computer stopped mid-turn; cleared once that turn has run to its end. */
+	resumedAt?: number;
 	leaf?: string | null;
 	controls?: ControlStatus[];
 	activation?: string;

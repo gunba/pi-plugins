@@ -30,6 +30,7 @@ export class SessionCatalog {
 			if (typeof item.key !== "string" || typeof item.cwd !== "string") throw new Error("Invalid Desk session reference.");
 			return { ...item, agentId: item.file && existsSync(item.file) ? readSessionHeader(item.file).id : item.agentId,
 				state: "closed", interrupted: item.state !== "closed" || item.interrupted === true,
+				working: item.state !== "closed" && item.working === true || undefined,
 				controls: item.controls?.map(control => control.state === "running"
 					? { ...control, state: "interrupted", error: "The host stopped before the outcome was recorded. Check saved history; this operation was not replayed." }
 					: control),
@@ -43,7 +44,8 @@ export class SessionCatalog {
 			file: view.snapshot?.file ?? view.file, name: view.snapshot?.name ?? view.name,
 			title: view.snapshot?.title ?? view.title,
 			leaf: view.snapshot ? view.snapshot.leaf : view.leaf,
-			...(view.home ? { home: true } : {}), pinned: view.pinned, interrupted: view.interrupted, error: view.error, kept: view.kept, ...(view.moved ? { moved: view.moved } : {}), ...(view.wakes ? { wakes: view.wakes } : {}), ...(view.watching ? { watching: true } : {}), ...(view.watchEvery ? { watchEvery: view.watchEvery } : {}), ...(view.asleep ? { asleep: view.asleep } : {}), ...(view.waiting ? { waiting: view.waiting } : {}), ...(view.lastModel ? { lastModel: view.lastModel } : {}), ...(view.createdBy ? { createdBy: view.createdBy } : {}), ...(view.finished ? { finished: view.finished } : {}), ...(view.seen ? { seen: view.seen } : {}),
+			...(view.home ? { home: true } : {}), pinned: view.pinned, interrupted: view.interrupted, error: view.error, kept: view.kept, ...(view.moved ? { moved: view.moved } : {}), ...(view.wakes ? { wakes: view.wakes } : {}),
+			...(view.snapshot?.activity === "running" ? { working: true } : {}), ...(view.resumedAt ? { resumedAt: view.resumedAt } : {}), ...(view.watching ? { watching: true } : {}), ...(view.watchEvery ? { watchEvery: view.watchEvery } : {}), ...(view.asleep ? { asleep: view.asleep } : {}), ...(view.waiting ? { waiting: view.waiting } : {}), ...(view.lastModel ? { lastModel: view.lastModel } : {}), ...(view.createdBy ? { createdBy: view.createdBy } : {}), ...(view.finished ? { finished: view.finished } : {}), ...(view.seen ? { seen: view.seen } : {}),
 			controls: view.controls, activation: view.activation,
 		}));
 		atomicJson(this.file, { version: 1, sessions: records }, { compact: true });
