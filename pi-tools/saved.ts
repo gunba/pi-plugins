@@ -1,6 +1,13 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, parse } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+
+/**
+ * Runs a program outside a codemode call, for pi-watch's program watches: pi-tools claims the request and answers with
+ * the program's result as text. Extensions load their own copies of shared modules, so they meet on Pi's event bus.
+ */
+export const RUN_PROGRAM = "pi-tools:run-program";
+export interface ProgramRun { ctx: ExtensionToolContext; code: string; signal: AbortSignal; claim(): void; done(text: string): void }
 
 /**
  * Saved tools: programs an agent kept because they worked, called from later programs as tools.NAME(args). A folder's

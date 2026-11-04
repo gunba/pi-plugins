@@ -3,7 +3,7 @@ import {
   type ExtensionAPI, type ExtensionFactory, type ExtensionToolContext, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
-import { visibleSaved, type SavedTool } from "./saved.ts";
+import { RUN_PROGRAM, visibleSaved, type ProgramRun, type SavedTool } from "./saved.ts";
 
 const ERROR = Type.Object({ error: Type.String() });
 const OBJECT = Type.Record(Type.String(), Type.Unknown());
@@ -46,7 +46,7 @@ write({path,content}) -> text. Creates folders and replaces the file: for new fi
 Common operations (more: describeTool):
 ask_user({question,options?,context?,done_when?}) -> {response,cancelled}: when only Jordan can decide, supply or approve something. done_when: a command that exits 0 once it's done.
 web_search({goal,queries}): current facts; one search per question. web_fetch({urls,goal?,full?}) -> {pages,failures}: read pages and PDFs by URL. Cite sources as links.
-watch({command?,every?,until?,wake_when?,stop?}): to wait for a command, a time or a change, end the program with a watch and be woken; never loop calls to pass time.
+watch({command?,program?,every?,until?,wake_when?,stop?}): to wait for a command, program, time or change, end with a watch and be woken; never loop calls to pass time.
 Other operations; await describeTool(name) gives one's full contract:
 ${others.join("\n")}
 searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all; tools.tool_search({query,limit?}) loads matches ({loaded}). This definition stays the same.
@@ -222,6 +222,34 @@ function context(ctx: ExtensionToolContext, terminate: () => void): ExtensionToo
 /** Single model-facing tool; active underlying operations stay active for permissions and transcript replay. */
 export function createStructuredToolExtension(): ExtensionFactory {
   return pi => intercept(pi, createCodemodeExtension({ mode: "only" }), definition => {
+    /** Runs a program: its data, native diagnostics and attachments, and a note naming the operations that failed. */
+    const run = async (id: string, code: string, signal: AbortSignal | undefined, update: Parameters<typeof definition.execute>[3], ctx: ExtensionToolContext) => {
+      let terminate = false;
+      const saved = visibleSaved(ctx.cwd, ctx.sessionManager.getBranch(), new Set(ctx.tools.map(tool => tool.name)));
+      const result = await definition.execute(id, { code: script(code, saved) }, signal, update, context(ctx, () => { terminate = true; }));
+      // Keep native failure diagnostics, image attachments, spill paths and nested-call metadata.
+      const content = result.content.slice(1);
+      const value = content.length === 1 && content[0]?.type === "text" ? content[0].text : undefined;
+      let data: typeof result.structuredContent = value ?? JSON.parse(JSON.stringify(content));
+      if (value !== undefined) { try { data = JSON.parse(value); } catch { /* Plain text is also a data value. */ } }
+      // Operations return {error} instead of throwing, so a program that doesn't check one still ends normally; the
+      // agent is told which failed. A program that fails already lists its calls.
+      const failed = result.isError ? [] : ((result.details as { calls?: { name: string; status: string; error?: string }[] } | undefined)
+        ?.calls ?? []).filter(call => call.status === "error");
+      const note = failed.length ? [{ type: "text" as const, text: `${failed.length} operation${failed.length === 1 ? "" : "s"} failed: ${failed.slice(0, 5)
+        .map(call => `${call.name}: ${(call.error ?? "").replace(/\s+/g, " ").slice(0, 160)}`).join("; ")}${failed.length > 5 ? "; …" : ""}` }] : [];
+      return { ...result, content: [...content, ...note], structuredContent: data, ...(terminate ? { terminate: true } : {}) };
+    };
+    // pi-watch's program watches run programs between turns, with the context of the agent's latest call.
+    let runs = 0;
+    pi.events.on(RUN_PROGRAM, request => {
+      const { ctx, code, signal, claim, done } = request as ProgramRun;
+      claim();
+      run(`program-watch-${++runs}`, code, signal, undefined, ctx).then(result => {
+        const text = result.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
+        done(result.isError ? `(failed: ${text})` : typeof result.structuredContent === "string" ? result.structuredContent : text);
+      }, error => done(`(failed: ${error instanceof Error ? error.message : String(error)})`));
+    });
     return {
       ...definition,
       defaultActive: true,
@@ -246,22 +274,7 @@ export function createStructuredToolExtension(): ExtensionFactory {
         };
       },
       async execute(id, params, signal, update, ctx) {
-        const input = params as { code: string };
-        let terminate = false;
-        const saved = visibleSaved(ctx.cwd, ctx.sessionManager.getBranch(), new Set(ctx.tools.map(tool => tool.name)));
-        const result = await definition.execute(id, { code: script(input.code, saved) }, signal, update, context(ctx, () => { terminate = true; }));
-        // Keep native failure diagnostics, image attachments, spill paths and nested-call metadata.
-        const content = result.content.slice(1);
-        const value = content.length === 1 && content[0]?.type === "text" ? content[0].text : undefined;
-        let data: typeof result.structuredContent = value ?? JSON.parse(JSON.stringify(content));
-        if (value !== undefined) { try { data = JSON.parse(value); } catch { /* Plain text is also a data value. */ } }
-        // Operations return {error} instead of throwing, so a program that doesn't check one still ends normally; the
-        // agent is told which failed. A program that fails already lists its calls.
-        const failed = result.isError ? [] : ((result.details as { calls?: { name: string; status: string; error?: string }[] } | undefined)
-          ?.calls ?? []).filter(call => call.status === "error");
-        const note = failed.length ? [{ type: "text" as const, text: `${failed.length} operation${failed.length === 1 ? "" : "s"} failed: ${failed.slice(0, 5)
-          .map(call => `${call.name}: ${(call.error ?? "").replace(/\s+/g, " ").slice(0, 160)}`).join("; ")}${failed.length > 5 ? "; …" : ""}` }] : [];
-        return { ...result, content: [...content, ...note], structuredContent: data, ...(terminate ? { terminate: true } : {}) };
+        return run(id, (params as { code: string }).code, signal, update, ctx);
       },
     };
   });

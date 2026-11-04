@@ -1,8 +1,9 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, getShellConfig, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -10,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { getPresentation, type Presentation } from "../pi-ui/index.ts";
 import { callDescription } from "../pi-ui/tool-descriptions.ts";
 import { registerBash } from "./bash.ts";
+import { RUN_PROGRAM, type ProgramRun } from "../pi-tools/saved.ts";
 
 /** Session entries recording each watch: its start, what it last reported, and its end. Watches are rebuilt from them. */
 export const WATCH_ENTRY = "pi-watch/v1";
@@ -38,6 +40,27 @@ const KEEP_FILES_MS = 8 * 86_400_000;
 const RUNNER = join(dirname(fileURLToPath(import.meta.url)), "runner.mjs");
 /** A background bash command's progress command runs this often, and may take this long. */
 const PROGRESS_MS = 60_000, PROGRESS_LIMIT_MS = 15_000;
+/** A program watch's run may take this long; without a call context to run with, it checks this often for one. */
+const PROGRAM_LIMIT_MS = 120_000, RESUME_MS = 5_000;
+/** Output kept from one run, as the runner keeps a command's. */
+const RUN_CHARS = 16_000;
+
+/** A program's result as text, from pi-tools; a failure or a missing pi-tools is the text of what happened. */
+function runProgram(pi: ExtensionAPI, ctx: ExtensionToolContext, code: string, signal: AbortSignal): Promise<string> {
+	return new Promise(resolve => {
+		const controller = new AbortController(), stop = () => controller.abort();
+		const timer = setTimeout(stop, PROGRAM_LIMIT_MS);
+		signal.addEventListener("abort", stop, { once: true });
+		let claimed = false, answered = false;
+		const done = (text: string) => {
+			if (answered) return;
+			answered = true; clearTimeout(timer); signal.removeEventListener("abort", stop);
+			resolve(controller.signal.aborted && !signal.aborted ? `${text}\n(stopped after ${PROGRAM_LIMIT_MS / 1000} s)`.trim() : text);
+		};
+		pi.events.emit(RUN_PROGRAM, { ctx, code, signal: controller.signal, claim: () => { claimed = true; }, done } satisfies ProgramRun);
+		if (!claimed) done("(could not run: programs need pi-tools)");
+	});
+}
 const READINGS = 12;
 
 type Mode = "output" | "change" | "time";
@@ -45,6 +68,11 @@ export interface WatchSpec {
 	id: string;
 	mode: Mode;
 	command?: string;
+	/**
+	 * A program a "change" watch re-runs instead of a command (pi-tools runs it, with the context of the agent's latest
+	 * watch or bash call). It runs in the conversation's process, so only while the conversation is open.
+	 */
+	program?: string;
 	/** Seconds between runs of a "change" watch. */
 	every?: number;
 	/** When a "time" watch wakes the agent, in ms since the epoch. */
@@ -97,6 +125,8 @@ interface Active {
 	saved: number;
 	/** A background bash command's progress readings, newest last. */
 	readings: { at: number; value: string }[];
+	/** A program watch's next run. */
+	run?: NodeJS.Timeout;
 }
 
 const registryKey = Symbol.for("gunba.pi-watch.v1");
@@ -106,6 +136,7 @@ export const activeWatches = (sessionId: string): number => registry.get(session
 
 const Parameters = Type.Object({
 	command: Type.Optional(Type.String({ description: "Shell command; with every, re-run." })),
+	program: Type.Optional(Type.String({ description: "A program, as for codemode, re-run every every seconds instead of a command; it can call any operation. It runs only while this conversation is open." })),
 	every: Type.Optional(Type.Integer({ minimum: 5, description: "Seconds between runs. Wakes you on a change, then ends." })),
 	until: Type.Optional(Type.String({ description: "Wake after a delay (90s, 5m, 2h), at HH:MM (local) or at an ISO time." })),
 	wake_when: Type.Optional(Type.String({ description: "Wake only for output showing this, in plain words." })),
@@ -132,14 +163,17 @@ export function interval(seconds: number): string {
  * A watch as its agent reads it in results and events: its label, or the start of its command. The agent wrote the
  * command and the wake condition, so they are not repeated in full (commands run to hundreds of characters).
  */
+/** What a command watch runs: its command, or "program" and the program's first line. */
+const subject = (spec: WatchSpec) => spec.command ?? `program ${(spec.program ?? "").split("\n").map(line => line.trim()).find(line => line && !line.startsWith("// @options")) ?? ""}`;
+
 export function briefWatch(spec: WatchSpec): string {
 	if (spec.mode === "time") return spec.label ?? `at ${when(spec.at!)}`;
-	const command = spec.command!.length > 80 ? `${spec.command!.slice(0, 79)}…` : spec.command!;
+	const command = subject(spec).length > 80 ? `${subject(spec).slice(0, 79)}…` : subject(spec);
 	return spec.label ?? `\`${command}\``;
 }
 
 export function describeWatch(spec: WatchSpec): string {
-	const what = spec.mode === "time" ? `at ${when(spec.at!)}` : spec.mode === "change" ? `\`${spec.command}\` every ${interval(spec.every!)}` : `\`${spec.command}\``;
+	const what = spec.mode === "time" ? `at ${when(spec.at!)}` : spec.mode === "change" ? `\`${subject(spec)}\` every ${interval(spec.every!)}` : `\`${subject(spec)}\``;
 	return spec.wakeWhen ? `${what}, waking you when ${spec.wakeWhen}` : what;
 }
 
@@ -268,6 +302,8 @@ export class Watches {
 	private closing = false;
 	/** Between agent_start and agent_end: an event can join the run at its next step. */
 	private readonly running: () => boolean;
+	/** The context of the agent's latest watch or bash call, which program watches run with. */
+	private toolContext?: ExtensionToolContext;
 
 	constructor(pi: ExtensionAPI, ctx: ExtensionContext, running: () => boolean) {
 		this.pi = pi;
@@ -336,13 +372,20 @@ export class Watches {
 
 	data() { return [...this.active.values()].map(({ spec }) => ({ ...spec })); }
 
+	/** Program watches run with the context of a call the agent made in this process; a restart leaves them waiting. */
+	useContext(ctx: ExtensionToolContext): void { this.toolContext = ctx; }
+
 	async call(input: Params, ctx: ExtensionContext, label?: string): Promise<string> {
-		const { close, ...params } = input;
+		const { close: asked, ...params } = input;
+		// A program watch runs in this process, so the conversation can't sleep while one is active.
+		const programs = params.program !== undefined || [...this.active.values()].some(active => active.spec.program !== undefined);
+		const close = asked && !programs;
 		if (close) {
 			this.closing = true;
 			this.publish();
 		}
-		const closing = !close ? "" : this.active.size || params.command !== undefined || params.until !== undefined
+		const closing = asked && programs ? " The conversation stays open: program watches run only while it is open."
+			: !close ? "" : this.active.size || params.command !== undefined || params.until !== undefined
 			? " This conversation closes when this turn ends; Desk reopens it when a watch has news."
 			: " This conversation closes when this turn ends. It has no watches, so it stays closed until the user opens it.";
 		if (close && Object.values(params).every(value => value === undefined)) return `${closing.trim()} ${this.list()}`;
@@ -365,11 +408,14 @@ export class Watches {
 			this.end(active, "you stopped it", { kill: true, tell: false });
 			return `Stopped ${active.spec.id}${active.spec.pid ? " and its command" : ""}. ${this.list()}`;
 		}
-		if (params.command === undefined && params.until === undefined) {
-			if (given.length) throw new Error("Give command or until.");
+		if (params.command === undefined && params.until === undefined && params.program === undefined) {
+			if (given.length) throw new Error("Give command, program or until.");
 			return this.list();
 		}
-		if (params.command !== undefined && params.until !== undefined) throw new Error("Give command or until, not both; hours sets how long a command watch lasts.");
+		if ([params.command, params.program, params.until].filter(value => value !== undefined).length > 1)
+			throw new Error("Give one of command, program or until; hours sets how long a command or program watch lasts.");
+		if (params.program !== undefined && params.every === undefined) throw new Error("A program watch needs every: the seconds between its runs.");
+		if (params.program !== undefined && !params.program.trim()) throw new Error("program is empty.");
 		if (params.until !== undefined && given.length > 1) throw new Error("until wakes you after a delay or at a time (5m, HH:MM or an ISO time) and takes nothing else; to check something repeatedly, give command with every. Either way, end your turn and you are woken.");
 		const command = params.command?.trim(), wakeWhen = params.wake_when?.trim() || undefined;
 		if (params.command !== undefined && !command) throw new Error("command is empty.");
@@ -381,17 +427,23 @@ export class Watches {
 		const now = Date.now(), at = params.until !== undefined ? parseTime(params.until, now) : undefined;
 		const spec: WatchSpec = {
 			id: this.nextId(), mode: at !== undefined ? "time" : params.every !== undefined ? "change" : "output",
-			...(command ? { command } : {}), ...(params.every !== undefined ? { every: params.every } : {}), ...(at !== undefined ? { at } : {}),
+			...(command ? { command } : {}), ...(params.program !== undefined ? { program: params.program } : {}),
+			...(params.every !== undefined ? { every: params.every } : {}), ...(at !== undefined ? { at } : {}),
 			...(wakeWhen ? { wakeWhen } : {}),
 			cwd: ctx.cwd, created: now, ...(at !== undefined ? { expires: at } : params.hours !== undefined ? { expires: now + params.hours * 3_600_000 } : {}),
 			computer: hostname(), ...(label ? { label } : {}),
 		};
-		if (spec.mode !== "time") this.launch(spec);
+		if (spec.program !== undefined) {
+			mkdirSync(this.folder, { recursive: true });
+			spec.change = join(this.folder, `${spec.id}.change`);
+			rmSync(spec.change, { force: true });
+		} else if (spec.mode !== "time") this.launch(spec);
 		this.pi.appendEntry(WATCH_ENTRY, { op: "start", watch: spec } satisfies WatchRecord);
 		this.arm(spec, undefined, false);
 		this.publish();
 		const ending = spec.expires ? ` It ends ${when(spec.expires)}.` : "";
 		const text = spec.mode === "time" ? `Watching as ${spec.id}: you'll be woken at ${when(spec.at!)}.`
+			: spec.program !== undefined ? `Watching as ${spec.id}, running the program every ${interval(spec.every!)}: you'll be woken when ${wakeWhen ? "a run's result shows that" : "its result changes"}; the watch then ends.${ending} It runs while this conversation is open.`
 			: spec.mode === "change" ? `Watching as ${spec.id}, every ${interval(spec.every!)}: you'll be woken when ${wakeWhen ? "a run's output shows that" : "its output changes"}; the watch then ends.${ending}`
 			: `Watching as ${spec.id}: you'll be woken ${wakeWhen ? "when its output shows that" : "with its new output"}, and when it ends.${ending} Output: ${spec.log}`;
 		return `${text} End your turn now unless you have other work.`;
@@ -466,7 +518,7 @@ export class Watches {
 			}
 			this.at(active, spec.expires, () => this.end(active, "expired", { kill: true, output: active.recent.join("\n") }));
 		}
-		if (spec.mode === "change") this.followChanges(active);
+		if (spec.mode === "change") this.followChanges(active, restored);
 		else this.follow(active, restored);
 		if (spec.bash) this.followBash(active);
 	}
@@ -536,6 +588,7 @@ export class Watches {
 	private disarm(active: Active): void {
 		active.abort.abort();
 		if (active.clock) clearTimeout(active.clock);
+		if (active.run) clearTimeout(active.run);
 		for (const timer of active.timers) clearTimeout(timer);
 		if (active.settle) clearTimeout(active.settle);
 	}
@@ -643,10 +696,12 @@ export class Watches {
 	 * number of the last change judged. A runner that is gone without an exit status (the computer restarted) is
 	 * started again.
 	 */
-	private followChanges(active: Active): void {
+	private followChanges(active: Active, restored: boolean): void {
 		const { spec } = active;
+		// A restored program watch gives the agent an interval to resume it before saying it can't run.
+		if (spec.program !== undefined) this.followProgram(active, restored ? spec.every! * 1000 : 0);
 		// Watches from before change watches had a runner start one now.
-		if (!spec.change || !spec.pid) { this.launch(spec); this.pi.appendEntry(WATCH_ENTRY, { op: "runner", id: spec.id, pid: spec.pid! } satisfies WatchRecord); }
+		else if (!spec.change || !spec.pid) { this.launch(spec); this.pi.appendEntry(WATCH_ENTRY, { op: "runner", id: spec.id, pid: spec.pid! } satisfies WatchRecord); }
 		let judging = false;
 		const tick = () => this.guard(() => {
 			if (judging || this.active.get(spec.id) !== active) return;
@@ -664,6 +719,7 @@ export class Watches {
 				}).finally(() => { judging = false; });
 				return;
 			}
+			if (spec.program !== undefined) return;
 			let status: { stopped?: string; error?: string } | undefined;
 			try { status = JSON.parse(readFileSync(spec.exit!, "utf8")); } catch { /* still running, or gone without a word */ }
 			if (status && status.stopped !== "stopped") {
@@ -676,6 +732,47 @@ export class Watches {
 		});
 		active.timers.push(setInterval(tick, TAIL_MS));
 		tick();
+	}
+
+	/**
+	 * Runs a program watch's program every `every` seconds, writing a changed result to its change file as the runner
+	 * does a command's, so it is judged the same way. Restored after a restart, it has no call context to run with
+	 * until the agent next calls watch or bash; the agent is told once.
+	 */
+	private followProgram(active: Active, delay = 0): void {
+		const { spec } = active;
+		let told = false;
+		const run = async () => {
+			if (this.active.get(spec.id) !== active) return;
+			const ctx = this.toolContext;
+			if (!ctx) {
+				if (!told) {
+					told = true;
+					this.send(spec, message(spec, "can't run its program: this conversation was restarted, and programs run with your calls. Call watch({}) to resume it."),
+						"waiting for the agent to resume it");
+				}
+				active.run = setTimeout(() => this.guard(run), RESUME_MS);
+				return;
+			}
+			told = false;
+			const started = Date.now();
+			const output = await runProgram(this.pi, ctx, spec.program!, active.abort.signal);
+			if (this.active.get(spec.id) !== active) return;
+			this.record(spec, output);
+			active.run = setTimeout(() => this.guard(run), Math.max(0, started + spec.every! * 1000 - Date.now()));
+		};
+		active.run = setTimeout(() => this.guard(run), delay);
+	}
+
+	/** A run's result, written as the change file's next change when it differs from the last. */
+	private record(spec: WatchSpec, result: string): void {
+		const output = result.length > RUN_CHARS ? result.slice(-RUN_CHARS) : result;
+		const hash = createHash("sha256").update(output).digest("hex").slice(0, 16);
+		let previous: { number?: number; hash?: string } = {};
+		try { previous = JSON.parse(readFileSync(spec.change!, "utf8")); } catch { /* the first run */ }
+		if (previous.hash === hash) return;
+		writeFileSync(`${spec.change}.tmp`, JSON.stringify({ number: (previous.number ?? 0) + 1, hash, output, first: previous.hash === undefined, at: Date.now() }));
+		renameSync(`${spec.change}.tmp`, spec.change!);
 	}
 
 	/** Wakes the agent with an event when it meets the watch's condition. True when it woke the agent. */
@@ -702,7 +799,7 @@ export class Watches {
 		const model = await classifier(this.ctx);
 		if (!model) throw new Error("no classifier model is signed in");
 		const result = await this.ctx.modelRegistry.classify(model, {
-			state: { watching: spec.mode === "change" ? `The output of \`${spec.command}\`` : `New output of \`${spec.command}\``, event: clip(output) },
+			state: { watching: spec.mode === "change" ? `The output of \`${subject(spec)}\`` : `New output of \`${subject(spec)}\``, event: clip(output) },
 			questions: { wake: { type: "bool", instructions: `An agent asked to be woken when: ${condition}. Does this event show that?`,
 				criteria: { true: "The event shows it", false: "The event does not show it" } } },
 		});
@@ -756,7 +853,9 @@ export class Watches {
 		// A background bash command wakes a sleeping conversation only at its end and its warnings.
 		const warning = (bash: NonNullable<WatchSpec["bash"]>) => bash.started + Math.ceil((Date.now() + 1 - bash.started) / (bash.warn! * 1000)) * bash.warn! * 1000;
 		const times = specs.flatMap(spec => spec.mode === "time" ? [spec.at!] : spec.bash?.warn ? [warning(spec.bash)] : []);
-		const files = specs.flatMap(spec => spec.bash ? [spec.exit!] : spec.mode === "output" ? [spec.log!, spec.exit!] : spec.mode === "change" ? [spec.change!, spec.exit!] : []);
+		// A program watch's change file is written by this process, so it can't wake a sleeping conversation.
+		const files = specs.flatMap(spec => spec.program !== undefined ? [] : spec.bash ? [spec.exit!] : spec.mode === "output" ? [spec.log!, spec.exit!]
+			: spec.mode === "change" ? [spec.change!, spec.exit!] : []);
 		const reading = (id: string) => this.active.get(id)?.readings.at(-1)?.value;
 		presentation.publish("pi-watch", specs.length || this.closing ? {
 			kind: "details", title: "Watches", ...(times.length ? { wakes: Math.min(...times) } : {}),
@@ -807,6 +906,7 @@ export default function watch(pi: ExtensionAPI): void {
 			const label = labels.get(id);
 			labels.delete(id);
 			if (!watches || watches.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("Watches are not ready in this conversation.");
+			watches.useContext(ctx);
 			const text = await watches.call(params, ctx, label);
 			return { content: [{ type: "text", text }], details: {},
 				structuredContent: JSON.parse(JSON.stringify({ text, watches: watches.data() })) };

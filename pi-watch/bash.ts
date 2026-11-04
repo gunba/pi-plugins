@@ -82,6 +82,7 @@ export function registerBash(pi: ExtensionAPI, current: () => Watches | undefine
 			labels.delete(id);
 			const watches = current();
 			if (!watches || watches.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("bash is not ready in this conversation.");
+			watches.useContext(ctx);
 			const shell = watches.shell(), started = Date.now(), wait = (params.wait ?? WAIT_S) * 1000;
 			const warn = params.warn ?? WARN_S, progress = params.progress?.trim() || undefined;
 			const spec: WatchSpec = { id: `b${randomUUID()}`, mode: "output", command: shell.prefix ? `${shell.prefix}\n${params.command}` : params.command,

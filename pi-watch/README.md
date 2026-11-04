@@ -7,6 +7,7 @@ with what happened. It replaces sleep loops, repeated checks and waiting on a lo
 |---|---|---|
 | `watch({command})` | the command, run in the background | with its new output, and when it ends |
 | `watch({command, every})` | the command, re-run every `every` seconds | when its output changes; the watch then ends |
+| `watch({program, every})` | a program, as for codemode, re-run every `every` seconds | when its result changes; the watch then ends |
 | `watch({until})` | the clock: a delay such as `90s`, `5m` or `2h`, `HH:MM`, or an ISO date and time | at that time |
 | `watch({})` | | lists the conversation's watches |
 | `watch({stop})` | | stops a watch and its command |
@@ -36,6 +37,21 @@ Use `watch({command: "git ls-remote origin HEAD", every: 300})` to poll a progra
 For recurring calendar work, use successive time watches through the same tool. On each wake, schedule the next occurrence before carrying out the current task, then end the turn when finished. This keeps future work scheduled even if the current task fails. It also lets the agent account for calendar dates and daylight-saving changes rather than treating a week as an elapsed-seconds timer. No cron job, OS task, or second wake primitive is needed.
 
 These watches wake conversations, not powered-off computers. The host must be running to reopen a conversation; an overdue time watch is delivered when it next resumes. Stopping a watch or removing its sleeping conversation cancels future automatic reopening.
+
+## Program watches
+
+`watch({program, every})` re-runs a program instead of a command, so a watch can check anything an operation reaches,
+such as a mailbox or a web service, without spending turns. Its results are judged as a re-run command's output: the
+first sets the baseline (or wakes the agent if `wake_when` already holds), and a changed result wakes it and ends the
+watch.
+
+- pi-tools runs the program (its `RUN_PROGRAM` event), with the context of the agent's latest `watch` or `bash` call,
+  so its operations pass through the same guards and approvals as the agent's. Pi offers no context outside a call.
+- A run may take 2 minutes; one stopped then, or failed, has that as its result.
+- It runs in the conversation's process. The conversation can't sleep while one is active (`close` is declined), and
+  a restart leaves it without a context: one interval after the restart, the agent is told once, and the watch resumes
+  when the agent next calls `watch` or `bash`.
+- Runs between turns don't appear in Desk's transcript: Desk shows nested calls only under a running call.
 
 ## bash
 

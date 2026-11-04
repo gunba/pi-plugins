@@ -83,6 +83,10 @@ return totals(book, args.month);
 - They run with the conversation's permissions: every call they make is an ordinary
   operation call.
 
+pi-watch's program watches (`watch({program, every})`) run programs between turns
+through the `RUN_PROGRAM` event in `saved.ts`; pi-tools runs them as it runs a
+codemode call, with the context pi-watch passes.
+
 ## Discovery, safety and presentation
 
 The fixed definition states shared conventions once and includes compact signatures
