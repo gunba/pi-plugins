@@ -74,16 +74,14 @@ encrypted reasoning and caches are not portable. Cross-provider switches ask for
 confirmation and show the destination account. Changing a model during active
 work stops that turn and continues with the new model; it does not replay tools.
 
-A branch with an encrypted Codex checkpoint needs a separate choice. Once the
-conversation and its queues are idle, choose the new model and confirm
-**Summarize and switch**. Codex makes a plain-text summary using the current
-account. This request uses allowance and may omit details. Only a completed
-summary is saved as the new context; the original native history, account pins
-and branch-local records remain intact. The destination stays idle until given
-new input. Cancelling or failing summary generation does not change the model or
-replace its context. If model selection fails after saving a summary, that summary
-remains available with the current model. **History** offers the alternative of
-branching before the checkpoint. `/model` never silently generates a paid handoff.
+A branch with an encrypted Codex checkpoint, which only Codex can read, switches
+once the conversation and its queues are idle. The checkpoint is left out: the new
+model gets the messages the checkpoint kept and those after it, and a note to
+recall anything earlier with `conversation_search` and `conversation_read` on
+this conversation. Nothing is summarised, so the switch is immediate and costs no
+model call. The original native history, account pins and branch-local records
+remain intact, and the destination stays idle until given new input. **History**
+offers the alternative of branching before the checkpoint.
 
 Claude subscription sign-in uses Pi's native OAuth with the pinned
 [`@gotgenes/pi-anthropic-auth`](https://github.com/gotgenes/pi-anthropic-auth)

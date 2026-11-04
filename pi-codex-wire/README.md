@@ -110,11 +110,10 @@ from interactive Codex, which fails without retry advice; it never switches mode
 
 ## Native compaction
 
-A portable model handoff keeps its source branch anchored while summarizing.
-Wire's transport-window bookkeeping may be appended without invalidating the
-result; messages, other entry changes and navigation away from that anchor still
-prevent the switch. The handoff uses the source model's selected reasoning level,
-so a high-effort summary can take several minutes.
+Switching a branch with a checkpoint to another provider leaves the checkpoint out
+rather than summarizing it: `readableContextStart` gives where the readable
+context begins (the messages the latest checkpoint kept), and Desk compacts from
+there with a note on recalling earlier history with conversation search.
 
 Codex sessions use native compaction through Responses, with the
 `compaction_trigger` input used by Codex CLI 0.155.0. Pi still chooses the cut

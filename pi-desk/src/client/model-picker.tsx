@@ -30,7 +30,7 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history, ref
 		if (selected && model.provider !== provider && !contextAware) return "Restart this conversation when idle to switch providers.";
 		if (constraint && constraint.provider !== model.provider) {
 			if (!constraint.portable) return constraint.reason;
-			if (snapshot.activity !== "idle") return "Finish current work before summarizing and switching providers.";
+			if (snapshot.activity !== "idle") return "Finish current work before switching providers.";
 		}
 	};
 	const filtered = open ? snapshot.models.filter(model => `${model.name} ${model.id} ${providerNames[model.provider] ?? model.provider}`.toLowerCase().includes(query.trim().toLowerCase())) : [];
@@ -59,10 +59,10 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history, ref
 		if (model.provider === provider || !selected || snapshot.empty) { select(model); return; }
 		const portable = !!constraint && constraint.provider !== model.provider;
 		if (portable && (!constraint.portable || !snapshot.leaf)) return;
-		const accepted = await confirmation.request({ title: portable ? "Summarize and switch model?" : "Switch model provider?",
-			context: `${selected.name} → ${model.name}`, accept: portable ? "Summarize and switch" : "Switch model",
+		const accepted = await confirmation.request({ title: "Switch model provider?",
+			context: `${selected.name} → ${model.name}`, accept: "Switch model",
 			body: <>
-				<p>{portable ? "Codex will make a plain-text summary using the current account’s allowance. The new model will receive that summary, not the encrypted checkpoint. A summary can omit details."
+				<p>{portable ? "Codex keeps this conversation’s earlier part in an encrypted checkpoint the new model can’t read. The new model gets the messages after it, and recalls earlier details from the conversation’s history when it needs them."
 					: "Pi will carry the current text, tool results and supported attachments into the new model. Provider-specific reasoning state and cache do not transfer."}</p>
 				<p>The original history stays saved. Tools will not be replayed. Existing subagents keep their own model.</p>
 				{!portable && snapshot.activity === "running" && <p>Current work will stop and continue with the new model.</p>}

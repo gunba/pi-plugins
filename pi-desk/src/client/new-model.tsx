@@ -35,8 +35,7 @@ function ReasoningMenu({ value, change, disabled, id = "new-conversation-reasoni
 
 /**
  * The model and reasoning a conversation that isn't running resumes with. Changing them opens it to apply the change
- * (change), after which Desk puts it back to sleep. Switching provider needs it open, as its history may have to be
- * summarized first.
+ * (change), after which Desk puts it back to sleep. Switching provider needs it open, to carry its context over.
  */
 export function ResumeModel({ sessions, session, disabled, change }: {
 	sessions: WorkspaceSession[]; session: WorkspaceSession; disabled: boolean; change: (value: Partial<ModelChoice>) => void;
@@ -47,7 +46,7 @@ export function ResumeModel({ sessions, session, disabled, change }: {
 	return <div className="resume-model">
 		<ModelPicker disabled={disabled} select={model => change({ model: `${model.provider}/${model.id}` })}
 			snapshot={{ id: `resume:${session.key}`, leaf: null, empty: false, activity: "idle", models: source.models,
-				modelSwitchConstraint: { provider: last.provider, portable: false, reason: "Open it to switch provider: its history may need summarizing first." },
+				modelSwitchConstraint: { provider: last.provider, portable: false, reason: "Open it to switch provider." },
 				model: { ...(chosen ?? last), images: false } }} />
 		<ReasoningMenu id={`resume-reasoning:${session.key}`} value={last.thinking ?? ""} disabled={disabled} change={reasoning => { if (reasoning) change({ reasoning }); }} />
 	</div>;

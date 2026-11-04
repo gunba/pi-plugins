@@ -12,7 +12,7 @@ import { DefaultResourceLoader, ModelRegistry, ModelRuntime, SessionManager, Set
 import { identity } from "./fixtures.mjs";
 import { requireCodexWire } from "../extensions/required.ts";
 import { CHECKPOINT_CAPTION, checkpointMessages, projectCheckpoints, replayCheckpoints, assertCheckpointContext } from "../extensions/checkpoint.ts";
-import { CHECKPOINT, entryCheckpoint, portableSummaryAvailable, summarizePortableContext } from "../extensions/checkpoint-state.ts";
+import { CHECKPOINT, entryCheckpoint, readableContextStart } from "../extensions/checkpoint-state.ts";
 import { compactInput } from "../extensions/compact-input.ts";
 import nativeCompaction, { inheritCompactor, retryCompaction } from "../extensions/native-compaction.ts";
 import { copyCompletedParentTurns } from "../../pi-agents/subagents/subagent-runtime.ts";
@@ -151,56 +151,45 @@ test("a live session can continue immediately after native compaction without re
 		compacted.details[CHECKPOINT].output.filter(item => item.type === "compaction"));
 });
 
-test("a portable handoff replaces encrypted model context without replaying tools or deleting native history", async t => {
+test("a model handoff leaves the encrypted checkpoint out and keeps the messages it kept and those after it", async t => {
 	const h = await harness(t);
 	const checkpoint = await h.session.compact();
+	await h.session.prompt("After the checkpoint.", { expandPromptTemplates: false });
 	const binding = h.manager.appendCustomEntry("pi-desk/provider-accounts", { selection: { anthropic: "fixture-account" } });
-	const before = readFileSync(h.manager.getSessionFile());
-	assert.equal(portableSummaryAvailable(h.session.sessionId), true);
-	const signal = new AbortController().signal;
-	const complete = h.runtime.complete.bind(h.runtime);
-	h.runtime.complete = async () => { throw Error("fixture summary unavailable"); };
-	await assert.rejects(summarizePortableContext(h.session.sessionId, signal, 2048), /fixture summary unavailable/);
-	assert.deepEqual(readFileSync(h.manager.getSessionFile()), before);
-	assert.ok(h.manager.buildSessionProjection().entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry)));
-	assert.equal(h.session.model.provider, "openai-codex");
-	h.runtime.complete = complete;
-	const callsBefore = h.calls.length;
-	const result = await summarizePortableContext(h.session.sessionId, signal, 2048);
-	assert.equal(result.summary, "Fixture response.");
-	const id = h.manager.appendCompaction(result.summary, null, h.session.getContextUsage()?.tokens ?? 0,
-		{ modelHandoff: { from: binding, provider: "anthropic", model: "claude-fixture" } }, true, result.usage);
+	const before = readFileSync(h.manager.getSessionFile()), calls = h.calls.length;
+	const start = readableContextStart(h.manager.buildSessionProjection().entries);
+	assert.equal(start, checkpoint.firstKeptEntryId);
+	h.manager.appendCompaction("Handoff note.", start, 0, { modelHandoff: { from: binding, provider: "anthropic", model: "claude-fixture" } }, true);
 	h.session.refreshContext();
-	assert.equal(h.manager.getEntry(id).firstKeptEntryId, id);
-	assert.equal(h.calls.length, callsBefore + 1);
-	const summaryRequest = h.calls.at(-1).body;
-	assert.ok(summaryRequest.input.some(item => item.type === "compaction"), "summary writer receives the original checkpoint");
-	assert.equal(summaryRequest.tool_choice, "none", "summary writer cannot run tools");
+	assert.equal(h.calls.length, calls, "the handoff makes no model call");
 	const projection = h.manager.buildSessionProjection();
 	assert.equal(projection.entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry)), false);
-	assert.ok(projection.messages.some(message => message.role === "compactionSummary" && message.summary === "Fixture response."));
+	assert.ok(projection.messages.some(message => message.role === "compactionSummary" && message.summary === "Handoff note."));
+	assert.ok(projection.messages.some(message => message.role === "user" && JSON.stringify(message.content).includes("After the checkpoint.")));
 	assert.ok(h.manager.getBranch().some(entry => entry.id === binding), "branch-local account state remains in ancestry");
 	assert.ok(h.manager.getBranch().some(entry => entry.details?.[CHECKPOINT] === checkpoint.details[CHECKPOINT]));
 	assert.deepEqual(readFileSync(h.manager.getSessionFile()).subarray(0, before.length), before);
 	assertCheckpointContext({ messages: convertToLlm(projection.messages) }, "anthropic", projection.entries);
 });
 
-test("portable summaries disable transcript tools and preserve incomplete-response reasons", async t => {
+test("branch summaries of a Codex checkpoint disable transcript tools and preserve incomplete-response reasons", async t => {
 	const h = await harness(t);
+	const target = h.manager.getBranch().find(entry => entry.type === "message").id;
 	await h.session.compact();
 	h.manager.appendMessage({ role: "system", content: "Updated tools", timestamp: Date.now(),
 		toolsAdded: [{ name: "fixture_lookup", description: "Look up a value", parameters: Type.Object({ value: Type.String() }) }] });
-	const before = readFileSync(h.manager.getSessionFile()), projection = h.manager.buildSessionProjection().messages;
-	const complete = h.runtime.complete.bind(h.runtime), signal = new AbortController().signal;
+	const leaf = h.manager.getLeafId(), before = readFileSync(h.manager.getSessionFile());
+	const complete = h.runtime.complete.bind(h.runtime);
 	for (const stopReason of ["length", "toolUse", "error"]) {
 		h.runtime.complete = async () => ({ ...assistant("Incomplete"), stopReason });
-		await assert.rejects(summarizePortableContext(h.session.sessionId, signal, 2048), new RegExp(`stop reason: ${stopReason}`));
+		assert.equal((await h.session.navigateTree(target, { summarize: true })).cancelled, true);
+		assert.equal(h.manager.getLeafId(), leaf);
 		assert.deepEqual(readFileSync(h.manager.getSessionFile()), before, "failed summaries must leave native context unchanged");
 	}
 	h.runtime.complete = async () => ({ ...assistant(""), content: [{ type: "toolCall", id: "unexpected", name: "fixture_lookup", arguments: {} }] });
-	await assert.rejects(summarizePortableContext(h.session.sessionId, signal, 2048), /returned a tool call/);
+	assert.equal((await h.session.navigateTree(target, { summarize: true })).cancelled, true);
 	h.runtime.complete = complete;
-	await summarizePortableContext(h.session.sessionId, signal, 2048);
+	assert.equal((await h.session.navigateTree(target, { summarize: true })).cancelled, false);
 	const request = h.calls.at(-1).body;
 	const tools = [...request.tools ?? [], ...request.input.filter(item => item.type === "additional_tools").flatMap(item => item.tools)]
 		.flatMap(tool => tool.type === "namespace" ? tool.tools : [tool]);
@@ -208,8 +197,6 @@ test("portable summaries disable transcript tools and preserve incomplete-respon
 	assert.equal(request.tool_choice, "none", "a summary must not continue the task using a tool from a transcript delta");
 	assert.ok(request.input.some(item => item.type === "compaction"));
 	assert.ok(readFileSync(h.manager.getSessionFile()).subarray(0, before.length).equals(before));
-	assert.deepEqual(h.manager.buildSessionProjection().messages, projection, "transport metadata must not replace active context");
-	assert.equal(h.session.thinkingLevel, "xhigh");
 });
 
 test("retaining an older compaction entry does not require or replay its superseded checkpoint", async t => {

@@ -59,7 +59,7 @@ import { SessionArchive, withPayload } from "../../../pi-session-memory/extensio
 import { promptCommandName } from "../shared/prompt-commands.ts";
 import { installHome } from "./home-extension.ts";
 import { HOME_MODEL } from "../shared/home.ts";
-import { entryCheckpoint, portableContextUnchanged, portableSummaryAvailable, summarizePortableContext } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
+import { entryCheckpoint, readableContextStart } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
 import { lazyMcpTransports } from "../../../pi-agents/lazy-mcp.ts";
 
 /** The list of attached files Desk appends to a message (attachments.ts), and a file it names. */
@@ -91,6 +91,11 @@ function modelSwitchConstraint(session: AgentSession, fresh = false): SessionSna
 	modelContextCache.set(manager, { leaf, constraint });
 	return constraint;
 }
+
+/** What a model taking over from Codex reads in place of the encrypted checkpoint it can't. */
+const handoffNote = (session: string) => "This conversation continues on a new model. Its earlier part was compacted by Codex into an encrypted "
+	+ "checkpoint that other models can't read, so it isn't included; the messages after it follow. When you need something from "
+	+ `before them, recall it with conversation_search (session "${session}") and conversation_read.`;
 
 async function checkModelChange(runtime: AgentSessionRuntime, model: { provider: string; id: string }): Promise<void> {
 	const constraint = modelSwitchConstraint(runtime.session, true);
@@ -137,7 +142,6 @@ export class DeskEngine {
 	private starting = new AbortController();
 	private transition = false;
 	private transitionJob?: Promise<unknown>;
-	private handoffAbort?: AbortController;
 	private attachmentScope?: string;
 	private usageRevision = 0;
 	private serviceUsage?: ServiceUsage;
@@ -533,7 +537,7 @@ export class DeskEngine {
 			model: session.model ? { id: session.model.id, provider: session.model.provider, name: session.model.name, images: session.model.input.includes("image") } : undefined,
 			defaultModel: defaults.defaultProvider && defaults.defaultModel ? { provider: defaults.defaultProvider, id: defaults.defaultModel } : undefined,
 			thinking: session.thinkingLevel, thinkingLevels: session.getAvailableThinkingLevels(),
-			modelSwitchConstraint: modelSwitchConstraint(session) ? { ...modelSwitchConstraint(session)!, portable: portableSummaryAvailable(session.sessionId) } : null,
+			modelSwitchConstraint: modelSwitchConstraint(session) ? { ...modelSwitchConstraint(session)!, portable: true } : null,
 			activity: ui.interactions.some(item => !item.settings && !asksInBackground(item.form)) ? "waiting" : this.running || this.transition || session.isCompacting ? "running" : this.failed || loaded.errors.length ? "error" : "idle",
 			...inventory,
 			extensions: [
@@ -688,29 +692,22 @@ export class DeskEngine {
 						if (manager.getLeafId() !== command.context!.leaf) throw Error("The conversation changed. Review the model switch again.");
 						if (!constraint || constraint.provider === model.provider || session.model?.provider !== constraint.provider)
 							throw Error("This model switch does not need a Codex context handoff.");
-						if (!portableSummaryAvailable(session.sessionId)) throw Error("Portable Codex context is unavailable in this worker.");
-						if (this.runtime!.services.resourceLoader.getExtensions().errors.length) throw Error("Fix extension loading before summarizing context.");
 						const guard = () => {
 							if (!session.isIdle || session.agent.hasQueuedMessages() || session.pendingMessageCount || this.queueGuards.get(session)?.pending)
-								throw Error("Finish current work and queued messages before summarizing context.");
+								throw Error("Finish current work and queued messages before switching providers.");
 						};
 						guard();
 						if (!(await this.runtime!.services.modelRuntime.checkAuth(model.provider))) throw Error("Sign in to the destination model's provider first, under Settings → Accounts & connections.");
 						guard();
 						if (manager.getLeafId() !== command.context!.leaf) throw Error("The conversation changed. Review the model switch again.");
-						const abort = this.handoffAbort = new AbortController();
-						try {
-							const result = await summarizePortableContext(session.sessionId, abort.signal,
-								Math.min(8192, Math.max(512, Math.floor(model.contextWindow / 8))));
-							abort.signal.throwIfAborted(); guard();
-							if (!portableContextUnchanged(manager.getBranch(), command.context!.leaf)) throw Error("The conversation changed while summarizing. The selected model has not changed.");
-							manager.appendCompaction(result.summary, null, session.getContextUsage()?.tokens ?? 0,
-								{ modelHandoff: { from: command.context!.leaf, provider: model.provider, model: model.id } }, true, result.usage);
-							session.refreshContext(); this.usageRevision++; this.presentation.advance();
-							if (modelSwitchConstraint(session, true)) throw Error("Context is still tied to Codex. The selected model has not changed.");
-							await session.setModel(model, { persist: false });
-							this.scheduleSnapshot();
-						} finally { this.handoffAbort = undefined; }
+						// Codex's checkpoint is encrypted for Codex alone. Rather than wait for a Codex turn to summarise it, the new
+						// model reads the messages after it, with a note on recalling the rest from history.
+						manager.appendCompaction(handoffNote(session.sessionId), readableContextStart(manager.buildSessionProjection().entries),
+							session.getContextUsage()?.tokens ?? 0, { modelHandoff: { from: command.context!.leaf, provider: model.provider, model: model.id } }, true);
+						session.refreshContext(); this.usageRevision++; this.presentation.advance();
+						if (modelSwitchConstraint(session, true)) throw Error("Context is still tied to Codex. The selected model has not changed.");
+						await session.setModel(model, { persist: false });
+						this.scheduleSnapshot();
 					});
 				}
 				if (command.makeDefault) {
@@ -752,7 +749,6 @@ export class DeskEngine {
 			// falls through: interrupt the turn so steering, including the promoted message, is delivered now.
 			case "abort": {
 				const sendingNow = command.kind === "queue_now";
-				this.handoffAbort?.abort();
 				this.presentation.cancelInteractions(); session.abortCompaction(); session.abortBranchSummary();
 				await session.abort();
 				// A tool that finishes as the turn stops lets Pi take the waiting messages into that turn, whose next
@@ -896,7 +892,7 @@ export class DeskEngine {
 		if (this.closeJob) return this.closeJob;
 		this.closed = true;
 		this.presentation.closing = keep ? "sleep" : "end";
-		this.handoffAbort?.abort(); this.starting.abort();
+		this.starting.abort();
 		this.closeJob = Promise.resolve().then(async () => {
 			clearTimeout(this.snapshotTimer);
 			this.unsubscribe?.();

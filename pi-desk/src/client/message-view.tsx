@@ -262,7 +262,7 @@ function MessageBody({ message, sessionKey, source, results, omitFile, omitChang
 }
 function SummaryCard({ message, sessionKey, source, faded }: { message: ChatMessage; sessionKey: string; source?: string; faded: string }) {
 	const summary = message.summary!;
-	const title = summary.kind === "branch" ? "Branch summary" : summary.kind === "handoff" ? "Context summarised for a model switch" : "Context compacted";
+	const title = summary.kind === "branch" ? "Branch summary" : summary.kind === "handoff" ? "Model switch: earlier context left in history" : "Context compacted";
 	const detail = [summary.tokensBefore && `from ${tokenFormat.format(summary.tokensBefore)} tokens`, summary.kind === "checkpoint" && "Codex checkpoint", summary.model]
 		.filter(Boolean).join(" · ");
 	return <ReferenceContext value={{ message: message.id, source }}><article className={`message message-summary summary-${summary.kind}${faded}`}>

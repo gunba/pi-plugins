@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { entryCheckpoint, registerPortableSummary } from "../../pi-codex-wire/extensions/checkpoint-state.ts";
+import { entryCheckpoint } from "../../pi-codex-wire/extensions/checkpoint-state.ts";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { DeskEngine } from "../src/host/engine.ts";
 import { NativeQueueGuard } from "../../pi-work-coordination/native-queue.ts";
@@ -136,22 +136,14 @@ test("a Codex checkpoint rejects an incompatible model before interrupting or se
 	} finally { await engine.close(); }
 });
 
-test("an explicit portable model switch commits only a completed summary and leaves idle work idle", async () => {
+test("a switch away from a Codex checkpoint leaves it out at once and keeps the messages after it", async () => {
 	const manager = SessionManager.inMemory(), engine = new DeskEngine(() => {});
 	manager.appendMessage({ role: "user", content: "Saved source request", timestamp: 1 });
 	manager.appendCompaction("Codex context", null, 100, { codexWireCheckpoint: { opaque: "fixture" } });
+	manager.appendMessage({ role: "user", content: "After the checkpoint", timestamp: 2 });
 	const selected = manager.appendCustomEntry("fixture-account", { anthropic: "named" }), entries = manager.getEntries();
 	const target = { provider: "anthropic", id: "claude-fixture", contextWindow: 200000 };
-	let calls = 0, refreshed = 0, stopped = 0, failed = true, cancelled = false, mutate, resumed = 0, auth = false;
-	const usage = { input: 10, output: 20, totalTokens: 30, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-	const release = registerPortableSummary(manager.getSessionId(), async signal => {
-		calls++;
-		if (failed) throw Error("Summary unavailable");
-		if (cancelled) { await engine.command(engine.presentation.generation, { kind: "abort" }); signal.throwIfAborted(); }
-		if (mutate) mutate();
-		else manager.appendCustomEntry("codex-wire-session-window", { threadId: "summary", id: "window" });
-		return { summary: "Portable context", usage };
-	});
+	let refreshed = 0, stopped = 0, resumed = 0, auth = false;
 	engine.snapshot = () => ({});
 	const session = { sessionId: manager.getSessionId(), sessionManager: manager, isIdle: true, model: { provider: "openai-codex", id: "source" },
 		agent: { hasQueuedMessages: () => false }, pendingMessageCount: 0, getContextUsage: () => ({ tokens: 100 }),
@@ -161,28 +153,20 @@ test("an explicit portable model switch commits only a completed summary and lea
 		resourceLoader: { getExtensions: () => ({ errors: [] }) } }, dispose: async () => {} };
 	const invoke = (leaf = manager.getLeafId()) => engine.command(engine.presentation.generation, { kind: "model", ...target, context: { mode: "portable", leaf } });
 	try {
-		await assert.rejects(invoke(), /Sign in/); assert.equal(calls, 0);
-		auth = true; await assert.rejects(invoke(), /Summary unavailable/); assert.deepEqual(manager.getEntries(), entries);
-		failed = false; cancelled = true; await assert.rejects(invoke(), /aborted/); assert.deepEqual(manager.getEntries(), entries);
-		cancelled = false;
-		for (const mutation of [
-			() => manager.appendCustomEntry("unrelated-update", {}),
-			() => manager.appendMessage({ role: "user", content: "New request", timestamp: 2 }),
-			() => manager.branch(entries[0].id),
-		]) {
-			const leaf = manager.getLeafId(); mutate = mutation;
-			await assert.rejects(invoke(), /conversation changed/);
-			assert.equal(session.model.provider, "openai-codex"); assert.equal(refreshed, 0);
-			manager.branch(leaf);
-		}
-		mutate = undefined; await invoke();
-		assert.ok(manager.getBranch().some(entry => entry.type === "custom" && entry.customType === "codex-wire-session-window"), "transport bookkeeping remains on the selected branch");
-		assert.equal(session.model, target); assert.equal(refreshed, 1); assert.equal(stopped, 1, "only the explicit cancel aborts");
-		assert.equal(resumed, 0); assert.ok(manager.getBranch().some(entry => entry.id === selected));
-		assert.equal(manager.buildSessionProjection().entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry)), false);
-		assert.equal(manager.getBranch().findLast(entry => entry.type === "compaction").usage, usage);
+		await assert.rejects(invoke(), /Sign in/); assert.deepEqual(manager.getEntries(), entries);
+		auth = true;
+		await assert.rejects(invoke(entries[0].id), /conversation changed/); assert.deepEqual(manager.getEntries(), entries);
+		assert.equal(session.model.provider, "openai-codex"); assert.equal(refreshed, 0);
+		await invoke();
+		assert.equal(session.model, target); assert.equal(refreshed, 1);
+		assert.equal(stopped, 0, "idle work is not interrupted"); assert.equal(resumed, 0);
+		assert.ok(manager.getBranch().some(entry => entry.id === selected));
+		const projection = manager.buildSessionProjection();
+		assert.equal(projection.entries.some(entry => entry.messages.length && entryCheckpoint(entry.sourceEntry)), false);
+		assert.match(projection.messages.find(message => message.role === "compactionSummary").summary, /conversation_search/);
+		assert.ok(projection.messages.some(message => message.role === "user" && message.content === "After the checkpoint"));
 		assert.deepEqual(manager.getEntries().slice(0, entries.length), entries);
-	} finally { release(); await engine.close(); }
+	} finally { await engine.close(); }
 });
 
 test("default changes write preferences without selecting a model in any live conversation", async () => {
