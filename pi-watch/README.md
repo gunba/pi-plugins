@@ -37,6 +37,28 @@ For recurring calendar work, use successive time watches through the same tool. 
 
 These watches wake conversations, not powered-off computers. The host must be running to reopen a conversation; an overdue time watch is delivered when it next resumes. Stopping a watch or removing its sleeping conversation cancels future automatic reopening.
 
+## bash
+
+pi-watch also provides Desk's `bash`, in place of Pi's. Its command runs under the same detached runner, so it can
+outlive the call, and several calls in one program run at once.
+
+| Parameter | Default | |
+|---|---|---|
+| `command` | | the command, run in the working directory with Pi's environment and `shellCommandPrefix` |
+| `wait` | 60 | seconds the call waits for the command to end; 0 starts it in the background at once |
+| `warn` | 1800 | seconds between wakes while it runs in the background; 0 wakes the agent only at its end |
+| `progress` | | a command printing how far it is, such as a count of results, run each minute in the background |
+
+A command that ends within `wait` returns as Pi's bash does: `{output, truncated, full_output_path?, exit_code,
+wall_time_seconds}`, an error with the exit code when it is not 0, and its last 2,000 lines or 50 KB for the model. A
+program receives up to 1 MiB of output, or its first and last 512 KiB with the full output's path. A fast command
+leaves no files. One still running after `wait` goes on as a watch: the call returns its output so far with
+`exit_code: null` and `running` (the watch's ID). The watch wakes the agent when the command ends, with its exit status,
+running time and progress, and every `warn` seconds while it runs, with its latest output and progress readings, so
+the agent can judge whether it is getting anywhere and stop it with `watch({stop})`. Nothing stops a command for
+taking long. New output alone doesn't wake the agent. Desk's view of the watch shows when it started and its latest
+progress. Pi's `timeout` parameter is accepted and ignored.
+
 ## Behaviour
 
 - **Output.** A background command's output arriving within 2 seconds is judged as one event, and a wake carries at
@@ -74,7 +96,8 @@ These watches wake conversations, not powered-off computers. The host must be ru
   the output, the command and the log) beside the agent's text; Desk titles the notice with the label and what
   happened, and shows the output under it.
 - **Moves.** A conversation moved to another computer doesn't take its watches along: they end with a note.
-- **Limits.** A conversation can run at most 8 command watches, which each run a process, and 64 time watches at once. `pi-plan` holds automatic plan rounds while any
+- **Limits.** A conversation can run at most 8 command watches, which each run a process, and 64 time watches at once;
+  bash commands in the background don't count. `pi-plan` holds automatic plan rounds while any
   watch is active.
 - **Status.** Desk shows a "Watching" badge by the message box; its view lists the watches with a Stop action. The
   terminal shows `watching N` in the footer.

@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, getShellConfig, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
@@ -9,6 +9,7 @@ import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { getPresentation, type Presentation } from "../pi-ui/index.ts";
 import { callDescription } from "../pi-ui/tool-descriptions.ts";
+import { registerBash } from "./bash.ts";
 
 /** Session entries recording each watch: its start, what it last reported, and its end. Watches are rebuilt from them. */
 export const WATCH_ENTRY = "pi-watch/v1";
@@ -35,6 +36,9 @@ const CATCH_UP_BYTES = 16_384;
 const RETRY_MS = 2_000;
 const KEEP_FILES_MS = 8 * 86_400_000;
 const RUNNER = join(dirname(fileURLToPath(import.meta.url)), "runner.mjs");
+/** A background bash command's progress command runs this often, and may take this long. */
+const PROGRESS_MS = 60_000, PROGRESS_LIMIT_MS = 15_000;
+const READINGS = 12;
 
 type Mode = "output" | "change" | "time";
 export interface WatchSpec {
@@ -60,6 +64,11 @@ export interface WatchSpec {
 	log?: string;
 	change?: string;
 	exit?: string;
+	/**
+	 * A bash command that ran past its call's wait (bash.ts). It wakes the agent when it ends, and every `warn` seconds
+	 * while it runs with the readings of its `progress` command, rather than with each new output.
+	 */
+	bash?: { started: number; warn?: number; progress?: string };
 }
 type WatchRecord =
 	| { op: "start"; watch: WatchSpec }
@@ -86,6 +95,8 @@ interface Active {
 	clock?: NodeJS.Timeout;
 	/** When an "output" watch last recorded how far it has judged. */
 	saved: number;
+	/** A background bash command's progress readings, newest last. */
+	readings: { at: number; value: string }[];
 }
 
 const registryKey = Symbol.for("gunba.pi-watch.v1");
@@ -176,6 +187,31 @@ async function classifier(ctx: ExtensionContext) {
 	return models.find(model => model.provider === "typesafe" && model.id === "jev-latest") ?? models.find(model => /jev/i.test(model.id)) ?? models[0];
 }
 
+const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+/** A command's progress over its last readings: "14:02 80/500 · 14:03 120/500". */
+const progressLine = (readings: { at: number; value: string }[]) => readings.length
+	? `Progress: ${readings.slice(-5).map(reading => `${clock(reading.at)} ${reading.value}`).join(" · ")}` : "";
+/** How long a command has run: "45 s", "12 min", "2 h 5 min". */
+export function elapsed(ms: number): string {
+	const minutes = Math.floor(ms / 60_000);
+	return minutes < 1 ? `${Math.round(ms / 1000)} s` : minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ""}`;
+}
+
+/** Runs a short command in the bash tool's shell; its last line of output, or why there is none. */
+function lastLine(shell: { shell: string; args: string[]; commandTransport?: string }, command: string, cwd: string): Promise<string> {
+	return new Promise(resolve => {
+		const viaStdin = shell.commandTransport === "stdin";
+		const child = spawn(shell.shell, viaStdin ? shell.args : [...shell.args, command], { cwd, stdio: [viaStdin ? "pipe" : "ignore", "pipe", "pipe"], windowsHide: true });
+		let output = "";
+		const take = (chunk: Buffer) => { output = (output + chunk.toString("utf8")).slice(-4_000); };
+		child.stdout!.on("data", take); child.stderr!.on("data", take);
+		if (viaStdin) child.stdin!.end(command);
+		const timer = setTimeout(() => child.kill(), PROGRESS_LIMIT_MS);
+		child.once("error", error => { clearTimeout(timer); resolve(`(progress unavailable: ${error.message})`); });
+		child.once("close", () => { clearTimeout(timer); resolve((output.trim().split(/\r?\n/).filter(line => line.trim()).at(-1) ?? "(no progress output)").slice(0, 200)); });
+	});
+}
+
 function message(spec: WatchSpec, note: string, output?: string): string {
 	return [`Watch ${spec.id} (${briefWatch(spec)}) ${note}`, output?.trim() ? "```\n" + clip(output.trim()) + "\n```" : "",
 		spec.log ? `Full output: ${spec.log}` : ""].filter(Boolean).join("\n");
@@ -217,7 +253,7 @@ function sweep(root: string): void {
 	} catch { /* nothing to sweep */ }
 }
 
-class Watches {
+export class Watches {
 	readonly sessionId: string;
 	private readonly pi: ExtensionAPI;
 	private readonly ctx: ExtensionContext;
@@ -363,7 +399,7 @@ class Watches {
 
 	private list(): string {
 		if (!this.active.size) return "No active watches.";
-		return `Active watches:\n${[...this.active.values()].map(({ spec }) => `- ${spec.id}: ${briefWatch(spec)}${spec.mode !== "time" && spec.expires ? `; ends ${when(spec.expires)}` : ""}`).join("\n")}`;
+		return `Active watches:\n${[...this.active.values()].map(({ spec, readings }) => `- ${spec.id}: ${briefWatch(spec)}${spec.mode !== "time" && spec.expires ? `; ends ${when(spec.expires)}` : ""}${spec.bash ? `; running ${elapsed(Date.now() - spec.bash.started)}${readings.length ? `; ${progressLine(readings)}` : ""}` : ""}`).join("\n")}`;
 	}
 
 	/**
@@ -381,29 +417,37 @@ class Watches {
 		return `w${highest + 1}`;
 	}
 
-	/** Starts an "output" watch's command under the detached runner. */
-	/** Starts a command watch's runner. A change watch's runner started again keeps its numbered changes. */
-	private launch(spec: WatchSpec): void {
-		mkdirSync(this.folder, { recursive: true });
-		// The shell the bash tool uses: the configured shellPath, else Pi's default (on Windows, Git Bash or bash on PATH).
+	/** The shell the bash tool uses: the configured shellPath, else Pi's default (on Windows, Git Bash or bash on PATH). */
+	shell() {
 		const settings = SettingsManager.create(this.ctx.cwd, getAgentDir(), { projectTrusted: this.ctx.isProjectTrusted() });
-		const shell = getShellConfig(settings.getShellPath()), file = join(this.folder, `${spec.id}.json`), again = spec.pid !== undefined;
-		spec.exit = join(this.folder, `${spec.id}.exit`);
-		if (spec.mode === "change") spec.change = join(this.folder, `${spec.id}.change`);
-		else { spec.log = join(this.folder, `${spec.id}.log`); writeFileSync(spec.log, ""); }
+		return { ...getShellConfig(settings.getShellPath()), prefix: settings.getShellCommandPrefix() };
+	}
+
+	/**
+	 * Starts a command watch's runner. A change watch's runner started again keeps its numbered changes. A bash call's
+	 * command runs the same way, from its own folder and with the bash tool's environment, until it ends or outlives
+	 * the call's wait and becomes a watch (adopt).
+	 */
+	launch(spec: WatchSpec, folder = this.folder, env?: NodeJS.ProcessEnv): ChildProcess {
+		mkdirSync(folder, { recursive: true });
+		const shell = this.shell(), file = join(folder, `${spec.id}.json`), again = spec.pid !== undefined;
+		spec.exit = join(folder, `${spec.id}.exit`);
+		if (spec.mode === "change") spec.change = join(folder, `${spec.id}.change`);
+		else { spec.log = join(folder, `${spec.id}.log`); writeFileSync(spec.log, ""); }
 		rmSync(spec.exit, { force: true });
 		if (spec.change && !again) rmSync(spec.change, { force: true });
 		writeFileSync(file, JSON.stringify({ shell: shell.shell, args: shell.args, transport: shell.commandTransport ?? "argv",
 			command: spec.command, cwd: spec.cwd, log: spec.log, change: spec.change, every: spec.every, exit: spec.exit, expires: spec.expires }));
-		const runner = spawn(process.execPath, [RUNNER, file], { cwd: spec.cwd, detached: true, stdio: "ignore", windowsHide: true });
+		const runner = spawn(process.execPath, [RUNNER, file], { cwd: spec.cwd, detached: true, stdio: "ignore", windowsHide: true, ...(env ? { env } : {}) });
 		runner.unref();
 		if (!runner.pid) throw new Error("The command could not be started.");
 		spec.pid = runner.pid;
+		return runner;
 	}
 
 	private arm(spec: WatchSpec, offset: number | undefined, restored: boolean): void {
 		const active: Active = { spec, abort: new AbortController(), timers: [], queue: Promise.resolve(), failures: 0, saved: 0,
-			offset: offset ?? 0, decoder: new StringDecoder("utf8"), partial: "", pending: [], recent: [], finishing: false };
+			offset: offset ?? 0, decoder: new StringDecoder("utf8"), partial: "", pending: [], recent: [], finishing: false, readings: [] };
 		this.active.set(spec.id, active);
 		const now = Date.now();
 		if (spec.computer !== hostname()) {
@@ -424,6 +468,56 @@ class Watches {
 		}
 		if (spec.mode === "change") this.followChanges(active);
 		else this.follow(active, restored);
+		if (spec.bash) this.followBash(active);
+	}
+
+	/** A bash call's folder: its commands run here until they end or become watches. */
+	get bashFolder(): string { return join(this.folder, "bash"); }
+
+	/** A bash command that outlived its call's wait goes on as a watch. */
+	adopt(spec: WatchSpec): WatchSpec {
+		spec.id = this.nextId();
+		this.pi.appendEntry(WATCH_ENTRY, { op: "start", watch: spec } satisfies WatchRecord);
+		this.arm(spec, 0, false);
+		this.publish();
+		return spec;
+	}
+
+	/**
+	 * A background bash command reads its progress each minute and wakes the agent every `warn` seconds while it runs,
+	 * with the readings, so the agent can judge whether it is getting anywhere.
+	 */
+	private followBash(active: Active): void {
+		const { bash } = active.spec;
+		if (bash?.progress) {
+			const read = () => this.guard(() => this.readProgress(active));
+			active.timers.push(setInterval(read, PROGRESS_MS));
+			read();
+		}
+		if (!bash?.warn) return;
+		const step = bash.warn * 1000;
+		const next = () => this.at(active, bash.started + Math.ceil((Date.now() + 1 - bash.started) / step) * step, () => {
+			void this.chain(active, async () => {
+				await this.readProgress(active);
+				if (this.active.get(active.spec.id) !== active || active.finishing) return;
+				const status = `is still running after ${elapsed(Date.now() - bash.started)}.`;
+				const progress = progressLine(active.readings);
+				this.send(active.spec, [message(active.spec, status, active.recent.join("\n")), progress,
+					`Stop it with watch({stop: "${active.spec.id}"}); otherwise you're woken when it ends.`].filter(Boolean).join("\n"), status, active.recent.join("\n"));
+			});
+			next();
+		});
+		next();
+	}
+
+	private async readProgress(active: Active): Promise<void> {
+		const command = active.spec.bash?.progress;
+		if (!command || active.finishing) return;
+		const value = await lastLine(this.shell(), command, active.spec.cwd);
+		if (this.closed || this.active.get(active.spec.id) !== active) return;
+		active.readings.push({ at: Date.now(), value });
+		active.readings.splice(0, Math.max(0, active.readings.length - READINGS));
+		this.publish();
 	}
 
 	/**
@@ -501,6 +595,8 @@ class Watches {
 		if (!lines.length) return;
 		active.recent.push(...lines);
 		active.recent.splice(0, Math.max(0, active.recent.length - RECENT_LINES));
+		// A background bash command wakes the agent only when it ends or at its warnings.
+		if (active.spec.bash) return;
 		active.pending.push(...lines);
 		active.pending.splice(0, Math.max(0, active.pending.length - 1_000));
 		active.settle ??= setTimeout(() => { active.settle = undefined; this.guard(() => this.report(active)); }, SETTLE_MS);
@@ -538,6 +634,7 @@ class Watches {
 			how = status.error ? `it could not start: ${status.error}` : status.stopped ? `it was stopped (${status.stopped})`
 				: status.signal ? `it was ended by ${status.signal}` : `it exited with code ${status.code}`;
 		} catch { /* the generic reason stands */ }
+		if (active.spec.bash) how += ` after ${elapsed(Date.now() - active.spec.bash.started)}${active.readings.length ? ` (${progressLine(active.readings)})` : ""}`;
 		void this.chain(active, () => this.end(active, how, { kill: false, output: active.recent.join("\n") }));
 	}
 
@@ -644,6 +741,9 @@ class Watches {
 		if (active) this.end(active, "Jordan stopped it", { kill: true });
 	}
 
+	/** Stops a bash call's command before it became a watch. */
+	stopRun(spec: WatchSpec): void { if (spec.pid && alive(spec.pid)) stopTree(spec.pid); }
+
 	private publish(): void {
 		if (this.closed) return;
 		const specs = [...this.active.values()].map(active => active.spec);
@@ -653,15 +753,19 @@ class Watches {
 		const presentation = getPresentation(this.pi);
 		if (presentation) this.presentation = presentation;
 		if (!presentation || presentation.suspended) return;
-		const times = specs.flatMap(spec => spec.mode === "time" ? [spec.at!] : []);
-		const files = specs.flatMap(spec => spec.mode === "output" ? [spec.log!, spec.exit!] : spec.mode === "change" ? [spec.change!, spec.exit!] : []);
+		// A background bash command wakes a sleeping conversation only at its end and its warnings.
+		const warning = (bash: NonNullable<WatchSpec["bash"]>) => bash.started + Math.ceil((Date.now() + 1 - bash.started) / (bash.warn! * 1000)) * bash.warn! * 1000;
+		const times = specs.flatMap(spec => spec.mode === "time" ? [spec.at!] : spec.bash?.warn ? [warning(spec.bash)] : []);
+		const files = specs.flatMap(spec => spec.bash ? [spec.exit!] : spec.mode === "output" ? [spec.log!, spec.exit!] : spec.mode === "change" ? [spec.change!, spec.exit!] : []);
+		const reading = (id: string) => this.active.get(id)?.readings.at(-1)?.value;
 		presentation.publish("pi-watch", specs.length || this.closing ? {
 			kind: "details", title: "Watches", ...(times.length ? { wakes: Math.min(...times) } : {}),
 			...(specs.some(spec => spec.mode !== "time") ? { watching: true } : {}),
 			...(specs.some(spec => spec.mode === "change") ? { watchEvery: Math.min(...specs.flatMap(spec => spec.mode === "change" ? [spec.every!] : [])) } : {}),
 			...(files.length ? { wakeFiles: files } : {}), ...(this.closing ? { close: true } : {}),
 			data: { items: specs.map(spec => ({ id: spec.id, title: spec.label ?? describeWatch(spec), ...(spec.mode === "time" ? { at: spec.at } : {}),
-				subtitle: [spec.id, ...(spec.label ? [describeWatch(spec)] : []), ...(spec.mode !== "time" && spec.expires ? [`ends ${when(spec.expires)}`] : [])].join(" · "),
+				subtitle: [spec.id, ...(spec.label ? [describeWatch(spec)] : []), ...(spec.mode !== "time" && spec.expires ? [`ends ${when(spec.expires)}`] : []),
+					...(spec.bash ? [`started ${clock(spec.bash.started)}`] : []), ...(reading(spec.id) ? [`progress ${reading(spec.id)}`] : [])].join(" · "),
 				actions: [{ id: `stop:${spec.id}`, label: "Stop", destructive: true }] })) },
 			...(specs.length ? { badges: [{ label: "Watching", value: String(specs.length), icon: "eye" as const, compact: true,
 				description: specs.map(spec => `${spec.id}: ${spec.label ?? describeWatch(spec)}`).join("\n") }] } : {}),
@@ -688,9 +792,10 @@ export default function watch(pi: ExtensionAPI): void {
 	// A message from the user means they are here: a close the agent asked for earlier no longer applies.
 	pi.on("input", event => { if (event.source !== "extension") watches?.keepOpen(); });
 	pi.on("tool_call", event => {
-		const label = event.toolName === "watch" ? callDescription(event.input) : undefined;
+		const label = event.toolName === "watch" || event.toolName === "bash" ? callDescription(event.input) : undefined;
 		if (label) labels.set(event.toolCallId, label.slice(0, 200));
 	});
+	registerBash(pi, () => watches, labels);
 	pi.registerTool({
 		name: "watch",
 		label: "Watch",

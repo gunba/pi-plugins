@@ -39,7 +39,7 @@ export const requestDescription = (others: readonly string[]) => `Run a JavaScri
 - Before repeating a change over many files, make it once and check it.
 Core operations:
 read({path,offset?,limit?}) -> the file's whole text, or just the lines asked for (counting from 1), or an image.
-bash({command,timeout?}) -> {output,exit_code,truncated,full_output_path?,wall_time_seconds}. Timeout in seconds. Use it for file operations and anything that needs Node.
+bash({command,wait?,warn?,progress?}) -> {output,exit_code,truncated,full_output_path?,wall_time_seconds,running?}. After wait s (60) it runs on, waking you when done; progress: a command printing how far it is; warn: s between wakes.
 edit({path,edits:[{oldText,newText}]}) -> text. Each oldText must occur exactly once in the original file; edits must not overlap.
 write({path,content}) -> text. Creates folders and replaces the file: for new files and full rewrites.
 Common operations (more: describeTool):

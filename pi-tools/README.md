@@ -42,7 +42,9 @@ budget's 40-line/3,000-byte excerpts remain in use.
 
 ### Operation data
 
-- `read`, `bash`, `edit`, `write`, and MCP resources retain their native data shapes.
+- `read`, `edit`, `write`, and MCP resources retain their native data shapes. `bash` (Desk's, from
+  pi-watch) keeps Pi's shape; a command still running after its `wait` gives `exit_code: null` and
+  `running`, its watch's ID, and runs on in the background. Calls in `Promise.all` run at once.
 - Agent operations expose their existing response objects, rather than their compact
   display strings. Primary approval denial remains `{approved: false}`.
 - Plans expose `{plan}`.
