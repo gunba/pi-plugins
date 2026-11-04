@@ -244,7 +244,9 @@ test("Desk children inherit one declaration while parent permissions and nested 
 	const child = await h.open("structured-child");
 	assert.deepEqual(JSON.parse((await child.driver.prompt("fixture-availability")).output), ["codemode"]);
 	const result = await call(child, "codemode", { code: 'const blocked=await tools.bash({command:"rm -rf /"}); const inventory=JSON.parse(await tools.custom_inventory({})); return {blocked:!!blocked.error,model:inventory.model};' });
-	assert.deepEqual(JSON.parse(result.output), {blocked:true,model:"child-codex-fixture"});
+	const [returned, note] = result.output.split("\n");
+	assert.deepEqual(JSON.parse(returned), {blocked:true,model:"child-codex-fixture"});
+	assert.match(note, /^1 operation failed: bash: /);
 	assert.equal(executed(child.manager).length, 1);
 	h.setActive(["codemode", "bash"]);
 	const denied = await call(child, "codemode", {code:'return await tools.custom_inventory({});'});

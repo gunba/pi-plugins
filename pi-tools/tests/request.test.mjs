@@ -76,9 +76,10 @@ async function harness(t, extra = () => {}) {
   } };
 }
 
+/** The program's returned value: its first output; a note on failed operations may follow. */
 const data = result => {
   assert.equal(result.isError, false, JSON.stringify(result.content));
-  return JSON.parse(result.content.map(part => part.text ?? "").join("\n"));
+  return JSON.parse(result.content[0].text);
 };
 
 test("one declaration supports ordered writes, dependent reads, loops, projections and independent errors", async t => {
@@ -343,4 +344,14 @@ test("a conversation keeps more than eight time watches", async t => {
     for (const id of ids) await tools.watch({stop: id});
     return {ids};`);
   assert.deepEqual(data(result), { ids: ["w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10"] });
+});
+
+
+test("a program that ends normally lists the operations that failed", async t => {
+  // A program ignored an {error} result and the agent saw only "Script completed".
+  const h = await harness(t);
+  const result = await h.run(`
+    await tools.edit({path: "missing.txt", edits: [{oldText: "a", newText: "b"}]});
+    return "done";`);
+  assert.deepEqual(result.content.map(part => part.text), ["done", "1 operation failed: edit: Could not edit file: missing.txt. Error code: ENOENT."]);
 });

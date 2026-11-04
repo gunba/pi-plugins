@@ -223,7 +223,13 @@ export function createStructuredToolExtension(): ExtensionFactory {
         const value = content.length === 1 && content[0]?.type === "text" ? content[0].text : undefined;
         let data: typeof result.structuredContent = value ?? JSON.parse(JSON.stringify(content));
         if (value !== undefined) { try { data = JSON.parse(value); } catch { /* Plain text is also a data value. */ } }
-        return { ...result, content, structuredContent: data, ...(terminate ? { terminate: true } : {}) };
+        // Operations return {error} instead of throwing, so a program that doesn't check one still ends normally; the
+        // agent is told which failed. A program that fails already lists its calls.
+        const failed = result.isError ? [] : ((result.details as { calls?: { name: string; status: string; error?: string }[] } | undefined)
+          ?.calls ?? []).filter(call => call.status === "error");
+        const note = failed.length ? [{ type: "text" as const, text: `${failed.length} operation${failed.length === 1 ? "" : "s"} failed: ${failed.slice(0, 5)
+          .map(call => `${call.name}: ${(call.error ?? "").replace(/\s+/g, " ").slice(0, 160)}`).join("; ")}${failed.length > 5 ? "; …" : ""}` }] : [];
+        return { ...result, content: [...content, ...note], structuredContent: data, ...(terminate ? { terminate: true } : {}) };
       },
     };
   });

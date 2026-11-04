@@ -27,7 +27,9 @@ the model. Backticks and literal `${` still need escaping in template literals.
 
 Each operation returns its native structured data when available, otherwise text.
 Failures become `{error: string}` rather than rejecting and discarding independent
-results. Check errors before dependent effects. Script syntax/runtime errors still
+results. Check errors before dependent effects. A request that ends normally after
+operations failed lists them after its output (name and error, at most five), so an
+unchecked failure is not reported as success. Script syntax/runtime errors still
 fail the request; completed effects are never rolled back. Pending operations are
 cancelled when the script ends. A terminal operation such as `agent_move` emits its
 result and ends the script and agent turn before later effects.
