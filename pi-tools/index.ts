@@ -1,6 +1,6 @@
 import {
   createCodemodeExtension, createToolSearchExtension,
-  type ExtensionAPI, type ExtensionFactory, type ExtensionToolContext, type ToolDefinition,
+  type ExecuteToolOptions, type ExtensionAPI, type ExtensionFactory, type ExtensionToolContext, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 import { RUN_PROGRAM, visibleSaved, type ProgramRun, type SavedTool } from "./saved.ts";
@@ -201,12 +201,44 @@ async function readWhole(ctx: ExtensionToolContext, params: unknown, options: Pa
   }
 }
 
+/**
+ * How long one operation in a program may run. A stalled connector, page or service call would otherwise hold the whole
+ * turn until the user stopped it. Commands have their own wait, and these can wait for the user's approval or answer.
+ */
+const CALL_LIMIT_MS = 5 * 60_000;
+const UNLIMITED = new Set(["bash", "powershell", "watch", "ask_user"]);
+/** After the limit, how long a stopped call gets to settle and report itself before the program moves on without it. */
+const STOP_GRACE_MS = 5_000;
+
+async function limited(name: string, options: ExecuteToolOptions | undefined, call: (options: ExecuteToolOptions) => Promise<Outcome>): Promise<Outcome> {
+  const controller = new AbortController(), parent = options?.signal;
+  const forward = () => controller.abort(parent!.reason);
+  if (parent?.aborted) forward(); else parent?.addEventListener("abort", forward, { once: true });
+  let timer: Parameters<typeof clearTimeout>[0];
+  const wait = (ms: number) => new Promise<undefined>(resolve => { timer = setTimeout(resolve, ms); });
+  try {
+    const running = call({ ...options, signal: controller.signal });
+    const finished = await Promise.race([running, wait(CALL_LIMIT_MS)]);
+    if (finished) return finished;
+    controller.abort(new Error(`No result after ${CALL_LIMIT_MS / 60_000} minutes`));
+    const stopped = await Promise.race([running, wait(STOP_GRACE_MS)]);
+    const text = `No result after ${CALL_LIMIT_MS / 60_000} minutes, so the call was stopped. It may have taken effect; check before repeating it.`;
+    return { toolCall: stopped?.toolCall ?? { type: "toolCall", id: `${name}-stopped`, name, arguments: {} },
+      result: { content: [{ type: "text", text }], details: undefined }, isError: true };
+  } finally {
+    clearTimeout(timer);
+    parent?.removeEventListener("abort", forward);
+  }
+}
+
 /** All nested operations still pass through Pi's validation, guards, approvals and Desk events. */
 function context(ctx: ExtensionToolContext, terminate: () => void): ExtensionToolContext {
   return Object.create(ctx, {
     tools: { value: ctx.tools.map(scriptTool) },
     executeTool: { value: async (...args: Parameters<ExtensionToolContext["executeTool"]>) => {
-      const outcome = args[0] === "read" ? await readWhole(ctx, args[1], args[2]) : await ctx.executeTool(...args);
+      const [name, params] = args;
+      const call = (options?: ExecuteToolOptions) => name === "read" ? readWhole(ctx, params, options) : ctx.executeTool(name, params, options);
+      const outcome = UNLIMITED.has(name) ? await call(args[2]) : await limited(name, args[2], call);
       if (outcome.result.terminate) terminate();
       if (external(args[0])) return outcome;
       const result = outcome.result;
