@@ -83,7 +83,7 @@ export function partyOperation(value: unknown): PartyOperation {
 	if (kind !== "create" && kind !== "fork" && kind !== "resume" && kind !== "move" && kind !== "close") throw Error("Invalid agent operation.");
 	const operation: PartyOperation = { id: id(input.id), sender: id(input.sender), sender_epoch: id(input.sender_epoch),
 		kind, created: integer(input.created), expires: integer(input.expires),
-		cwd: text(input.cwd, 4096), task: text(input.task, 32_000), label: text(input.label, 120) };
+		cwd: text(input.cwd, 4096), task: text(input.task, MAX_NETWORK_PACKET), label: text(input.label, 120) };
 	if (operation.expires <= operation.created || operation.expires - operation.created > 300_000) throw Error("Invalid agent operation lifetime.");
 	if (kind === "create") {
 		if (input.model !== undefined) operation.model = text(input.model, 300);

@@ -112,7 +112,7 @@ const SHOW_PARAMETERS = Type.Object({
 	items: Type.Optional(Type.Array(Type.Object({
 		file: Type.Optional(Type.String()),
 		url: Type.Optional(Type.String({ maxLength: 8000, description: "A web link, instead of file." })),
-		label: Type.Optional(Type.String({ maxLength: 200, description: "The link's text." })),
+		label: Type.Optional(Type.String({ description: "The link's text." })),
 		focus: Type.Optional(Type.String({ description: "Where to open a text file: text to start at, or lines 40-80." })),
 		changes: Type.Optional(Type.Array(Type.Object({ where: Type.String(), before: Type.Optional(Type.String()), after: Type.Optional(Type.String()) }))),
 	}))),

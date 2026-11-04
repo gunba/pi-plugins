@@ -365,7 +365,7 @@ export default function party(pi: ExtensionAPI): void {
 				partyForkPoint(context.sessionManager.getBranch(), toolCallId);
 				if (!(await context.ui.confirm("Start agent", `${request.name}\nDirectory: ${context.cwd}\nContext: a copy of this conversation, with its model and reasoning\n\n${request.task}`))) return { approved: false };
 				if (abort?.aborted) throw Error("Starting the agent was cancelled.");
-				const queued = operations().queue(database(), session, owner, { kind: "fork", label: request.name, task: request.task, cwd: context.cwd, call: toolCallId });
+				const queued = operations().queue(database(), session, owner, { kind: "fork", label: request.name.slice(0, 120), task: request.task, cwd: context.cwd, call: toolCallId });
 				const response = await operations().wait(queued.id, abort);
 				return { ...response, agent: response.result!.session, parent: session };
 			}
@@ -375,7 +375,7 @@ export default function party(pi: ExtensionAPI): void {
 			const setup = [request.model && `Model: ${request.model}`, request.reasoning && `Reasoning: ${request.reasoning}`].filter(Boolean).join(" · ");
 			if (!(await context.ui.confirm("Start agent", `${request.name}\nComputer: ${request.computer ?? "this one"}\nDirectory: ${cwd}${setup ? `\n${setup}` : ""}\n\n${request.task}`))) return { approved: false };
 			if (abort?.aborted) throw Error("Starting the agent was cancelled.");
-			const queued = operations().queue(database(), session, owner, { kind: "create", computer, cwd, label: request.name, task: request.task,
+			const queued = operations().queue(database(), session, owner, { kind: "create", computer, cwd, label: request.name.slice(0, 120), task: request.task,
 				...(request.model ? { model: request.model } : {}), ...(request.reasoning ? { reasoning: request.reasoning } : {}) });
 			const response = await operations().wait(queued.id, abort), created = response.result!.session;
 			const ignored = (request.model || request.reasoning) && !response.result!.model && !response.result!.reasoning;
@@ -426,7 +426,7 @@ export default function party(pi: ExtensionAPI): void {
 		description: "When Jordan asks, move this conversation to another of his computers. Your turn ends; you continue there from note. Files stay here.",
 		parameters: Type.Object({ computer: Type.String({ minLength: 1 }),
 			cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Default: home folder." })),
-			note: Type.String({ minLength: 1, maxLength: 32000, description: "Your next turn starts from it." }) }),
+			note: Type.String({ minLength: 1, description: "Your next turn starts from it." }) }),
 		async execute(_id, params) {
 			const computer = database().resolveComputer(params.computer, hostname());
 			if (computer === "local") throw Error("You are already on this computer.");

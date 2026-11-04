@@ -48,9 +48,10 @@ export function installHome(pi: ExtensionAPI, directory: string): void {
 	pi.registerTool({ name: "home_jobs", label: "Read Home schedules", description: "Lists each scheduled job's files and its next deadline (Australia/Perth). Arms and runs nothing.", parameters: Type.Object({}),
 		async execute() { return result(readHomeJobs(join(getAgentDir(), "home", "jobs"))); } });
 	pi.registerTool({ name: "home_notify", label: "Deliver Home update", description: "Sends a scheduled job's result to Home and Jordan's phone. Only when there is something worth telling; a failed send is not retried.",
-		parameters: Type.Object({ title: Type.String({ minLength: 1, maxLength: 100 }), text: Type.String({ minLength: 1, maxLength: 32_000 }) }),
+		parameters: Type.Object({ title: Type.String({ minLength: 1 }), text: Type.String({ minLength: 1 }) }),
 		async execute(id, params, signal) {
-			store.request(id, { action: "notify", ...params });
+			// A phone shows a short title; the update itself keeps its whole text.
+			store.request(id, { action: "notify", title: params.title.slice(0, 100), text: params.text });
 			const until = Date.now() + 30_000;
 			while (!signal?.aborted && Date.now() < until) {
 				const reply = store.result(id);

@@ -294,7 +294,8 @@ export class ConversationSearch {
 		clearTimeout(pending.timer); this.queries.delete(packet.id);
 		if (packet.error || !packet.result) { pending.reject(Error(packet.error ?? "Invalid search response.")); return; }
 		packet.result.server = computer;
-		if (pending.request.action !== "status" && JSON.stringify(packet.result).length > pending.request.max_chars) { pending.reject(Error("The search server exceeded the requested response budget.")); return; }
+		if (pending.request.action !== "status" && packet.result.hits.reduce((sum, hit) => sum + hit.text.length, 0) > pending.request.max_chars + packet.result.hits.length)
+			{ pending.reject(Error("The search server exceeded the requested character budget.")); return; }
 		pending.resolve(packet.result);
 	}
 	private packet(raw: unknown): SearchPacket {

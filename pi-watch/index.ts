@@ -137,10 +137,10 @@ export const activeWatches = (sessionId: string): number => registry.get(session
 const Parameters = Type.Object({
 	command: Type.Optional(Type.String({ description: "Shell command; with every, re-run." })),
 	program: Type.Optional(Type.String({ description: "A program, as for codemode, re-run every every seconds instead of a command; it can call any operation. It runs only while this conversation is open." })),
-	every: Type.Optional(Type.Integer({ minimum: 5, description: "Seconds between runs. Wakes you on a change, then ends." })),
+	every: Type.Optional(Type.Integer({ minimum: 1, description: "Seconds between runs. Wakes you on a change, then ends." })),
 	until: Type.Optional(Type.String({ description: "Wake after a delay (90s, 5m, 2h), at HH:MM (local) or at an ISO time." })),
 	wake_when: Type.Optional(Type.String({ description: "Wake only for output showing this, in plain words." })),
-	hours: Type.Optional(Type.Number({ minimum: 0.05 })),
+	hours: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
 	stop: Type.Optional(Type.String({ description: "Watch ID to stop." })),
 	close: Type.Optional(Type.Boolean({ description: "Close this conversation until a watch wakes it." })),
 }, { additionalProperties: false });

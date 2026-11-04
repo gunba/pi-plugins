@@ -22,8 +22,8 @@ import { MAX_MESSAGE_FILES } from "../store.ts";
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 const startParameters = Type.Object({
-	task: Type.String({ minLength: 1, maxLength: 32_000, description: "The work and the context it needs." }),
-	name: Type.String({ minLength: 1, maxLength: 120 }),
+	task: Type.String({ minLength: 1, description: "The work and the context it needs." }),
+	name: Type.String({ minLength: 1 }),
 	primary: Type.Optional(Type.Boolean({ description: "true: its own Desk conversation, on any computer; needs Jordan's approval and doesn't report back. Default: a helper that reports back." })),
 	context: Type.Optional(Type.String({ description: "copy, fresh, or (secondary) a number of recent turns. Default: copy for secondary, fresh for primary." })),
 	computer: Type.Optional(Type.String({ description: "Primary: name or ID." })),
@@ -52,7 +52,7 @@ const resumeParameters = Type.Object({
 
 const stopParameters = Type.Object({
 	agent: Type.String({ minLength: 1, description: "ID, or a secondary agent's path." }),
-	note: Type.Optional(Type.String({ maxLength: 2000, description: "Primary: why." })),
+	note: Type.Optional(Type.String({ description: "Primary: why." })),
 	keep: Type.Optional(Type.Boolean({ description: "Primary: true keeps it in the sidebar with its watches going on, to wake it; false removes it and ends them. Omitted: kept when it has watches." })),
 }, { additionalProperties: false });
 

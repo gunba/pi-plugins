@@ -129,26 +129,30 @@ function date(value: unknown, name: string): number | undefined {
 	const time = typeof value === "string" ? Date.parse(value) : value;
 	return searchInteger(time, 0, 8.64e15, name);
 }
-/** Validate HTTP/tool input. Limits bound both work and the complete serialized response. */
+/**
+ * Validate HTTP/tool input. Agents may ask for as much or as little as they like: max_chars bounds the passages' text,
+ * and the result count and context are bounded by what the search finds.
+ */
 export function searchRequest(value: unknown): SearchRequest {
 	const data = object(value), action = data.action ?? (data.reference === undefined ? data.query === undefined ? "status" : "search" : "read");
 	if (action === "status") return { action };
-	const max_chars = searchInteger(data.max_chars ?? 8000, 2000, 24_000, "response character budget");
+	const max_chars = searchInteger(data.max_chars ?? 8000, 1, Number.MAX_SAFE_INTEGER, "character budget");
 	if (action === "read") return { action, reference: searchId(data.reference, "source reference"),
-		before: searchInteger(data.before ?? 2, 0, 10, "preceding entry count"), after: searchInteger(data.after ?? 3, 0, 10, "following entry count"), max_chars };
+		before: searchInteger(data.before ?? 2, 0, Number.MAX_SAFE_INTEGER, "preceding entry count"),
+		after: searchInteger(data.after ?? 3, 0, Number.MAX_SAFE_INTEGER, "following entry count"), max_chars };
 	if (action !== "search") throw Error("Unknown conversation search action.");
 	const raw = data.filters === undefined ? data : object(data.filters);
 	const filters: SearchFilters = { include_tools: raw.include_tools === undefined ? true : raw.include_tools as boolean };
 	if (typeof filters.include_tools !== "boolean") throw Error("include_tools must be true or false.");
-	for (const name of ["project", "agent", "session"] as const) if (raw[name] !== undefined) filters[name] = searchText(raw[name], name === "session" ? 200 : 1024, name);
+	for (const name of ["project", "agent", "session"] as const) if (raw[name] !== undefined) filters[name] = searchText(raw[name], 32_000, name);
 	filters.after = date(raw.after, "after date"); filters.before = date(raw.before, "before date");
 	if (filters.after !== undefined && filters.before !== undefined && filters.before <= filters.after) throw Error("before must be later than after.");
 	if (raw.exclude !== undefined) {
 		const exclude = object(raw.exclude);
 		filters.exclude = { session: searchText(exclude.session, 200, "excluded session"), entry: searchText(exclude.entry, 200, "excluded entry") };
 	}
-	return { action, query: searchText(data.query, 2000, "search query").trim(), filters,
-		limit: searchInteger(data.limit ?? 8, 1, 30, "result limit"), max_chars };
+	return { action, query: searchText(data.query, 32_000, "search query").trim(), filters,
+		limit: searchInteger(data.limit ?? 8, 1, Number.MAX_SAFE_INTEGER, "result limit"), max_chars };
 }
 export function searchSource(value: unknown): SearchSource {
 	const item = object(value);
@@ -177,7 +181,7 @@ export function searchResponse(value: unknown): SearchResponse {
 	const data = object(value), raw = object(data.coverage);
 	if (data.origin !== SEARCH_ORIGIN || !["hybrid", "keyword", "context", "status"].includes(String(data.mode))
 		|| !["disabled", "preparing", "indexing", "ready", "error"].includes(String(raw.semantic)) || typeof data.truncated !== "boolean"
-		|| !Array.isArray(data.hits) || data.hits.length > 200) throw Error("Invalid conversation search response.");
+		|| !Array.isArray(data.hits) || data.hits.length > 100_000) throw Error("Invalid conversation search response.");
 	const count = (key: string) => searchInteger(raw[key], 0, Number.MAX_SAFE_INTEGER, key);
 	const coverage: SearchCoverage = { sources: count("sources"), pending_sources: count("pending_sources"), warnings: count("warnings"),
 		passages: count("passages"), semantic_passages: count("semantic_passages"), embedded_passages: count("embedded_passages"), semantic: raw.semantic as SearchCoverage["semantic"] };

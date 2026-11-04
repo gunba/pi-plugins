@@ -24,10 +24,10 @@ const PAGE_CHARS = 12_000;
 
 export const SEARCH_PARAMETERS = Type.Object({
 	goal: Type.String({ minLength: 1, description: "What to find, as a sentence." }),
-	queries: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 5, description: "2–3 keyword searches of 3–6 words." }),
+	queries: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "2–3 keyword searches of 3–6 words." }),
 }, { additionalProperties: false });
 export const FETCH_PARAMETERS = Type.Object({
-	urls: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20 }),
+	urls: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
 	goal: Type.Optional(Type.String({ description: "Excerpts focus on it." })),
 	full: Type.Optional(Type.Boolean({ description: "Whole text, not excerpts." })),
 }, { additionalProperties: false });
