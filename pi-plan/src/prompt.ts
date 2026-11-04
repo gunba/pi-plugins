@@ -10,12 +10,16 @@ export const PLAN_CHECK_EVERY = 25;
 /** The reminder added to a tool result: where the plan stands, so the model can bring it up to date. */
 export function renderPlanCheck(plan: PlanSnapshot, calls: number): string {
 	const summary = stepSummary(plan.steps), short = (text: string) => JSON.stringify(text.length > 120 ? `${text.slice(0, 117)}…` : text);
-	// An instruction, not a remark: worded as "if it is out of date", models read it as a reminder and moved on.
-	const where = !summary.total ? `Objective: ${short(plan.objective)}. If it no longer describes the work, update it now`
-		: summary.completed === summary.total ? `All ${summary.total} steps are marked done. If the objective is met, complete the plan now; if not, add what remains`
-		: `${summary.completed} of ${summary.total} steps are marked done${summary.current ? `; current: ${short(summary.current)}` : ""}. Compare that with the work so far and, if it is behind, update the plan now`;
+	// After 48 of 139 completed plans in two weeks, models went on for 25 or more calls with no plan, after 23 for over 100.
+	if (plan.phase === "complete")
+		return `[Plan check] ${calls} tool calls since the plan ${short(plan.objective)} was completed; the work since is in no plan. If it has more than one step, create_plan for it now.`;
+	// An instruction naming the cases, not a remark: asked whether the plan was "out of date" or "behind", models
+	// answered about half the checks, and seldom when the user had since asked for something else.
+	const where = !summary.total ? `Objective: ${short(plan.objective)}. If that is not what you are working on now, update the plan now with update_plan`
+		: summary.completed === summary.total ? `All ${summary.total} steps are marked done. If the objective is met, complete the plan now with update_plan; if not, or you are working on something else, add that work as steps`
+		: `${summary.completed} of ${summary.total} steps are marked done${summary.current ? `; current: ${short(summary.current)}` : ""}. If that is done, or you are working on something else (something the user asked for since, say), update the plan now with update_plan: mark what is done and add the work you are on`;
 	const notes = renderStepNotes(plan);
-	return `[Plan check] ${calls} tool calls since the plan was last updated. ${where} with update_plan.${notes ? `\n${notes}` : ""}`;
+	return `[Plan check] ${calls} tool calls since the plan was last updated. ${where}.${notes ? `\n${notes}` : ""}`;
 }
 
 /** The notes the model wrote for the steps it is on, which it is shown when it reaches them; empty when there are none. */

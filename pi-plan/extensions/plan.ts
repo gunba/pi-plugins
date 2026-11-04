@@ -334,13 +334,14 @@ class PlanController {
 			});
 		});
 		// In long conversations the plan falls behind the work: nothing but the model's own earlier plan calls shows it
-		// the plan, and those recede. An active plan untouched for PLAN_CHECK_EVERY of the model's own tool calls gets a
-		// short reminder at the end of the next result, and again every PLAN_CHECK_EVERY calls while it stays untouched.
-		// Only that new result changes, so earlier context and the prompt cache are left as they were.
+		// the plan, and those recede. An active or completed plan untouched for PLAN_CHECK_EVERY of the model's own tool
+		// calls gets a short reminder at the end of the next result, and again every PLAN_CHECK_EVERY calls while it stays
+		// untouched: a completed one, because the model has gone on working without a plan. A paused or blocked plan waits
+		// for the user. Only that new result changes, so earlier context and the prompt cache are left as they were.
 		this.pi.on("tool_result", event => {
 			// Calls a script made (codemode) go back to the script, not the model.
 			if (event.parentToolCallId || this.stopping) return;
-			const plan = this.current(), key = plan?.phase === "active" ? `${plan.id}:${plan.revision}` : "";
+			const plan = this.current(), key = plan?.phase === "active" || plan?.phase === "complete" ? `${plan.id}:${plan.revision}` : "";
 			// A plan changed some other way (Desk's plan controls, say) counts from that change; this call is the first since.
 			if (key !== this.seen) { this.seen = key; this.sinceUpdate = 0; }
 			// A step's notes come up once, when the model reaches it: a plan tool's own result shows them, and from a

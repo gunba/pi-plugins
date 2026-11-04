@@ -39,6 +39,11 @@ rounds. A step sent without `detail` keeps the detail it had (matched by its
 text); `""` removes it. Desk shows the notes under the step.
 A model calling the tool directly rather than from a program has no schema for it,
 so a list sent as JSON text is parsed as the list.
+A plan check comes at the end of a tool result once the model has made 25 tool
+calls without changing an active or completed plan, and every 25 calls after:
+for an active plan, where it stands and what to update when the work has moved
+on; for a completed one, that the work since is in no plan. Paused and blocked
+plans are not checked.
 A plan can complete with steps still open; they keep their recorded states.
 Finishing every step does not by itself prove the objective complete.
 `create_plan` while a plan is unfinished completes that plan, as it stands, and

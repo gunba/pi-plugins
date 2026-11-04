@@ -144,7 +144,7 @@ test("an edit that changes nothing, or a resume of a running plan, returns the p
 	await h.emit("session_shutdown");
 });
 
-test("an active plan untouched for 25 of the model's tool calls is recalled in the next result, and again while it stays untouched", async () => {
+test("a plan untouched for 25 of the model's tool calls is recalled in the next result, and again while it stays untouched", async () => {
 	// Past 300k tokens of context the gap between plan updates doubled: nothing showed the model its plan but its own old calls.
 	const h = createExtensionHarness(); await h.start();
 	await executeTool(h, "create_plan", { objective: "Ship the fix", steps: [{ content: "Write it", status: "completed" }, { content: "Test it", status: "in_progress" }, { content: "Release it", status: "pending" }] });
@@ -155,7 +155,7 @@ test("an active plan untouched for 25 of the model's tool calls is recalled in t
 	assert.equal(await call({ parentToolCallId: "script" }), undefined, "a script's own calls do not count");
 	const nudged = await call({ structuredContent: { output: "ok" } });
 	assert.equal(nudged.content[0].text, "ok", "the result itself is kept");
-	assert.equal(nudged.content[1].text, `\n[Plan check] 25 tool calls since the plan was last updated. 1 of 3 steps are marked done; current: "Test it". Compare that with the work so far and, if it is behind, update the plan now with update_plan.`);
+	assert.equal(nudged.content[1].text, `\n[Plan check] 25 tool calls since the plan was last updated. 1 of 3 steps are marked done; current: "Test it". If that is done, or you are working on something else (something the user asked for since, say), update the plan now with update_plan: mark what is done and add the work you are on.`);
 	assert.deepEqual(nudged.structuredContent, { output: "ok" }, "its structured form is kept");
 	// An update starts the count again; a plan left alone is recalled every 25 calls.
 	await update(h, { action: "edit", steps: [{ content: "Test it", status: "completed" }, { content: "Release it", status: "in_progress" }] });
@@ -167,6 +167,11 @@ test("an active plan untouched for 25 of the model's tool calls is recalled in t
 	// A paused plan is not recalled.
 	await update(h, { action: "pause" });
 	for (let index = 0; index < 30; index++) assert.equal(await call(), undefined);
+	// Work after a completed plan is work in no plan.
+	await update(h, { action: "complete" });
+	for (let index = 1; index < 25; index++) assert.equal(await call(), undefined);
+	assert.equal((await call()).content[1].text,
+		`\n[Plan check] 25 tool calls since the plan "Ship the fix" was completed; the work since is in no plan. If it has more than one step, create_plan for it now.`);
 	await h.emit("session_shutdown");
 });
 
