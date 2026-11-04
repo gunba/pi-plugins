@@ -12,7 +12,7 @@ export interface PrimaryAgents {
 	send(request: { to: string; message: string; wake: boolean; files?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<Record<string, unknown>>;
 	list(request: { query?: string; offline?: boolean; offset?: number }): Record<string, unknown>;
 	/** Closes a conversation this one started. */
-	close(request: { agent: string; note?: string }, signal: AbortSignal | undefined): Promise<Record<string, unknown>>;
+	close(request: { agent: string; note?: string; keep?: boolean }, signal: AbortSignal | undefined): Promise<Record<string, unknown>>;
 	/** Reopens a closed conversation without sending it anything. */
 	resume(request: { agent: string }, signal: AbortSignal | undefined): Promise<Record<string, unknown>>;
 }

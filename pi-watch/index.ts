@@ -901,7 +901,8 @@ export default function watch(pi: ExtensionAPI): void {
 		name: "watch",
 		label: "Watch",
 		description: "Wait without spending turns, instead of sleeping or polling: end your turn and be woken by a background command's output, "
-			+ "a change in a re-run command, or a time. Watches outlive the conversation. For recurring work, set the next one when woken. No arguments lists watches.",
+			+ "a change in a re-run command, or a time. Watches outlive the conversation. For recurring checks, prefer command or program with every: "
+			+ "it runs without you and wakes you only when its result changes, rather than a time watch that wakes you to check. No arguments lists watches.",
 		parameters: Parameters,
 		executionMode: "sequential",
 		async execute(id, params: Params, _signal, _update, ctx) {

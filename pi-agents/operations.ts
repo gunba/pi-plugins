@@ -12,7 +12,7 @@ type OperationInput = { kind: "create"; computer?: string; cwd: string; task: st
 	/** Move the asking agent itself to another computer; only for computers that announce "move". */
 	| { kind: "move"; computer: string; cwd?: string; task: string }
 	/** Close a conversation this agent started with agent_start; note is left in it. */
-	| { kind: "close"; computer?: string; session: string; note?: string };
+	| { kind: "close"; computer?: string; session: string; note?: string; keep?: boolean };
 interface Outgoing { id: string; computer: string; request: string; status: string; response: string | null }
 interface Incoming { request: string; status: string; response: string | null }
 
@@ -76,6 +76,7 @@ export class PartyOperations {
 				: input.kind === "close" ? { cwd: "", task: input.note ?? "", label: "", session: input.session }
 				: input.kind === "move" ? { cwd: input.cwd ?? "", task: input.task, label: "" } : { cwd: input.cwd, task: input.task, label: input.label }),
 			...(input.kind === "fork" ? { call: input.call } : {}),
+			...(input.kind === "close" && input.keep !== undefined ? { keep: input.keep } : {}),
 			...(input.kind === "create" && input.model ? { model: input.model } : {}),
 			...(input.kind === "create" && input.reasoning ? { reasoning: input.reasoning } : {}) };
 		if (computer === "local" ? !this.hostOnline() : !store.computerOnline(computer)) throw Error(computer === "local"

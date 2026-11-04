@@ -413,7 +413,8 @@ export default function party(pi: ExtensionAPI): void {
 		async close(request, abort) {
 			const at = request.agent.lastIndexOf("@"), computer = at > 0 ? request.agent.slice(at + 1) : "local", target = at > 0 ? request.agent.slice(0, at) : request.agent;
 			if (computer !== "local" && !database().computerSupports(computer, "close")) throw Error("That agent's computer is offline, or its Desk is too old to close agents; it updates itself.");
-			const queued = operations().queue(database(), session, owner, { kind: "close", computer, session: target, ...(request.note ? { note: request.note } : {}) });
+			const queued = operations().queue(database(), session, owner, { kind: "close", computer, session: target, ...(request.note ? { note: request.note } : {}),
+				...(request.keep !== undefined ? { keep: request.keep } : {}) });
 			const response = await operations().wait(queued.id, abort);
 			return { ...response, closed: request.agent };
 		},

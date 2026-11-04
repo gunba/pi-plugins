@@ -67,16 +67,20 @@ export class ConversationMoves {
 
 	conversation(session: string): ManagedSession | undefined { return this.conversations(session)[0]; }
 
-	/** Stops a conversation here for good: it moved, or is moving, to another computer. */
-	async stop(managed: ManagedSession, moved?: Move): Promise<void> {
+	/**
+	 * Stops a conversation here: for good when it moved, or is moving, to another computer. Kept, it closes as Desk's
+	 * "Close until needed" does: it stays in the sidebar and its watches go on, reopening it.
+	 */
+	async stop(managed: ManagedSession, moved?: Move, keep = false): Promise<void> {
 		const worker = managed.worker;
 		if (worker) {
-			managed.keepOnClose = false;
-			await worker.submitControl({ kind: "close" }, worker.generation, randomUUID());
+			managed.keepOnClose = keep;
+			await worker.submitControl({ kind: "close", ...(keep ? { keep: true } : {}) }, worker.generation, randomUUID());
 			for (let wait = 0; wait < 600 && managed.worker === worker; wait++) await new Promise(resolve => setTimeout(resolve, 100));
 			if (managed.worker === worker) throw new Error("The conversation did not stop in time.");
 		}
-		managed.view = { ...managed.view, state: "closed", kept: undefined, wakes: undefined, watching: undefined, watchEvery: undefined, asleep: undefined, waiting: undefined, ...(moved ? { moved } : {}) };
+		managed.view = keep ? { ...managed.view, state: "closed", kept: true }
+			: { ...managed.view, state: "closed", kept: undefined, wakes: undefined, watching: undefined, watchEvery: undefined, asleep: undefined, waiting: undefined, ...(moved ? { moved } : {}) };
 		this.core.persist(true); this.core.emit({ type: "session", session: managed.view });
 	}
 

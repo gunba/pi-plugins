@@ -105,7 +105,7 @@ test("message, list and stop schemas", async () => {
 		assert.deepEqual(Object.keys(byName.get("agent_send").parameters.properties), ["to", "message", "wake", "files"]);
 		assert.match(byName.get("agent_send").parameters.properties.wake.description, /next turn/i);
 		assert.deepEqual(Object.keys(byName.get("agent_list").parameters.properties), ["query", "offline", "offset"]);
-		assert.deepEqual(Object.keys(byName.get("agent_stop").parameters.properties), ["agent", "note"]);
+		assert.deepEqual(Object.keys(byName.get("agent_stop").parameters.properties), ["agent", "note", "keep"]);
 		assert.match(byName.get("agent_stop").description, /interrupt a secondary agent's turn/i);
 	} finally {
 		for (const handler of harness.handlers.get("session_shutdown") ?? [])

@@ -43,10 +43,10 @@ read({path,offset?,limit?,page?}) -> the whole text (PDF and Office too), the li
 bash({command,wait?,warn?,progress?}) -> {output,exit_code,truncated,full_output_path?,wall_time_seconds,running?}. After wait s (60) it runs on, waking you when done; progress: a command printing how far it is; warn: s between wakes.
 edit({path,edits:[{oldText,newText}]}) -> text. Each oldText must occur once in the original file; edits must not overlap.
 write({path,content}) -> text. Creates folders and replaces the file: for new files and full rewrites.
-Common operations (more: describeTool):
+Common operations:
 ask_user({question,options?,context?,done_when?,wait?}) -> {response,cancelled}: when only Jordan can decide, supply or approve something. done_when: a command that exits 0 once it's done; wait:false: carry on; the answer wakes you.
 web_search({goal,queries}): current facts; one search per question. web_fetch({urls,goal?,full?}) -> {pages,failures}: read pages and PDFs by URL. Cite sources as links.
-watch({command?,program?,every?,until?,wake_when?,stop?}): to wait for a command, program, time or change, end with a watch and be woken; never loop calls to pass time.
+watch({command?,program?,every?,until?,wake_when?,stop?}): end with a watch to be woken by a command, program, time or change; with every, checks run without you. Never loop to pass time.
 Other operations (describeTool(name) gives one's contract):
 ${others.join("\n")}
 searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all; tools.tool_search({query,limit?}) loads matches ({loaded}). This definition stays the same.
@@ -69,7 +69,7 @@ const INTROS: Record<string, string> = {
   agent_start: "Only when Jordan asks: start a helper that reports back, or (primary) a new Desk conversation.",
   agent_send: "Message any agent on Jordan's computers, or reply to one; its replies come back to you.",
   agent_list: "Find agents and computers by name or folder, and check on your helpers.",
-  agent_stop: "Interrupt a helper's turn (it keeps its work) or close a primary agent you started.",
+  agent_stop: "Interrupt a helper's turn, or close a primary you started (keep: stays listed, watches go on).",
   agent_resume: "Reopen a closed conversation without sending it anything, e.g. when Jordan asks to resume one.",
   agent_move: "Only when Jordan asks: move this conversation to another of his computers.",
   conversation_search: "Recall past conversations: an earlier decision, command, path or error.",

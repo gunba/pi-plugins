@@ -17,6 +17,8 @@ export interface PartyOperation {
 	model?: string; reasoning?: string;
 	/** resume: the native session id of the conversation to reopen. Only sent to computers that list "resume". */
 	session?: string;
+	/** close: stay in the sidebar with watches going on, or not; omitted, kept when it has watches. */
+	keep?: boolean;
 }
 /** What a computer announces about itself with its agent directory; hosts before 0.5.76 send nothing. */
 export interface PartyComputer { name: string; platform: string; version: string; operations: string[] }
@@ -97,6 +99,7 @@ export function partyOperation(value: unknown): PartyOperation {
 	}
 	if (kind === "close") {
 		operation.session = id(input.session);
+		if (input.keep !== undefined) operation.keep = input.keep === true;
 		return operation;
 	}
 	if (kind === "move") {

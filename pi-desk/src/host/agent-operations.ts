@@ -148,8 +148,10 @@ export class AgentOperations {
 			const note = request.task.trim() ? `Closed by the agent that started it: ${request.task.trim()}` : "Closed by the agent that started it.";
 			try { await managed.worker.command({ kind: "note", text: note }); } catch { /* An older worker: closed without the note. */ }
 		}
-		await this.host.moves.stop(managed);
-		return { session: request.session!, state: "closed", key: managed.view.key };
+		// Unless the agent said, as Desk's Close button does: one with watches stays in the sidebar and they go on.
+		const keep = request.keep ?? !!(managed.view.wakes || managed.view.watching);
+		await this.host.moves.stop(managed, undefined, keep);
+		return { session: request.session!, state: keep ? "kept" : "closed", key: managed.view.key };
 	}
 
 	/** An agent on another computer moves itself here, as Jordan asked it, and continues from its note. */

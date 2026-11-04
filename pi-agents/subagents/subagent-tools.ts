@@ -53,6 +53,7 @@ const resumeParameters = Type.Object({
 const stopParameters = Type.Object({
 	agent: Type.String({ minLength: 1, description: "ID, or a secondary agent's path." }),
 	note: Type.Optional(Type.String({ maxLength: 2000, description: "Primary: why." })),
+	keep: Type.Optional(Type.Boolean({ description: "Primary: true keeps it in the sidebar with its watches going on, to wake it; false removes it and ends them. Omitted: kept when it has watches." })),
 }, { additionalProperties: false });
 
 export type ToolBinding = {
@@ -246,7 +247,7 @@ export function createSubagentToolDefinitions(
 		defineTool({
 			name: "agent_stop",
 			label: "Stop agent",
-			description: "Interrupt a secondary agent's turn, or close a primary agent you started.",
+			description: "Interrupt a secondary agent's turn, or close a primary agent you started. A closed primary agent stays in the sidebar with its watches going on when kept (the default if it has watches); otherwise it leaves the sidebar and its watches end.",
 			parameters: stopParameters,
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				const owner = resolveRuntime(runtime), caller = binding.getAuthority();
@@ -259,7 +260,9 @@ export function createSubagentToolDefinitions(
 				}
 				const agents = primaries(ctx);
 				if (!agents) throw target.error;
-				return response(await agents.close({ agent: params.agent, note: params.note }, signal) as ToolJson, `Closed ${params.agent}.`);
+				const closed = await agents.close({ agent: params.agent, note: params.note, keep: params.keep }, signal) as ToolJson;
+				return response(closed, (closed as { result?: { state?: string } }).result?.state === "kept"
+					? `Closed ${params.agent}; it stays in the sidebar and its watches go on.` : `Closed ${params.agent}; it left the sidebar and its watches ended.`);
 			},
 		}),
 	];
