@@ -102,6 +102,24 @@ source: {file: "progress.jsonl", format: "jsonl",
 - A file changed during the conversation is compared with its first version seen: spreadsheets cell by cell, documents paragraph by paragraph, slide decks slide by slide. Described spreadsheet changes are checked for cells they don't mention. No Office or Python is needed. First versions are kept for 30 days in `~/.pi/agent/show/<session>/`.
 - Links open in their own tab and can be pinned. `show` never fetches them.
 
+## Reading documents
+
+Agents read PDF and Office files with `read` (pi-output-budget's, using `extensions/document-read.ts` and
+`extensions/document-text.ts`), which gives them as text that pages with `offset` and `limit` like any file:
+
+- **Word:** paragraphs in order, headings marked with `#`, list items with `-`, and each table row as `| a | b |`.
+- **Excel:** a list of the sheets, with their ranges and the line each starts on, then each sheet as a grid: column
+  letters, then each row with cells, led by its number and separated by tabs. A formula follows its value as
+  `value (=formula)`; shared formulas are written out for each cell, and dates are shown as dates.
+- **PowerPoint:** each slide in presentation order, marked if hidden, with its speaker notes.
+- **PDF:** the text of each page under `--- Page N of M ---`, read with pdf.js.
+- **Older formats** (`.doc`, `.xls`, `.ppt`, `.rtf`, OpenDocument): the text of the PDF the Office suite makes of them.
+
+`page` gives one page of a PDF or Office file as an image, drawn with pdf.js and `@napi-rs/canvas`; Office files go
+through the Office suite's PDF first, the same one the file view uses. The Office suite converts one file at a time on
+each computer, for Desk and every conversation together. The last document's text is kept while the file is unchanged,
+so reading a long one page by page parses it once.
+
 ## Shared with Home
 
 Home draws its canvas with the same specs, patches and components. `pi-ui/agent-ui.ts` validates specs and applies patches, `pi-ui/agent-catalog.ts` defines the components, and `pi-desk/src/client/agent-ui/index.tsx` renders them. Home adds its own canvas components to the same catalog.

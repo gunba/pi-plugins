@@ -10,6 +10,8 @@ import { capAnthropicImages } from "./image-budget.ts";
 import { imageRejections, withoutUnreadableImages } from "./image-check.ts";
 import { SUPERSEDED, withoutSuperseded } from "./superseded.ts";
 import { editHint, gitRoot, missingPath, missingPathHint, selfKillHint } from "./repair.ts";
+import type { Static } from "typebox";
+import { documentOperations, READ_DOCUMENTS, ReadParameters } from "../../pi-show/extensions/document-read.ts";
 
 export function outputArtifactStore(): ArtifactStore {
   return new ArtifactStore(join(getAgentDir(), "tool-output"));
@@ -34,13 +36,18 @@ function imageCapped(ctx: ExtensionToolContext): ExtensionToolContext {
  * and MCP tools at their own limits), so their results are left as Pi made them. */
 const piTool = (tool: string) => ["read", "bash", "powershell", "grep", "find", "ls", "codemode"].includes(tool) || tool.startsWith("mcp__");
 
-/** Pi's read, with images capped at IMAGE_BYTES. Its text output is Pi's own: 2000 lines or 50 KB, then offset. */
+/**
+ * Pi's read, with images capped at IMAGE_BYTES, and PDF and Office files read as text or a page as an image (pi-show).
+ * Its text output is Pi's own: 2000 lines or 50 KB, then offset.
+ */
 export function readTool() {
   const definition = createReadToolDefinition(process.cwd());
-  return { ...definition, async execute(id: string, params: Parameters<typeof definition.execute>[1], signal: AbortSignal | undefined,
+  return { ...definition, description: `${definition.description} ${READ_DOCUMENTS}`, parameters: ReadParameters,
+    async execute(id: string, { page, ...params }: Static<typeof ReadParameters>, signal: AbortSignal | undefined,
     update: Parameters<typeof definition.execute>[3], ctx: ExtensionToolContext) {
     const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() });
-    const native = createReadToolDefinition(ctx.cwd, { autoResizeImages: settings.getImageAutoResize(), resizeOptions: { maxBytes: IMAGE_BYTES } });
+    const native = createReadToolDefinition(ctx.cwd, { autoResizeImages: settings.getImageAutoResize(), resizeOptions: { maxBytes: IMAGE_BYTES },
+      operations: documentOperations(page) });
     try { return await native.execute(id, params, signal, update, imageCapped(ctx)); }
     catch (error) {
       // Reading past the end is an answer, not a failure: there is nothing more.

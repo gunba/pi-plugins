@@ -20,12 +20,12 @@ export const officeKind = (path: string): OfficeDocument["kind"] | undefined => 
 	return extension?.startsWith("xls") ? "xlsx" : extension?.startsWith("doc") ? "docx" : extension?.startsWith("ppt") ? "pptx" : undefined;
 };
 
-const decode = (text: string) => text.replace(/&(?:#(\d+)|#x([\da-f]+)|(lt|gt|amp|quot|apos));/gi, (_entity, decimal: string, hex: string, name: string) =>
+export const decode = (text: string) => text.replace(/&(?:#(\d+)|#x([\da-f]+)|(lt|gt|amp|quot|apos));/gi, (_entity, decimal: string, hex: string, name: string) =>
 	decimal ? String.fromCodePoint(Number(decimal)) : hex ? String.fromCodePoint(parseInt(hex, 16))
 		: ({ lt: "<", gt: ">", amp: "&", quot: "\"", apos: "'" } as Record<string, string>)[name.toLowerCase()]!);
-const attributes = (text: string) => Object.fromEntries([...text.matchAll(/([\w:]+)="([^"]*)"/g)].map(match => [match[1]!, decode(match[2]!)]));
+export const attributes = (text: string) => Object.fromEntries([...text.matchAll(/([\w:]+)="([^"]*)"/g)].map(match => [match[1]!, decode(match[2]!)]));
 /** Text of the runs in a fragment: <x:t> elements, tabs and breaks. */
-const runs = (xml: string, prefix: "w" | "a") => [...xml.matchAll(new RegExp(`<${prefix}:t(?:\\s[^>]*)?>([\\s\\S]*?)</${prefix}:t>|<${prefix}:(tab|br|cr)/>`, "g"))]
+export const runs = (xml: string, prefix: "w" | "a") => [...xml.matchAll(new RegExp(`<${prefix}:t(?:\\s[^>]*)?>([\\s\\S]*?)</${prefix}:t>|<${prefix}:(tab|br|cr)/>`, "g"))]
 	.map(match => match[2] === "tab" ? "\t" : match[2] ? "\n" : decode(match[1]!)).join("");
 
 /** A1 reference as zero-based [column, row]. */
@@ -54,27 +54,38 @@ export function readOffice(data: Buffer, kind: OfficeDocument["kind"]): OfficeDo
 		return { kind, slides: slides.map(([, xml]) => [...xml.toString("utf8").matchAll(/<a:p\b[^>]*?(?:\/>|>([\s\S]*?)<\/a:p>)/g)]
 			.map(match => runs(match[1] ?? "", "a")).filter(text => text.trim())) };
 	}
-	const files = unzip(data, name => name === "xl/workbook.xml" || name === "xl/_rels/workbook.xml.rels" || name === "xl/sharedStrings.xml" || /^xl\/worksheets\/[^/]+\.xml$/.test(name));
+	const book = workbookParts(data);
+	const sheets = book.sheets.map(sheet => {
+		const cells = new Map<string, Cell>();
+		for (const cell of sheet.xml.matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+			const { r: ref, t: type } = attributes(cell[1]!), inner = cell[2] ?? "";
+			if (!ref) continue;
+			const raw = /<v>([\s\S]*?)<\/v>/.exec(inner)?.[1], formula = /<f(?:\s[^>]*)?>([\s\S]*?)<\/f>/.exec(inner)?.[1];
+			const value = type === "s" ? book.strings[Number(raw)] ?? "" : type === "b" ? raw === "1" ? "TRUE" : "FALSE"
+				: type === "inlineStr" ? runs(inner.replace(/<(\/?)t\b/g, "<$1a:t"), "a") : decode(raw ?? "");
+			if (value || formula) cells.set(ref.toUpperCase(), { value, ...(formula ? { formula: decode(formula) } : {}) });
+		}
+		return { name: sheet.name, cells };
+	});
+	return { kind: "xlsx", sheets };
+}
+
+/** A workbook's parts: its sheets in order with their XML, its shared strings, its styles and workbook XML. */
+export function workbookParts(data: Buffer) {
+	const files = unzip(data, name => name === "xl/workbook.xml" || name === "xl/_rels/workbook.xml.rels" || name === "xl/sharedStrings.xml"
+		|| name === "xl/styles.xml" || /^xl\/worksheets\/[^/]+\.xml$/.test(name));
 	const text = (name: string) => files.get(name)?.toString("utf8") ?? "";
-	const shared = [...text("xl/sharedStrings.xml").matchAll(/<si>([\s\S]*?)<\/si>/g)]
+	const strings = [...text("xl/sharedStrings.xml").matchAll(/<si>([\s\S]*?)<\/si>/g)]
 		.map(match => [...match[1]!.replace(/<rPh\b[\s\S]*?<\/rPh>/g, "").matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)].map(run => decode(run[1]!)).join(""));
 	const targets = new Map([...text("xl/_rels/workbook.xml.rels").matchAll(/<Relationship\b([^>]*)\/?>/g)].map(match => {
 		const relation = attributes(match[1]!), target = relation.Target ?? "";
 		return [relation.Id ?? "", target.startsWith("/") ? target.slice(1) : `xl/${target}`];
 	}));
 	const sheets = [...text("xl/workbook.xml").matchAll(/<sheet\b([^>]*)\/?>/g)].map(match => {
-		const sheet = attributes(match[1]!), cells = new Map<string, Cell>();
-		for (const cell of text(targets.get(sheet["r:id"] ?? "") ?? "").matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
-			const { r: ref, t: type } = attributes(cell[1]!), inner = cell[2] ?? "";
-			if (!ref) continue;
-			const raw = /<v>([\s\S]*?)<\/v>/.exec(inner)?.[1], formula = /<f(?:\s[^>]*)?>([\s\S]*?)<\/f>/.exec(inner)?.[1];
-			const value = type === "s" ? shared[Number(raw)] ?? "" : type === "b" ? raw === "1" ? "TRUE" : "FALSE"
-				: type === "inlineStr" ? runs(inner.replace(/<(\/?)t\b/g, "<$1a:t"), "a") : decode(raw ?? "");
-			if (value || formula) cells.set(ref.toUpperCase(), { value, ...(formula ? { formula: decode(formula) } : {}) });
-		}
-		return { name: sheet.name ?? "Sheet", cells };
+		const sheet = attributes(match[1]!);
+		return { name: sheet.name ?? "Sheet", hidden: sheet.state === "hidden" || sheet.state === "veryHidden", xml: text(targets.get(sheet["r:id"] ?? "") ?? "") };
 	});
-	return { kind: "xlsx", sheets };
+	return { sheets, strings, styles: text("xl/styles.xml"), workbook: text("xl/workbook.xml") };
 }
 
 const byPosition = (a: string, b: string) => { const [ac, ar] = cellPosition(a), [bc, br] = cellPosition(b); return ar - br || ac - bc; };

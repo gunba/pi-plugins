@@ -9,7 +9,8 @@ export { OFFICE_PAGES } from "../shared/files.ts";
 const KEEP = 200, TIMEOUT = process.platform === "win32" ? 150_000 : 50_000;
 /**
  * Conversions run one at a time: several at once each started Word, Excel or PowerPoint, and Office never quit an
- * application another conversion was still using. A version already on its way is shared.
+ * application another conversion was still using. A version already on its way is shared. Desk and the conversations'
+ * read tools (pi-show) take turns across processes through a lock folder in the cache.
  */
 let queue: Promise<unknown> = Promise.resolve();
 const converting = new Map<string, Promise<string>>();
@@ -30,9 +31,27 @@ export function officePdf(path: string, version: string): Promise<string> {
 	return pending;
 }
 
+/** Waits for this computer's other conversions to finish, then holds the turn while `work` runs. */
+async function turn<T>(cache: string, work: () => Promise<T>): Promise<T> {
+	const lock = join(cache, "converting.lock");
+	for (;;) {
+		try { mkdirSync(lock); break; } catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			// A lock older than any conversion may take was left by a process that stopped during one.
+			try { if (Date.now() - statSync(lock).mtimeMs > TIMEOUT + 30_000) rmSync(lock, { recursive: true, force: true }); } catch { /* released meanwhile */ }
+			await new Promise(resolve => setTimeout(resolve, 500));
+		}
+	}
+	try { return await work(); } finally { rmSync(lock, { recursive: true, force: true }); }
+}
+
 async function convert(path: string, cache: string, pdf: string): Promise<string> {
 	if (existsSync(pdf)) return pdf;
 	mkdirSync(cache, { recursive: true });
+	return turn(cache, () => existsSync(pdf) ? Promise.resolve(pdf) : render(path, cache, pdf));
+}
+
+async function render(path: string, cache: string, pdf: string): Promise<string> {
 	const work = mkdtempSync(join(tmpdir(), "desk-office-"));
 	try {
 		const source = join(work, "document" + extname(path).toLowerCase()), output = join(work, "document.pdf");

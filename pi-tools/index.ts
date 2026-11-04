@@ -38,9 +38,9 @@ export const requestDescription = (others: readonly string[]) => `Run a JavaScri
 - Paths are relative to the working directory. Write valid JavaScript: every object field needs key:value. In template literals, escape \` and \${, or use quoted strings.
 - Before repeating a change over many files, make it once and check it.
 Core operations:
-read({path,offset?,limit?}) -> the file's whole text, or just the lines asked for (counting from 1), or an image.
+read({path,offset?,limit?,page?}) -> the whole text (PDF and Office too), the lines asked (from 1), or an image; page: a PDF/Office page image.
 bash({command,wait?,warn?,progress?}) -> {output,exit_code,truncated,full_output_path?,wall_time_seconds,running?}. After wait s (60) it runs on, waking you when done; progress: a command printing how far it is; warn: s between wakes.
-edit({path,edits:[{oldText,newText}]}) -> text. Each oldText must occur exactly once in the original file; edits must not overlap.
+edit({path,edits:[{oldText,newText}]}) -> text. Each oldText must occur once in the original file; edits must not overlap.
 write({path,content}) -> text. Creates folders and replaces the file: for new files and full rewrites.
 Common operations (more: describeTool):
 ask_user({question,options?,context?,done_when?}) -> {response,cancelled}: when only Jordan can decide, supply or approve something. done_when: a command that exits 0 once it's done.
@@ -48,7 +48,7 @@ web_search({goal,queries}): current facts; one search per question. web_fetch({u
 watch({command?,every?,until?,wake_when?,stop?}): to wait for a command, a time or a change, end the program with a watch and be woken; never loop calls to pass time.
 Other operations; await describeTool(name) gives one's full contract:
 ${others.join("\n")}
-searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all, and tools.tool_search({query,limit?}) loads matches and returns {loaded}. None of this changes this definition.
+searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all; tools.tool_search({query,limit?}) loads matches ({loaded}). This definition stays the same.
 Output: return, text(value), image(block) and console.log. exit() stops the program. store(key,value) and load(key) keep small JSON values on this branch. models.classify and models.generateImages work as in codemode; read Pi's docs/codemode.md first.
 Optional first line: // @options: {"max_output_tokens":10000,"timeout_ms":60000}
 Chrome and MCP operations keep their own results and errors. Show images with image(), never as text.`;

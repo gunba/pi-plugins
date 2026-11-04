@@ -21,13 +21,13 @@ async function fixture(t) {
 }
 const lines = count => Array.from({ length: count }, (_, i) => `line ${i + 1}`).join("\n");
 
-test("read is Pi's read: 2000 lines, then an offset to continue, and a plain answer past the end", async t => {
+test("read is Pi's read, with page for documents: 2000 lines, then an offset to continue, and a plain answer past the end", async t => {
   const f = await fixture(t);
   await writeFile(join(f.cwd, "long.txt"), lines(2500));
   const read = f.tools.get("read");
   const result = await read.execute("id", { path: "long.txt" }, undefined, undefined, f.ctx);
   assert.match(result.content[0].text, /line 2000\n\n\[Showing lines 1-2000 of 2500\. Use offset=2001 to continue\.\]$/);
-  assert.deepEqual(Object.keys(read.parameters.properties).sort(), ["limit", "offset", "path"]);
+  assert.deepEqual(Object.keys(read.parameters.properties).sort(), ["limit", "offset", "page", "path"]);
   const past = await read.execute("id", { path: "long.txt", offset: 3000 }, undefined, undefined, f.ctx);
   assert.equal(past.content[0].text, "[The file has 2500 lines; offset 3000 is past the end. Nothing more to read.]");
 });
