@@ -5,10 +5,11 @@ import { planSteps, type PlanStep } from "./steps.ts";
 const Step = Type.Union([Type.String(), Type.Object({
 	content: Type.String(),
 	status: Type.Enum(["pending", "in_progress", "completed"] as const, { type: "string" }),
+	detail: Type.Optional(Type.String({ description: "Notes for doing this step: how, files, commands, findings. Shown to you again while it is current." })),
 }, { additionalProperties: false })]);
 const Definition = {
 	objective: Type.Optional(Type.String()),
-	steps: Type.Optional(Type.Array(Step, { description: "The whole list; replaces the old one. A string is a pending step." })),
+	steps: Type.Optional(Type.Array(Step, { description: "The whole list; replaces the old one. A string is a pending step. A step keeps its detail unless you send one (\"\" removes it)." })),
 	auto_continue: Type.Optional(Type.Boolean({ description: "Keep working in automatic rounds." })),
 	max_rounds: Type.Optional(Type.Integer({ minimum: 1 })),
 };
@@ -45,10 +46,16 @@ export function preparePlanArguments<T extends CreateParams | UpdateParams>(valu
 	if ("steps" in input) planSteps(Array.isArray(input.steps) ? input.steps.map(pending) : input.steps, true);
 	return input as T;
 }
-export function definition(params: CreateParams | UpdateParams) {
+/** The plan fields a call sets; a step sent without detail keeps the detail it had in previous, matched by its text. */
+export function definition(params: CreateParams | UpdateParams, previous: readonly PlanStep[] = []) {
+	const kept = new Map(previous.flatMap(step => step.detail ? [[step.content, step.detail] as const] : []));
+	const withDetail = (step: PlanStep): PlanStep => {
+		const detail = step.detail ?? kept.get(step.content.trim());
+		return detail === undefined ? { content: step.content, status: step.status } : { ...step, detail };
+	};
 	return {
 		...(params.objective === undefined ? {} : { objective: params.objective }),
-		...(params.steps === undefined ? {} : { steps: params.steps.map(step => pending<PlanStep>(step)) }),
+		...(params.steps === undefined ? {} : { steps: params.steps.map(step => withDetail(pending<PlanStep>(step))) }),
 		...(params.auto_continue === undefined ? {} : { autoContinue: params.auto_continue }),
 		...(params.max_rounds === undefined ? {} : { maxRounds: params.max_rounds }),
 	};

@@ -1947,6 +1947,9 @@ details[open] > summary:before {
 .plan-steps { list-style:none; margin:0 -8px; padding:0; }
 .plan-step { display:grid; grid-template-columns:24px minmax(0,1fr) 26px; align-items:start; gap:9px; padding:9px 8px; border-radius:9px; }
 .plan-step.in-progress { background:var(--accent-soft); }
+.step-detail { margin-top:3px; color:var(--muted); font-size:12px; }
+.step-detail summary { cursor:pointer; width:fit-content; }
+.step-detail p { margin:3px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
 .step-status { display:grid; place-items:center; flex:none; width:23px; height:23px; padding:0; border:0; background:transparent; color:var(--muted); font-size:10px; margin-top:1px; }
 .step-marker { display:grid; place-items:center; width:23px; height:23px; min-height:0; border:1px solid var(--border); border-radius:50%; }
 .step-status .ui-icon { width:15px; height:15px; }

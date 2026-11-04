@@ -31,6 +31,12 @@ extension event bus with a probe object, whose `plan` is then set.
 
 Step states are pending, in_progress and completed. Parallel active steps are
 allowed; normalized step content must be unique. Steps persist across turns.
+A step can carry `detail`: the agent's notes for doing it (how, files, commands,
+findings), written when it plans or as it learns. The model is shown a step's
+notes when it reaches the step: in the plan a plan tool returns, at the end of the
+next result of a program that moved the plan on, in plan checks and in automatic
+rounds. A step sent without `detail` keeps the detail it had (matched by its
+text); `""` removes it. Desk shows the notes under the step.
 A model calling the tool directly rather than from a program has no schema for it,
 so a list sent as JSON text is parsed as the list.
 A plan can complete with steps still open; they keep their recorded states.

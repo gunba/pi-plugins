@@ -64,7 +64,7 @@ const signature = (name: string, parameters: unknown) => {
 /** What each operation is for, in at most 100 characters, worded so agents reach for it at the right moment. */
 const INTROS: Record<string, string> = {
   show: "Show Jordan a finished result, work to review or a file you changed for him; not routine steps.",
-  create_plan: "Before multi-step work: state the objective and the steps. One plan per branch.",
+  create_plan: "Before multi-step work: state the objective and steps; a step's detail comes back when you reach it.",
   update_plan: "As you work: mark steps done or change them; pause, resume, complete or block the plan.",
   agent_start: "Only when Jordan asks: start a helper that reports back, or (primary) a new Desk conversation.",
   agent_send: "Message any agent on Jordan's computers, or reply to one; its replies come back to you.",

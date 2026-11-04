@@ -9,10 +9,10 @@ import { PlanStore, PlanStateError } from "../src/store.ts";
 import { DEFAULT_BLOCKED_AFTER_ROUNDS, DEFAULT_MAX_PLAN_ROUNDS, PLAN_COMMAND_ENTRY, PLAN_ROUND_MESSAGE } from "../src/constants.ts";
 import { type PlanRef, type PlanRoundIdentity, type PlanView } from "../src/domain.ts";
 import { branchContainsRound, decodePlanRoundDetails } from "../src/replay.ts";
-import { PLAN_CHECK_EVERY, renderPlanCheck, renderPlanGuidance, renderPlanRoundPrompt, renderPlanWrapup } from "../src/prompt.ts";
+import { PLAN_CHECK_EVERY, renderPlanCheck, renderPlanGuidance, renderPlanRoundPrompt, renderPlanWrapup, renderStepNotes } from "../src/prompt.ts";
 import { CreateParameters, UpdateParameters, definition, preparePlanArguments, type CreateParams, type UpdateParams } from "../src/tools.ts";
 import { planControls, planPresentation } from "../src/presentation.ts";
-import { STEP_STATUSES, stepSummary } from "../src/steps.ts";
+import { STEP_STATUSES, currentSteps, stepSummary } from "../src/steps.ts";
 
 interface Attempt extends PlanRoundIdentity { content: string; admitted: boolean }
 const ref = (plan: PlanView): PlanRef => ({ id: plan.id, revision: plan.revision });
@@ -50,8 +50,11 @@ export function planText(plan: PlanView | undefined): string {
 	const state = plan.phase === "blocked" ? `blocked: ${plan.blockedReason.message}` : plan.phase;
 	const rounds = plan.autoContinue ? `; auto-continue, round ${plan.roundsStarted} of ${plan.maxRounds}` : "";
 	const mark = { completed: "x", in_progress: ">", pending: " " } as Record<string, string>;
+	// The current steps' detail comes back here, so moving on to a step brings up what was noted for it.
+	const current = plan.phase === "complete" ? [] : currentSteps(plan.steps);
 	return [`Plan (${state}${rounds}): ${plan.objective}`,
-		...plan.steps.map(step => `[${mark[step.status] ?? step.status}] ${step.content}`)].join("\n");
+		...plan.steps.flatMap(step => [`[${mark[step.status] ?? step.status}] ${step.content}`,
+			...(step.detail && current.includes(step) ? step.detail.split("\n").map(line => `    ${line}`) : [])])].join("\n");
 }
 function stopReason(messages: readonly unknown[]): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -80,6 +83,8 @@ class PlanController {
 	private editing = 0;
 	/** The model's own tool calls since the active plan last changed, and which plan revision that was ("" when none is active). */
 	private sinceUpdate = 0;
+	/** The current steps' notes as the model was last shown them. */
+	private noted = "";
 	private seen = "";
 	/** The plan revision the model last saw, as seenKey gives it; "" when it has seen none. */
 	private modelSeen = "";
@@ -202,7 +207,7 @@ class PlanController {
 		return result(plan);
 	}
 	private control(params: UpdateParams, planRef: PlanRef): PlanView | undefined {
-		const replacements = definition(params);
+		const replacements = definition(params, this.store.get()?.steps);
 		// Definition fields sent with another action (complete with the final steps, say) are applied first, in one call.
 		if (params.action !== "edit" && Object.keys(replacements).length) {
 			const edited = this.store.edit(planRef, replacements);
@@ -294,7 +299,7 @@ class PlanController {
 		const restore = (ctx: ExtensionContext) => {
 			this.epoch++; this.ctx = ctx; this.remote = getPresentation(this.pi); this.stopping = false; this.signature = "";
 			this.source = this.work.source("plan"); this.attempt = undefined; this.wrapup = undefined; this.lastStop = undefined;
-			this.sinceUpdate = 0; this.seen = ""; this.modelSeen = lastShownPlan(ctx.sessionManager.getBranch());
+			this.sinceUpdate = 0; this.seen = ""; this.noted = ""; this.modelSeen = lastShownPlan(ctx.sessionManager.getBranch());
 			this.store.restore(ctx.sessionManager.getBranch()); this.refreshUi();
 		};
 		this.pi.on("session_start", (_event, ctx) => restore(ctx));
@@ -338,9 +343,15 @@ class PlanController {
 			const plan = this.current(), key = plan?.phase === "active" ? `${plan.id}:${plan.revision}` : "";
 			// A plan changed some other way (Desk's plan controls, say) counts from that change; this call is the first since.
 			if (key !== this.seen) { this.seen = key; this.sinceUpdate = 0; }
+			// A step's notes come up once, when the model reaches it: a plan tool's own result shows them, and from a
+			// program, the program's result does.
+			const notes = plan && key ? renderStepNotes(plan) : "", fresh = notes !== this.noted ? notes : "";
+			this.noted = notes;
 			if (!plan || !key || PLAN_TOOL_NAMES.has(event.toolName)) { this.sinceUpdate = 0; return; }
-			if (++this.sinceUpdate % PLAN_CHECK_EVERY) return;
-			return { content: [...event.content, { type: "text" as const, text: `\n${renderPlanCheck(plan, this.sinceUpdate)}` }],
+			// A check repeats the notes.
+			const text = ++this.sinceUpdate % PLAN_CHECK_EVERY ? fresh : renderPlanCheck(plan, this.sinceUpdate);
+			if (!text) return;
+			return { content: [...event.content, { type: "text" as const, text: `\n${text}` }],
 				// Replacing the content alone would drop a result's structured form.
 				...(event.structuredContent !== undefined ? { structuredContent: event.structuredContent } : {}) };
 		});

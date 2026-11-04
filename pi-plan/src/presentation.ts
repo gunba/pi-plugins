@@ -32,7 +32,7 @@ export function planPresentation(plan: PlanView | undefined, error?: string): Ui
 				...(plan.phase === "blocked" ? [{ label: "Blocker", value: plan.blockedReason.message }] : []),
 			] : [],
 			items: plan?.steps.map((step, index) => ({
-				id: `step:${index}`, title: step.content, status: step.status.replaceAll("_", " "),
+				id: `step:${index}`, title: step.content, status: step.status.replaceAll("_", " "), ...(step.detail ? { body: step.detail } : {}),
 				...(plan.phase !== "complete" ? { actions: [
 					{ id: `status:${index}`, label: "Status" }, { id: `edit:${index}`, label: "Edit" },
 					{ id: `remove:${index}`, label: "Remove", destructive: true },

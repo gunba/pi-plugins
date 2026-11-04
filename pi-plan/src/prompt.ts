@@ -1,5 +1,5 @@
 import type { PlanSnapshot, PlanView } from "./domain.ts";
-import { stepSummary } from "./steps.ts";
+import { currentSteps, stepSummary } from "./steps.ts";
 
 /**
  * The model's own tool calls an active plan may go without an update before it is reminded of the plan: about twice
@@ -14,7 +14,15 @@ export function renderPlanCheck(plan: PlanSnapshot, calls: number): string {
 	const where = !summary.total ? `Objective: ${short(plan.objective)}. If it no longer describes the work, update it now`
 		: summary.completed === summary.total ? `All ${summary.total} steps are marked done. If the objective is met, complete the plan now; if not, add what remains`
 		: `${summary.completed} of ${summary.total} steps are marked done${summary.current ? `; current: ${short(summary.current)}` : ""}. Compare that with the work so far and, if it is behind, update the plan now`;
-	return `[Plan check] ${calls} tool calls since the plan was last updated. ${where} with update_plan.`;
+	const notes = renderStepNotes(plan);
+	return `[Plan check] ${calls} tool calls since the plan was last updated. ${where} with update_plan.${notes ? `\n${notes}` : ""}`;
+}
+
+/** The notes the model wrote for the steps it is on, which it is shown when it reaches them; empty when there are none. */
+export function renderStepNotes(plan: Pick<PlanSnapshot, "steps" | "phase">): string {
+	if (plan.phase === "complete") return "";
+	return currentSteps(plan.steps).flatMap(step => step.detail
+		? [`[Plan] Now on ${JSON.stringify(step.content.length > 120 ? `${step.content.slice(0, 117)}…` : step.content)}. Your notes for it:\n${step.detail}`] : []).join("\n");
 }
 
 /**
@@ -22,12 +30,12 @@ export function renderPlanCheck(plan: PlanSnapshot, calls: number): string {
  * this or the earlier format (renderPlanRoundPromptV1).
  */
 export function renderPlanRoundPrompt(plan: PlanSnapshot, round: number): string {
-	const active = plan.steps.filter(step => step.status === "in_progress");
-	const current = active.length ? active : plan.steps.filter(step => step.status === "pending").slice(0, 1);
+	const current = currentSteps(plan.steps);
 	// The objective and steps are JSON strings, so that line breaks in them cannot be taken for the message's own.
 	return [
 		`<plan_round>Round ${round} of ${plan.maxRounds}. Objective: ${JSON.stringify(plan.objective)}`,
 		...(current.length ? [`Current: ${JSON.stringify(current.slice(0, 3).map(step => step.content.slice(0, 400)))}`] : []),
+		...current.slice(0, 3).flatMap(step => step.detail ? [`Notes for ${JSON.stringify(step.content.slice(0, 400))}: ${JSON.stringify(step.detail)}`] : []),
 		"Continue: make concrete, verified progress. The workspace and tool results are authoritative. Complete the plan only when its whole objective is met; otherwise leave it active.</plan_round>",
 	].join("\n");
 }
