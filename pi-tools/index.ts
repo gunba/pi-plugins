@@ -3,6 +3,7 @@ import {
   type ExtensionAPI, type ExtensionFactory, type ExtensionToolContext, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
+import { visibleSaved, type SavedTool } from "./saved.ts";
 
 const ERROR = Type.Object({ error: Type.String() });
 const OBJECT = Type.Record(Type.String(), Type.Unknown());
@@ -101,18 +102,47 @@ function intercept(pi: ExtensionAPI, factory: ExtensionFactory, transform: (defi
   }));
 }
 
-function script(code: string): string {
+/**
+ * The program, given tools that return data or {error}. Saved tools (saved.ts) join the operations: each compiles when
+ * first called, so one with an error fails only its own calls, and ALL_TOOLS, searchTools and describeTool include them.
+ */
+function script(code: string, saved: readonly SavedTool[] = []): string {
   const options = code.match(/^\s*\/\/ @options:[^\r\n]*(?:\r?\n|$)/)?.[0] ?? "";
-  return `${options}\nreturn await (async (tools) => {\n${code.slice(options.length)}\n})(new Proxy({...tools}, {get(target, name) {
+  const body = code.slice(options.length);
+  const savedTools = saved.length ? `const __saved = ${JSON.stringify(Object.fromEntries(saved.map(tool => [tool.name,
+    { source: tool.source, folder: tool.folder, file: tool.file, description: `${tool.description || "(no description)"}\n\nSaved tool (${tool.file}): tools.${tool.name}(${tool.args || "{}"}). Its program gets args, tools and folder (${tool.folder}).` }])))};
+const __entries = Object.entries(__saved).map(([name, tool]) => ({name, description: tool.description}));
+const __search = async (query, options = {}) => {
+  const found = await searchTools(query, options);
+  if (options.namespace) return found;
+  const words = String(query).toLowerCase().split(/\\W+/).filter(word => word.length > 2);
+  const scored = __entries.map(entry => ({entry, score: words.filter(word => (entry.name + " " + entry.description).toLowerCase().includes(word)).length}))
+    .filter(item => item.score > 0).sort((a, b) => b.score - a.score).map(item => item.entry);
+  return [...scored, ...found].slice(0, options.limit ?? 8);
+};
+const __describe = async name => Object.hasOwn(__saved, name) ? __saved[name].description : describeTool(name);
+` : "";
+  const run = saved.length ? `(async (tools, ALL_TOOLS, searchTools, describeTool) => {\n${body}\n})(__tools, [...ALL_TOOLS, ...__entries], __search, __describe)`
+    : `(async (tools) => {\n${body}\n})(__tools)`;
+  return `${options}\n${savedTools}const __tools = new Proxy({...tools}, {get(target, name) {
     if (String(name).startsWith("chrome_devtools_") || String(name).startsWith("mcp__")) return target[name];
-    if (typeof name === "string" && !(name in target)) return async () => ({error: \`No operation \${name}. Find one with searchTools(query).\`});
+${saved.length ? `    if (typeof name === "string" && !(name in target) && Object.hasOwn(__saved, name)) return async args => {
+      const tool = __saved[name];
+      let program;
+      try { program = new (async () => {}).constructor("args", "tools", "folder", tool.source); }
+      catch (e) { return {error: \`Saved tool \${name} (\${tool.file}) has an error: \${e.message ?? e}\`}; }
+      try { return await program(args ?? {}, __tools, tool.folder); }
+      catch (e) { return {error: \`Saved tool \${name} (\${tool.file}) failed: \${e.message ?? e}\`}; }
+    };
+` : ""}    if (typeof name === "string" && !(name in target)) return async () => ({error: \`No operation \${name}. Find one with searchTools(query).\`});
     return async args => {
       let outcome;
       try { outcome = await target[name](args); } catch (e) { return {error: String(e.message ?? e)}; }
       if (outcome[1]) { text(outcome[0]); exit(); }
       return outcome[0];
     };
-  }}));`;
+  }});
+return await ${run};`;
 }
 
 type Schema = { type?: string | string[]; properties?: Record<string, Schema>; required?: string[]; items?: Schema; enum?: unknown[];
@@ -196,7 +226,8 @@ export function createStructuredToolExtension(): ExtensionFactory {
       ...definition,
       defaultActive: true,
       description: requestDescription([]),
-      promptGuidelines: ["Do everything through codemode: one program can make many calls and return only what you need."],
+      promptGuidelines: ["Do everything through codemode: one program can make many calls and return only what you need.",
+        "Save a program worth reusing as .pi/tools/NAME.js in its folder (~/.pi/agent/tools/ for every folder): comment lines describing it and \"// args: {…}\", then a body using args and folder. Programs call it as tools.NAME(args)."],
       outputSchema: Type.Unknown(),
       reachesTools: input => /\btool_search\b/.test(String(input.code)) ? "all" : definition.reachesTools?.(input) ?? "all",
       prepareLoadout(loadout) {
@@ -217,7 +248,8 @@ export function createStructuredToolExtension(): ExtensionFactory {
       async execute(id, params, signal, update, ctx) {
         const input = params as { code: string };
         let terminate = false;
-        const result = await definition.execute(id, { code: script(input.code) }, signal, update, context(ctx, () => { terminate = true; }));
+        const saved = visibleSaved(ctx.cwd, ctx.sessionManager.getBranch(), new Set(ctx.tools.map(tool => tool.name)));
+        const result = await definition.execute(id, { code: script(input.code, saved) }, signal, update, context(ctx, () => { terminate = true; }));
         // Keep native failure diagnostics, image attachments, spill paths and nested-call metadata.
         const content = result.content.slice(1);
         const value = content.length === 1 && content[0]?.type === "text" ? content[0].text : undefined;

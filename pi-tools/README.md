@@ -58,6 +58,31 @@ budget's 40-line/3,000-byte excerpts remain in use.
 Chrome and MCP-server operations retain their original schemas, result shapes and
 rejection behavior. Any independently declared external tools remain declared.
 
+## Saved tools
+
+A program worth reusing is saved as `.pi/tools/NAME.js` in the folder it serves, or in
+`~/.pi/agent/tools/` for every folder, and later programs call it as `tools.NAME(args)`:
+
+```js
+// Totals by category for one month of the ledger.
+// args: {month: "YYYY-MM"}
+const book = await tools.read({path: folder + "/ledger.xlsx"});
+return totals(book, args.month);
+```
+
+- The leading comment lines describe it; an `args:` line gives its arguments. The
+  body runs inside the calling program with `args`, `tools` and `folder` (the folder
+  holding its `.pi`, or the shared folder), and its return value is the call's result.
+- A program can call those of the conversation's folder and the folders above it,
+  nearest first, then those of folders listed to the agent, then the shared ones. An
+  operation's name can't be taken.
+- Each compiles when first called, so one with an error fails only its own calls, as
+  `{error}`. `ALL_TOOLS`, `searchTools` and `describeTool` include them.
+- They are listed to the agent as tool output (pi-system-context), so the definition
+  and the prompt cache stay unchanged; a codemode guideline says how to save one.
+- They run with the conversation's permissions: every call they make is an ordinary
+  operation call.
+
 ## Discovery, safety and presentation
 
 The fixed definition states shared conventions once and includes compact signatures

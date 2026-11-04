@@ -29,6 +29,11 @@ result. In a program they follow the program's output, so the file data the prog
 reads is unchanged. Being tool output, they keep the prompt cache; after a compaction
 they are added again when next needed. Each file is cut at 24,000 characters.
 
+Saved tools (pi-tools' "Saved tools") are listed the same way: a folder's with its
+instructions, and those of the conversation's folder, the folders above it and
+`~/.pi/agent/tools` with the conversation's first tool result. A saved tool written or
+edited with a syntax error is reported with that result.
+
 ## Prompt sections
 
 The extension also replaces Pi's documentation section with a one-line pointer,
