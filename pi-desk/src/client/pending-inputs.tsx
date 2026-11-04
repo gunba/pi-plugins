@@ -8,8 +8,10 @@ const labels: Record<InputStatus["state"], string> = {
 	queued: "Waiting for Pi", sending: "Confirming admission", accepted: "Sent to Pi",
 	cancelled: "Cancelled", failed: "Could not send", interrupted: "Delivery unconfirmed",
 };
-export function PendingInputs({ session, connected, report }: {
+export function PendingInputs({ session, connected, report, shown }: {
 	session: SessionView; connected: boolean; report: (error: string) => void;
+	/** Messages the conversation shows as on their way; they get a card only if something goes wrong. */
+	shown?: ReadonlySet<string>;
 }) {
 	const [review, setReview] = useState<{ status: InputStatus; command?: PromptCommand }>();
 	const [working, setWorking] = useState(false);
@@ -38,10 +40,11 @@ export function PendingInputs({ session, connected, report }: {
 		localStorage.removeItem(receiptKey);
 		setReview(undefined); setChanged(false);
 	};
-	if (!session.inputs?.length && !review) return null;
+	const inputs = session.inputs?.filter(input => !shown?.has(input.id) || input.state !== "queued" && input.state !== "sending");
+	if (!inputs?.length && !review) return null;
 	return <>
 		<section className="pending-inputs" aria-label="Pending messages">
-			{session.inputs?.map(input => <div className="pending-input" key={input.id}>
+			{inputs?.map(input => <div className="pending-input" key={input.id}>
 				<div><strong>{labels[input.state]}{input.files > 0 && ` · ${input.files} file${input.files === 1 ? "" : "s"}`}</strong>
 					<p>{input.preview || `${input.files} attachment${input.files === 1 ? "" : "s"}`}</p>
 					{input.error && <small>{input.error}</small>}</div>

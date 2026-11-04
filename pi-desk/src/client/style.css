@@ -717,6 +717,8 @@ details[open] > summary:before {
   border: 1px solid var(--focus-border);
 }
 .message-user { margin-left:0; margin-right:auto; width:fit-content; min-width:min(160px, 100%); max-width:100%; }
+/* A message on its way to Pi, until the conversation shows Pi's copy. */
+.message-outgoing { opacity:.6; }
 .message-user .message-heading { justify-content:flex-start; margin-bottom:7px; color:var(--muted); }
 /* minmax(0, 1fr): a wide code block or table scrolls in its own box instead of widening the message and the chat. */
 .message-assistant > .message-body { padding-left:34px; display:grid; grid-template-columns:minmax(0, 1fr); gap:8px; }
@@ -1068,7 +1070,9 @@ details[open] > summary:before {
 .queue-group { padding:8px 12px; margin-top:6px; border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:8px; background:var(--surface); }
 .queue-heading { display:flex; align-items:center; gap:8px; color:var(--accent); font-size:12px; }
 .queue-heading > span { padding:1px 6px; border-radius:6px; background:var(--accent-soft); }
-.queue-heading small { margin-left:auto; color:var(--muted); font-size:11px; font-weight:400; }
+/* One row at every width: on a phone the note gives way (ellipsis) so Send now stays beside it, as on a computer. */
+.queue-heading small { margin-left:auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:11px; font-weight:400; }
+.queue-heading .queue-send-now { flex:none; }
 .queue-group ul { list-style:none; padding:0; margin:8px 0 0; }
 .queue-group li { display:flex; align-items:baseline; gap:9px; font-size:13px; line-height:1.45; color:var(--text); }
 .queue-group li > span { flex:none; color:var(--muted); font-size:11px; }
@@ -2015,8 +2019,6 @@ details[open] > summary:before {
   .settings-content .panel-card { padding:14px; }
   .provider-icon { width:32px; height:32px; border-radius:8px; }
   .provider-icon svg { width:22px; height:22px; }
-  .queue-heading { flex-wrap:wrap; }
-  .queue-heading small { flex-basis:100%; margin-left:26px; }
   .conversation-heading { margin-right:8px; }
   .conversation-title strong { font-size:14px; }
   .setting-control { gap:10px 14px; }

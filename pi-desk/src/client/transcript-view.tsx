@@ -158,6 +158,8 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	useEffect(() => {
 		if (lastLatestRequest.current !== latestRequest && connected) {
 			lastLatestRequest.current = latestRequest;
+			// Already following the end, it only needs to stay there; the live tail has every new message.
+			if (following.current && !restoring.current && !loadingRef.current && !moreRecent) { virtualizer.scrollToEnd(); setAtEnd(true); return; }
 			// A send supersedes an in-flight reading-position restore. Reuse the
 			// measured restoration path so queue/composer reflow cannot leave us above the tail.
 			void load();

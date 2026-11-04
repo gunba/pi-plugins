@@ -208,7 +208,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const completion = useCommandCompletion(draft, deskCommandCatalog(session?.snapshot?.commands ?? [], commandHandlers), text => {
     setDraft(text); localStorage.setItem(draftKey(selected), text);
   });
-  const { send, sending } = useMessageSending({ selected, selectedRef, session, connected, epoch, attachments, draft, setDraft, deliveryMode,
+  const messages = state.messages[selected] ?? emptyMessages;
+  const { send, sending, outgoing, outgoingReceipts, inFlight } = useMessageSending({ selected, selectedRef, session, messages, connected, epoch, attachments, draft, setDraft, deliveryMode,
     controlBusy, extensionErrors, commandHandlers, command, confirmation, confirmationContext,
     show: (title, text) => setCommandOutput({ title, text }), delivered: () => setLatestRequest(value => value + 1), report: setError });
   // Reply buttons on shown work and changes quote them into the composer.
@@ -225,7 +226,6 @@ export function App({ account }: { account?: BrowserAccount }) {
     window.addEventListener("pi-desk:quote", quoted);
     return () => window.removeEventListener("pi-desk:quote", quoted);
   }, [selected]);
-  const messages = state.messages[selected] ?? emptyMessages;
   // The message box's recall of earlier messages (composer.tsx), kept across conversations.
   const recall = useRef<Recall | undefined>(undefined);
   const loadedWork = useMemo(() => workItems(messages), [messages]);
@@ -409,7 +409,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [authorized, upgrade]);
   useEffect(() => {
     setCommandOutput(undefined);
-    setDraft(localStorage.getItem(draftKey(selected)) ?? "");
+    const stored = localStorage.getItem(draftKey(selected)) ?? "";
+    setDraft(inFlight(selected, stored) ? "" : stored);
     setState(previous => ({ ...previous, focused: [selected] }));
     localStorage.setItem("pi-desk:selected", selected);
   }, [selected]);
@@ -631,6 +632,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               </div>
           }
           footer={<>
+            {outgoing.map(item => <div key={item.id} className="message-outgoing"><Message message={item.message} sessionKey={selected} /></div>)}
             {busy && (
               <div className="activity-line">
                 <span className="pulse-dot" />
@@ -643,7 +645,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           close={() => setDismissedQuestion(`${selected}/${question.id}`)} answer={async answer => { await command({ kind: "answer", id: question.id, answer }); }} />}
         {session && canCompose && (
           <div className="composer-dock">
-            <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />
+            <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} shown={outgoingReceipts} />
             {ui && <EditorSuggestion key={selected} session={selected} id={ui.editorId} text={ui.editorText}
               draft={draft} context={confirmationContext} edit={text => { setDraft(text); localStorage.setItem(draftKey(selected), text); }} />}
             {question && (

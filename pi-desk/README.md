@@ -744,6 +744,12 @@ into another branch or a restarted worker. Startup messages use native follow-up
 delivery in submission order. Uploaded files use a stable conversation scope;
 only the host writes their metadata, and the native worker reads them.
 
+A sent message leaves the box at once and shows, faded, at the end of the
+conversation until the conversation or Pi's queue shows it; the box stays usable
+meanwhile. The saved draft keeps it until admission is confirmed, and one that
+can't be sent goes back in the box, before anything typed since. Home's chat
+does the same.
+
 The admission receipt survives reconnects and host restarts. Retrying unchanged
 input reuses its receipt, including when Pi finished loading while the reply was
 lost. Accepted payloads are removed from the admission store; native JSONL remains

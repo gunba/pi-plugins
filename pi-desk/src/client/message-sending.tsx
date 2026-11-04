@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import type { SessionView, WorkerCommand } from "../shared/protocol.ts";
+import type { ChatMessage, SessionView, WorkerCommand } from "../shared/protocol.ts";
 import type { InputStatus, PromptCommand } from "../shared/inputs.ts";
 import { withDictationNote } from "../shared/dictation-note.ts";
 import type { DraftFile, useAttachments } from "./attachments.tsx";
@@ -12,6 +12,26 @@ import { admittedInput, clearSubmission, createSubmission, readSubmission, submi
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+/**
+ * A message on its way to Pi, shown at the end of the conversation from the moment it is sent until the conversation
+ * shows it. Pi may change a message (a prompt template, an input handler), so arrival is counted, not matched: after
+ * is the newest message in the conversation when it was sent, queued how many messages Pi's queue held, and ahead how
+ * many sent earlier were still on their way.
+ */
+export interface Outgoing { id: string; session: string; message: ChatMessage; draft: string; after: number; queued: number; ahead: number; receipt?: string }
+const queuedCount = (session: SessionView | undefined) => (session?.snapshot?.queue.steering.count ?? 0) + (session?.snapshot?.queue.followUp.count ?? 0);
+const newest = (messages: readonly ChatMessage[]) => messages.reduce((order, message) => Math.max(order, message.order), -Infinity);
+/**
+ * Whether the conversation now shows the message, or its pending-message card does: it failed or was cancelled, or it
+ * waits for Pi to start, where the card offers to cancel it.
+ */
+function arrived(item: Outgoing, session: SessionView | undefined, messages: readonly ChatMessage[]): boolean {
+  const input = item.receipt ? session?.inputs?.find(input => input.id === item.receipt) : undefined;
+  if (input && (!admittedInput(input) || input.state === "queued" && session?.state !== "ready")) return true;
+  const users = messages.filter(message => message.role === "user" && !message.notice && message.order > item.after).length;
+  return users + Math.max(0, queuedCount(session) - item.queued) > item.ahead;
+}
+
 function uploadedPrompt(text: string, files: DraftFile[], session: string): PromptCommand | undefined {
   if (files.some(file => file.uploaded?.session !== session)) return;
   return { kind: "prompt", text, ...(files.length ? { attachments: files.map(file => file.uploaded!.id) } : {}) };
@@ -22,9 +42,11 @@ function uploadedPrompt(text: string, files: DraftFile[], session: string): Prom
  * receipt kept in this browser, so a message whose delivery was not confirmed is checked rather than sent twice,
  * including after a reload or reconnection.
  */
-export function useMessageSending({ selected, selectedRef, session, connected, epoch, attachments, draft, setDraft, deliveryMode, controlBusy, extensionErrors,
+export function useMessageSending({ selected, selectedRef, session, messages, connected, epoch, attachments, draft, setDraft, deliveryMode, controlBusy, extensionErrors,
   commandHandlers, command, confirmation, confirmationContext, show, delivered, report }: {
-  selected: string; selectedRef: { readonly current: string }; session?: SessionView; connected: boolean; epoch: number;
+  selected: string; selectedRef: { readonly current: string }; session?: SessionView;
+  /** The selected conversation's messages, where a sent message arrives. */
+  messages: readonly ChatMessage[]; connected: boolean; epoch: number;
   attachments: ReturnType<typeof useAttachments>; draft: string; setDraft: Dispatch<SetStateAction<string>>; deliveryMode: Delivery;
   controlBusy: boolean; extensionErrors: readonly unknown[]; commandHandlers: DeskCommandHandlers;
   command: <T = unknown>(command: WorkerCommand) => Promise<T>;
@@ -37,6 +59,12 @@ export function useMessageSending({ selected, selectedRef, session, connected, e
 }) {
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
+  const [outgoing, setOutgoing] = useState<Outgoing[]>([]);
+  const waiting = outgoing.filter(item => item.session === selected && !arrived(item, session, messages));
+  useEffect(() => {
+    if (waiting.length < outgoing.filter(item => item.session === selected).length)
+      setOutgoing(list => list.filter(item => item.session !== selected || !arrived(item, session, messages)));
+  }, [outgoing, session, messages, selected]);
   useEffect(() => {
     if (!connected || !session?.activation || !attachments.ready || sendingRef.current) return;
     const receipt = JSON.parse(localStorage.getItem(submissionKey(selected)) ?? "null") as SubmissionReceipt | null;
@@ -87,6 +115,18 @@ export function useMessageSending({ selected, selectedRef, session, connected, e
     }
     const fileIds = attachments.files.map(file => file.id);
     sendingRef.current = true; setSending(true);
+    let item: Outgoing | undefined;
+    const forget = () => { const id = item?.id; item = undefined; if (id) setOutgoing(list => list.filter(entry => entry.id !== id)); };
+    /** The message did not go: it leaves the conversation and goes back in the box, before anything typed since. */
+    const giveBack = () => {
+      if (!item) { keep(); return; }
+      forget();
+      const stored = localStorage.getItem(draftKey(selected)) ?? "";
+      const next = !stored.trim() || stored === shown ? text : `${text}\n\n${stored}`;
+      localStorage.setItem(draftKey(selected), next);
+      if (dictated !== undefined) localStorage.setItem(dictatedKey(selected), "1");
+      if (selectedRef.current === selected) setDraft(next);
+    };
     try {
       const local = deskCommand(text, session.snapshot?.commands ?? [], commandHandlers);
       if (local) {
@@ -104,6 +144,14 @@ export function useMessageSending({ selected, selectedRef, session, connected, e
         if (selectedRef.current === selected) setDraft(current => current === text ? "" : current);
         return;
       }
+      // The message shows in the conversation and leaves the box at once; Pi's own copy replaces it when it arrives.
+      // The saved draft keeps it until delivery is confirmed.
+      const sent: Outgoing = item = { id: crypto.randomUUID(), session: selected, draft: shown, after: newest(messages), queued: queuedCount(session),
+        ahead: outgoing.filter(entry => entry.session === selected && !arrived(entry, session, messages)).length,
+        message: { id: `outgoing:${crypto.randomUUID()}`, order: Number.MAX_SAFE_INTEGER, revision: 0, role: "user", timestamp: Date.now(), complete: false,
+          blocks: [{ type: "text", text: text.trim() || `${fileIds.length} attachment${fileIds.length === 1 ? "" : "s"}` }] } };
+      setOutgoing(list => [...list, sent]);
+      if (selectedRef.current === selected) { setDraft(current => current === shown ? "" : current); delivered(); }
       const receiptKey = submissionKey(selected);
       let previous = JSON.parse(localStorage.getItem(receiptKey) ?? "null") as SubmissionReceipt | null;
       const status = previous ? await readSubmission(previous, readInput) : undefined;
@@ -111,7 +159,8 @@ export function useMessageSending({ selected, selectedRef, session, connected, e
         // Check cached upload IDs before touching files that may already have been consumed.
         const cached = uploadedPrompt(modelText, attachments.files, session.key);
         if (cached && submissionDecision(previous, session.activation, await submissionFingerprint(cached), status) === "confirmed") {
-          await finishSubmission(previous, text, fileIds, shown); return;
+          // It arrived before; the conversation already shows it.
+          forget(); await finishSubmission(previous, text, fileIds, shown); return;
         }
         clearSubmission(localStorage, selected, previous.id);
         previous = null;
@@ -134,11 +183,12 @@ export function useMessageSending({ selected, selectedRef, session, connected, e
             {text && <pre className="confirmation-preview">{text.slice(0, 2000)}{text.length > 2000 ? "…" : ""}</pre>}
             {!!fileIds.length && <p>{fileIds.length} attachment{fileIds.length === 1 ? "" : "s"}</p>}
           </>,
-        })) return;
+        })) { giveBack(); return; }
       const receipt = reusable ? previous! : createSubmission({
         activation: session.activation, state: session.state, generation: session.ui?.generation,
       }, fingerprint, delivery);
       localStorage.setItem(receiptKey, JSON.stringify(receipt));
+      setOutgoing(list => list.map(entry => entry.id === sent.id ? { ...entry, receipt: receipt.id } : entry));
       try {
         const input = await submitWithReceipt(receipt, async () => (await api<{ input: InputStatus }>(`/sessions/${selected}/inputs`, {
           id: receipt.id, activation: receipt.activation, generation: receipt.generation,
@@ -157,11 +207,14 @@ export function useMessageSending({ selected, selectedRef, session, connected, e
       }
       await finishSubmission(receipt, text, fileIds, shown);
     } catch (error) {
-      keep();
+      giveBack();
       report(`${errorText(error)} Your draft has been kept.`);
     } finally {
       sendingRef.current = false; setSending(false);
     }
   }
-  return { send, sending };
+  /** Messages on their way in the selected conversation, and the receipts of those its pending-message cards would show. */
+  return { send, sending, outgoing: waiting, outgoingReceipts: new Set(waiting.flatMap(item => item.receipt ? [item.receipt] : [])),
+    /** Whether the saved draft is a message on its way, which the box leaves out. */
+    inFlight: (key: string, stored: string) => outgoing.some(item => item.session === key && item.draft === stored) };
 }

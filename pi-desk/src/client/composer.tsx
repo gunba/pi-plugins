@@ -85,7 +85,6 @@ export function Composer({ session, selected, selectedRef, composerInput, recall
       aria-autocomplete="list"
       aria-controls={completion.active ? "command-completion" : undefined}
       aria-activedescendant={completion.selected}
-      disabled={sending}
       placeholder={
         busy
           ? "Steer Pi, or queue a follow-up…"
