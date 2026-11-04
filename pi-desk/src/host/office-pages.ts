@@ -5,16 +5,33 @@ import { extname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 export { OFFICE_PAGES } from "../shared/files.ts";
 
-const KEEP = 200, TIMEOUT = 50_000;
+/** Microsoft Office is given longer: stopping PowerShell early leaves the Office application it started running. */
+const KEEP = 200, TIMEOUT = process.platform === "win32" ? 150_000 : 50_000;
+/**
+ * Conversions run one at a time: several at once each started Word, Excel or PowerPoint, and Office never quit an
+ * application another conversion was still using. A version already on its way is shared.
+ */
+let queue: Promise<unknown> = Promise.resolve();
+const converting = new Map<string, Promise<string>>();
 
 /**
  * The file's pages as a PDF, made by the Office suite on this computer: Microsoft Office on Windows, LibreOffice
  * elsewhere. Kept by file version under the agent directory, so a file is converted once while it is unchanged.
  * Spreadsheets are fitted one page wide, so a sheet reads as one sheet rather than as printed strips.
  */
-export async function officePdf(path: string, version: string): Promise<string> {
+export function officePdf(path: string, version: string): Promise<string> {
 	const cache = join(getAgentDir(), "cache", "office-pages"), pdf = join(cache, version + ".pdf");
-	if (existsSync(pdf)) { const now = new Date(); utimesSync(pdf, now, now); return pdf; }
+	if (existsSync(pdf)) { const now = new Date(); utimesSync(pdf, now, now); return Promise.resolve(pdf); }
+	let pending = converting.get(version);
+	if (!pending) {
+		pending = queue.then(() => convert(path, cache, pdf)).finally(() => converting.delete(version));
+		converting.set(version, pending); queue = pending.catch(() => {});
+	}
+	return pending;
+}
+
+async function convert(path: string, cache: string, pdf: string): Promise<string> {
+	if (existsSync(pdf)) return pdf;
 	mkdirSync(cache, { recursive: true });
 	const work = mkdtempSync(join(tmpdir(), "desk-office-"));
 	try {

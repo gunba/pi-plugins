@@ -332,7 +332,9 @@ function HtmlPage({ session, file, large }: { session: string; file: FileReferen
 		onLoad={() => frame.current?.contentWindow?.postMessage({ type: "render", html }, "*")} />;
 }
 
-function ShownEntry({ item, file, session, title, large }: { item: ShownItem; file: FileReference | null; session: string; title: string; large?: boolean }) {
+/** Several Office files in one result render on request: each opens Word, Excel or PowerPoint on its computer. */
+const officeCount = (items: ShownItem[]) => items.filter(item => item.path && OFFICE_PAGES.test(item.path) && !item.missing).length;
+function ShownEntry({ item, file, session, title, large, office = 1 }: { item: ShownItem; file: FileReference | null; session: string; title: string; large?: boolean; office?: number }) {
 	const where = item.path ? name(item.path) : title;
 	if (item.url) return <ShownLink item={item} />;
 	return <div className="shown-item">
@@ -344,7 +346,7 @@ function ShownEntry({ item, file, session, title, large }: { item: ShownItem; fi
 		{item.kind === "image" && file && <InlineImage session={session} file={file} zoom={large} />}
 		{item.kind === "html" && file && <HtmlPage session={session} file={file} large={large} />}
 		{item.changes && <DocumentChangesView changes={item.changes} where={where} />}
-		{item.path && OFFICE_PAGES.test(item.path) && file && !item.missing && <OfficePages session={session} file={file} large={large} />}
+		{item.path && OFFICE_PAGES.test(item.path) && file && !item.missing && <OfficePages session={session} file={file} large={large} auto={office <= 1} />}
 		{item.diff && <CodeDiff text={item.diff.text} path={item.path} limit={large ? undefined : 80} />}
 		{item.excerpt && <CodeExcerpt text={item.excerpt.text} firstLine={item.excerpt.firstLine} path={item.path} />}
 		{item.described && <p className="change-source">Described by the agent</p>}
@@ -375,11 +377,11 @@ export function WorkBody({ item, session, large }: { item: WorkItem; session: st
 			{block.shown.sourceStatus?.at && <time> · {localTime(block.shown.sourceStatus.at, HOUR_MINUTE)}</time>}</p>}
 		{block.shown.spec && <AgentFilesContext value={(index, imageOnly, alt) => {
 			const entry = block.shown.items[index];
-			return entry && (!imageOnly || entry.kind === "image") ? <div role={imageOnly ? "img" : undefined} aria-label={imageOnly ? alt : undefined}><ShownEntry item={entry} file={block.files[index] ?? null} session={session} title={block.shown.title} large={large} /></div> : <p className="muted">Attachment unavailable.</p>;
+			return entry && (!imageOnly || entry.kind === "image") ? <div role={imageOnly ? "img" : undefined} aria-label={imageOnly ? alt : undefined}><ShownEntry item={entry} file={block.files[index] ?? null} session={session} title={block.shown.title} large={large} office={officeCount(block.shown.items)} /></div> : <p className="muted">Attachment unavailable.</p>;
 		}}><AgentSurface spec={block.shown.spec} /></AgentFilesContext>}
 		{block.shown.note && <ShownNote note={block.shown.note} />}
 		{!block.shown.spec && !block.shown.note && !block.shown.items.length && <p className="muted work-note">No details were provided for this result.</p>}
-		{block.shown.items.map((entry, index) => Object.values(block.shown.spec?.elements ?? {}).some(element => ["File", "Image"].includes(element.type) && element.props.item === index) ? null : <ShownEntry key={index} item={entry} file={block.files[index] ?? null} session={session} title={block.shown.title} large={large} />)}
+		{block.shown.items.map((entry, index) => Object.values(block.shown.spec?.elements ?? {}).some(element => ["File", "Image"].includes(element.type) && element.props.item === index) ? null : <ShownEntry key={index} item={entry} file={block.files[index] ?? null} session={session} title={block.shown.title} large={large} office={officeCount(block.shown.items)} />)}
 	</>;
 }
 function quoteFor(item: WorkItem): string {

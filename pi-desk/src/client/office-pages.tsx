@@ -12,10 +12,11 @@ const WORKER = new URL("../../node_modules/pdfjs-dist/build/pdf.worker.min.mjs",
  * An Office file as its pages: the Office suite on the file's computer renders them (host/office-pages.ts) and pdf.js
  * draws each one here as it comes into view.
  */
-export function OfficePages({ session, file, large }: { session: string; file: FileReference; large?: boolean }) {
+export function OfficePages({ session, file, large, auto = true }: { session: string; file: FileReference; large?: boolean; auto?: boolean }) {
 	const origin = useReferenceQuery();
-	const [pdf, setPdf] = useState<PDFDocumentProxy>(), [error, setError] = useState("");
+	const [pdf, setPdf] = useState<PDFDocumentProxy>(), [error, setError] = useState(""), [wanted, setWanted] = useState(auto);
 	useEffect(() => {
+		if (!wanted) return;
 		const controller = new AbortController();
 		let loaded: PDFDocumentProxy | undefined;
 		void (async () => {
@@ -28,7 +29,8 @@ export function OfficePages({ session, file, large }: { session: string; file: F
 			else setPdf(loaded);
 		})().catch(failure => { if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : String(failure)); });
 		return () => { controller.abort(); void loaded?.loadingTask.destroy(); };
-	}, [session, file.id, origin]);
+	}, [session, file.id, origin, wanted]);
+	if (!wanted) return <p className="office-pages-status"><button type="button" className="text-button" onClick={() => setWanted(true)}>Show pages</button></p>;
 	if (error) return <p className="office-pages-status error-text">{error}</p>;
 	if (!pdf) return <p className="office-pages-status muted">Rendering the pages…</p>;
 	return <div className={`office-pages${large ? " large" : ""}`}>
