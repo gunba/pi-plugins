@@ -211,7 +211,7 @@ identity, WebSocket reuse or continuation. Reconnects follow the same setting.
 
 `--codex-wire-compression on` matches Codex 0.159.1's default `enable_request_compression` feature. `off` disables compression, not Wire. Compression applies only to authenticated `openai-codex` requests to the Codex backend over HTTP/SSE. If zstd is selected but unavailable in Node, the request stops before inference.
 
-On Windows, the automatic native User-Agent uses `RtlGetVersion` and `GetNativeSystemInfo`, matching the pinned `os_info 3.14.0` dependency. A local PowerShell helper reads these values once; it runs only when an emulation mode is activated. On Linux, Wire reads `lsb_release` (then `/etc/os-release`) and `uname -m` for the native OS/version/architecture fields. Terminal detection follows the native environment-only precedence and sanitization rules, including Windows Terminal and terminal hints under tmux. It does not launch Codex or terminal helpers.
+On Windows, the automatic native User-Agent has the values the pinned `os_info 3.14.0` dependency reads with `RtlGetVersion` and `GetNativeSystemInfo`, without starting a process: the version from Node's `os.release()` (which is `RtlGetVersion`), and the native architecture from the runtime's, or under emulation from Windows' `PROCESSOR_ARCHITEW6432` and `PROCESSOR_IDENTIFIER`. A PowerShell helper that compiled C# to call those APIs took over 30 seconds on a busy computer and failed each turn. On Linux, Wire reads `lsb_release` (then `/etc/os-release`) and `uname -m` for the native OS/version/architecture fields. Terminal detection follows the native environment-only precedence and sanitization rules, including Windows Terminal and terminal hints under tmux. It does not launch Codex or terminal helpers.
 
 For another OS, or to reproduce a captured native profile exactly, supply `--codex-wire-user-agent "codex_cli_rs/0.159.1 (...) terminal"`. It must match the selected originator. Wire refreshes the core-version prefix automatically while preserving the OS, terminal and client suffix. `--codex-wire-originator` supplies the originator; the native `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` environment variable takes precedence, with invalid header values falling back to `codex_cli_rs`.
 
@@ -314,7 +314,7 @@ The tests use local HTTP/WebSocket servers and fake credentials, plus Pi's actua
 
 Source map:
 
-- `identity.ts`: `login/src/auth/default_client.rs`, `terminal-detection/src/lib.rs`, and the Linux parsers in pinned `os_info 3.14.0`; `native-os-info.ps1` follows that dependency's Windows APIs.
+- `identity.ts`: `login/src/auth/default_client.rs`, `terminal-detection/src/lib.rs`, and the Linux parsers in pinned `os_info 3.14.0`; `windowsSystem` gives that dependency's Windows API values.
 - `protocol.ts`: `core/src/session/session.rs`, `core/src/responses_metadata.rs`, `codex-api/src/requests/headers.rs`.
 - `compression.ts`: `features/src/lib.rs`, `core/src/client.rs` (compression and routing-header gates).
 - `transport.ts`: `core/src/client.rs`, `codex-api/src/endpoint/responses_websocket.rs`, `codex-api/src/sse/responses.rs`.

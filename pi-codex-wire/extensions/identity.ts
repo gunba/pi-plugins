@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { release } from "node:os";
 import { codexVersion } from "./version.ts";
 
 export const PROTOCOL_REFERENCE_VERSION = "0.159.1";
@@ -44,21 +44,21 @@ export function terminalToken(env: NodeJS.ProcessEnv): string {
   return terminalSafe(raw);
 }
 
-let nativeSystem: NativeSystem | undefined;
-export function windowsSystem(): NativeSystem {
-  if (nativeSystem) return nativeSystem;
-  if (process.platform !== "win32") throw new Error("Windows identity is available only on Windows");
-  // GetNativeSystemInfo, rather than process architecture, also handles WOW64/emulation.
-  const script = fileURLToPath(new URL("./native-os-info.ps1", import.meta.url));
-  const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", script],
-    { encoding: "utf8", timeout: 30_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
-  const result = JSON.parse(output.replace(/^\uFEFF/, "")) as NativeSystem;
-  if (result.osType !== "Windows" || !/^(unknown|\d+\.\d+\.\d+)$/.test(result.version) ||
-    !["x86_64", "ia64", "arm", "aarch64", "i386", "unknown"].includes(result.architecture)) {
-    throw new Error("Cannot establish native Windows identity; use --codex-wire-user-agent");
-  }
-  nativeSystem = Object.freeze(result);
-  return nativeSystem;
+/** os_info 3.14.0's names for GetNativeSystemInfo's architectures, keyed as Windows names them in its environment. */
+const WINDOWS_ARCHITECTURES: Record<string, string> = { AMD64: "x86_64", IA64: "ia64", ARM: "arm", ARM64: "aarch64", x86: "i386" };
+const PROCESS_ARCHITECTURES: Record<string, string> = { x64: "AMD64", arm64: "ARM64", ia32: "x86", arm: "ARM" };
+/**
+ * What os_info 3.14.0 reads with RtlGetVersion and GetNativeSystemInfo, without starting a process: a PowerShell
+ * helper compiling C# took over 30 s on a busy Windows computer and failed every turn. Node's os.release() is
+ * RtlGetVersion's "major.minor.build". The native architecture is the runtime's own unless Windows emulates it: a
+ * 32-bit process on 64-bit Windows has PROCESSOR_ARCHITEW6432, and an x64 process on ARM64 Windows runs on a processor
+ * PROCESSOR_IDENTIFIER names as ARMv8.
+ */
+export function windowsSystem(env: NodeJS.ProcessEnv = process.env, arch: string = process.arch, version: string = release()): NativeSystem {
+  if (process.platform !== "win32" && env === process.env) throw new Error("Windows identity is available only on Windows");
+  const native = env.PROCESSOR_ARCHITEW6432 ?? (arch === "x64" && /^ARMv8/i.test(env.PROCESSOR_IDENTIFIER ?? "") ? "ARM64" : PROCESS_ARCHITECTURES[arch]);
+  return { osType: "Windows", version: /^\d+\.\d+\.\d+$/.test(version) ? version : "unknown",
+    architecture: WINDOWS_ARCHITECTURES[native ?? ""] ?? "unknown" };
 }
 
 // Names and display forms from the pinned os_info 3.14.0 Linux release parsers.

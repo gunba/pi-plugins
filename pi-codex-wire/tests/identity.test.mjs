@@ -83,6 +83,16 @@ test("automatic Linux Desktop identity uses native system fields without a saved
     `codex_cli_rs/0.159.1 (${native.osType} ${native.version}; ${native.architecture}) ghostty`);
 });
 
+test("Windows identity comes from the runtime and Windows' environment, without starting a process", () => {
+  assert.deepEqual(windowsSystem({}, "x64", "10.0.26100"), { osType: "Windows", version: "10.0.26100", architecture: "x86_64" });
+  assert.equal(windowsSystem({}, "arm64", "10.0.26100").architecture, "aarch64");
+  assert.equal(windowsSystem({ PROCESSOR_ARCHITEW6432: "AMD64" }, "ia32", "10.0.19045").architecture, "x86_64", "WOW64 reports the native architecture");
+  assert.equal(windowsSystem({ PROCESSOR_IDENTIFIER: "ARMv8 (64-bit) Family 8 Model D4B Revision 0, Qualcomm Technologies Inc" }, "x64", "10.0.26100").architecture,
+    "aarch64", "x64 emulated on ARM64 reports ARM64");
+  assert.equal(windowsSystem({}, "ia32", "10.0.19045").architecture, "i386");
+  assert.equal(windowsSystem({}, "s390x", "6.1").version, "unknown");
+});
+
 test("automatic Windows identity uses native API values", { skip: process.platform !== "win32" }, () => {
   const native = windowsSystem();
   assert.equal(native.osType, "Windows");
