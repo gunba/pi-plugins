@@ -82,6 +82,8 @@ export interface UiQuestion {
 	allowMultiple: boolean;
 	allowFreeform: boolean;
 	allowComment: boolean;
+	/** Asked without waiting (ask_user wait: false): the agent works on, so the conversation isn't waiting on the user. */
+	background?: boolean;
 }
 export interface UiTextInput {
 	kind: "input" | "editor";

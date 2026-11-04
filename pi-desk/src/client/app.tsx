@@ -2,6 +2,7 @@ import { restorePaneWidths } from "./pane-width.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
 import { isControl } from "../shared/controls.ts";
+import { asksInBackground } from "../shared/attention.ts";
 import { splitDictationNote } from "../shared/dictation-note.ts";
 import type { ChatMessage, HistoryPage, WorkerCommand } from "../shared/protocol.ts";
 import type { BrowserAccount } from "./account.ts";
@@ -179,6 +180,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const questions = (ui?.interactions ?? []).filter(interaction => !interaction.settings);
   const settingsForm = settingsForms[0];
   const question = questions.find(question => question.id === activeQuestion) ?? questions[0];
+  // A question asked without waiting leaves the agent working and the composer free (ask_user wait: false).
+  const blockingQuestion = questions.find(item => !asksInBackground(item.form));
   const compactQuestion = useMedia("(max-width:760px), (max-height:600px)");
   const inlineQuestion = !settings && !compactQuestion && (question?.form.kind === "question" || question?.form.kind === "confirm");
   useEffect(() => {
@@ -347,7 +350,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     const card = [...document.querySelectorAll<HTMLElement>("[data-view]")].find(element => element.dataset.view === focusedView);
     card?.scrollIntoView({ block: "start" });
   }, [panel, focusedView, selected]);
-  const settingBusy = controlBusy || sending || closing || !!question || !!settingsForms.length || session?.snapshot?.activity === "waiting"
+  const settingBusy = controlBusy || sending || closing || !!blockingQuestion || !!settingsForms.length || session?.snapshot?.activity === "waiting"
     || !!session?.inputs?.some(input => input.state === "sending") || !!ui?.views.some(view => !view.scope && view.working);
   const contextFrom = session?.snapshot?.contextFrom, compactControl = controls.find(control => control.kind === "compact" && control.state === "running");
   // Workers before 0.5.42 report only manual compaction, as a running control.
@@ -358,7 +361,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     session?.snapshot?.activity === "running" ||
     session?.snapshot?.activity === "waiting" ||
     !!session?.inputs?.some(input => input.state === "sending") ||
-    !!question;
+    !!blockingQuestion;
   useEffect(() => {
     const notice = liveNotices.current.latest(selected, ui);
     if (notice) reportDeskError(notice.text);
@@ -631,7 +634,7 @@ export function App({ account }: { account?: BrowserAccount }) {
             {busy && (
               <div className="activity-line">
                 <span className="pulse-dot" />
-                {question ? "Waiting for your answer" : session?.reconnecting ? "Reconnecting to Pi…" : session?.state === "starting" ? "Loading Pi…" : "Pi is working…"}
+                {blockingQuestion ? "Waiting for your answer" : session?.reconnecting ? "Reconnecting to Pi…" : session?.state === "starting" ? "Loading Pi…" : "Pi is working…"}
               </div>
             )}</>}
         />

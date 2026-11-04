@@ -1,5 +1,6 @@
 import { HOUR_MINUTE, localDate, localDateTime, localTime } from "./local-format.ts";
 import type { SessionView } from "../shared/protocol.ts";
+import { asksInBackground } from "../shared/attention.ts";
 import { agentInventory } from "./agent-inventory.ts";
 
 export function sessionActivity(session: Pick<SessionView, "state" | "snapshot" | "ui" | "interrupted" | "reconnecting" | "updating" | "kept" | "controls">): string {
@@ -8,7 +9,7 @@ export function sessionActivity(session: Pick<SessionView, "state" | "snapshot" 
 	if (session.state === "closed" && session.kept) return "sleeping";
 	if (session.state === "closed" || session.state === "failed") return session.state;
 	if (session.reconnecting) return "connecting";
-	if (session.ui?.interactions.some(item => !item.settings)) return "waiting";
+	if (session.ui?.interactions.some(item => !item.settings && !asksInBackground(item.form))) return "waiting";
 	return session.interrupted ? "interrupted" : session.snapshot?.activity ?? session.state;
 }
 export function activityLabel(state: string): string {

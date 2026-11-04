@@ -548,6 +548,7 @@ details[open] > summary:before {
 .top-actions > .session-close { position:static; transform:none; opacity:1; pointer-events:auto; }
 @media (max-width:700px) { .conversation-activity > span:last-child { display:none; } .conversation-activity { margin-right:0; } }
 .session-activity { font-weight: 600; color: var(--text); }
+.session-question { flex:none; font-weight:600; color:var(--input-needed); }
 .sidebar-hint {
   font-size: 12px;
   color: var(--muted);

@@ -47,7 +47,7 @@ import type { HostCore, HostOptions, ManagedSession } from "./host-core.ts";
 import { HostEvents } from "./host-events.ts";
 import { HostHttp } from "./host-http.ts";
 import { HostUpdates } from "./host-updates.ts";
-import { settle } from "../shared/attention.ts";
+import { asksInBackground, settle } from "../shared/attention.ts";
 
 /** What an agent is told when Desk continues its work after the computer stopped mid-turn. */
 const RESUME_NOTE = "Desk restarted after this computer stopped while you were working. Commands, tools and helpers that were running then were stopped and are not run again. Check where your work stands (files, processes, partial results) before carrying on.";
@@ -687,7 +687,7 @@ export class DeskHost {
 		const view = managed.view, worker = managed.worker!, snapshot = view.snapshot;
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate) throw new Error("Desk is updating or shutting down.");
 		if (view.state !== "ready" || !view.file || !snapshot) throw new Error("Only a started, saved conversation can be restarted.");
-		if (snapshot.activity === "running" || view.ui?.interactions.length || snapshot.queue.steering.count || snapshot.queue.followUp.count
+		if (snapshot.activity === "running" || view.ui?.interactions.some(item => !asksInBackground(item.form)) || snapshot.queue.steering.count || snapshot.queue.followUp.count
 			|| view.controls?.some(control => control.state === "running")
 			|| this.inputs!.pending(view.key).some(input => input.state === "queued" || input.state === "sending"))
 			throw new Error("Restart when the conversation is idle, with no questions or waiting messages.");

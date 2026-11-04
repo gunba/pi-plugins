@@ -31,12 +31,12 @@ const CORE = new Set(["codemode", "tool_search", "read", "bash", "edit", "write"
  * The definition, naming the session's other always-available operations so a tool added in a new version is listed.
  * Tools loaded on demand are left out: loading one must not change the definition, and searchTools finds them.
  */
-export const requestDescription = (others: readonly string[]) => `Run a JavaScript program (QuickJS) that calls operations and returns data. Top-level await, return, loops and conditions work. There is no Node: no process, require, Buffer, imports, files, network or timers except through operations. Send the source raw where raw input is accepted, otherwise as {code}.
+export const requestDescription = (others: readonly string[]) => `Run a JavaScript program (QuickJS) that calls operations and returns data. Top-level await and return work. There is no Node: no process, require, Buffer, imports, files, network or timers except through operations. Send the source raw where raw input is accepted, otherwise as {code}.
 - await tools.NAME(args) returns the operation's data, or {error:string} if it failed. Check for an error before a step that depends on it.
 - Await side effects in order; use Promise.all only for independent steps. Calls still pending at return are cancelled; finished ones are not undone.
 - Return only the fields you need: const r=await tools.bash({command:"git status --short",description:"Check changes"}); return r.error??r.output;
-- Every operation takes description: one short sentence for the user on what the call does. The signatures below leave it out.
-- Paths are relative to the working directory. Write valid JavaScript: every object field needs key:value. In template literals, escape \` and \${, or use quoted strings.
+- Every operation takes description: a short sentence for the user on what the call does. The signatures below leave it out.
+- Paths are relative to the working folder. Write valid JavaScript: every object field needs key:value. In template literals, escape \` and \${, or use quoted strings.
 - Before repeating a change over many files, make it once and check it.
 Core operations:
 read({path,offset?,limit?,page?}) -> the whole text (PDF and Office too), the lines asked (from 1), or an image; page: a PDF/Office page image.
@@ -44,13 +44,13 @@ bash({command,wait?,warn?,progress?}) -> {output,exit_code,truncated,full_output
 edit({path,edits:[{oldText,newText}]}) -> text. Each oldText must occur once in the original file; edits must not overlap.
 write({path,content}) -> text. Creates folders and replaces the file: for new files and full rewrites.
 Common operations (more: describeTool):
-ask_user({question,options?,context?,done_when?}) -> {response,cancelled}: when only Jordan can decide, supply or approve something. done_when: a command that exits 0 once it's done.
+ask_user({question,options?,context?,done_when?,wait?}) -> {response,cancelled}: when only Jordan can decide, supply or approve something. done_when: a command that exits 0 once it's done; wait:false: carry on; the answer wakes you.
 web_search({goal,queries}): current facts; one search per question. web_fetch({urls,goal?,full?}) -> {pages,failures}: read pages and PDFs by URL. Cite sources as links.
 watch({command?,program?,every?,until?,wake_when?,stop?}): to wait for a command, program, time or change, end with a watch and be woken; never loop calls to pass time.
-Other operations; await describeTool(name) gives one's full contract:
+Other operations (describeTool(name) gives one's contract):
 ${others.join("\n")}
 searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all; tools.tool_search({query,limit?}) loads matches ({loaded}). This definition stays the same.
-Output: return, text(value), image(block) and console.log. exit() stops the program. store(key,value) and load(key) keep small JSON values on this branch. models.classify and models.generateImages work as in codemode; read Pi's docs/codemode.md first.
+Output: return, text(value), image(block) and console.log. exit() stops the program. store(key,value) and load(key) keep small JSON values on this branch. For models.classify and models.generateImages, read Pi's docs/codemode.md first.
 Optional first line: // @options: {"max_output_tokens":10000,"timeout_ms":60000}
 Chrome and MCP operations keep their own results and errors. Show images with image(), never as text.`;
 

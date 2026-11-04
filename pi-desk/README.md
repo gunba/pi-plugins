@@ -533,6 +533,11 @@ their conversation and question. Switching between a comment and a freeform
 answer keeps the same text. Long questions scroll while their answer actions
 stay visible within the viewport.
 
+A question an agent asks without waiting (`ask_user` with `wait: false`) appears the
+same way, but the agent keeps working: the sidebar shows "Question" beside its
+activity, in the needs-input colour, rather than "Needs input", and the composer and
+settings stay available. Stopping or interrupting the agent leaves it open.
+
 Type `/` to browse the worker’s installed Pi commands, loaded extension commands,
 templates and skills. Arrow keys select a match, Tab completes it and Escape
 hides the list. Arguments remain intact, for example `/fast ultrafast`.

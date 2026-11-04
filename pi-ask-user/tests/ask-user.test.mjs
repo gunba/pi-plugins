@@ -6,11 +6,11 @@ import extension from '../index.ts';
 const theme = {fg: (_color, text) => text, bg: (_color, text) => text, bold: text => text};
 function tool() {
  let tool;
- extension({registerTool: value => tool = value, events: {emit() {}}});
+ extension({registerTool: value => tool = value, on() {}, events: {emit() {}}});
  return tool;
 }
 test('an unanswered question says whether it timed out or was dismissed, not that the user refused', async () => {
- const ask = request => { let tool; extension({registerTool: value => tool = value, events: {emit(_name, probe) { probe.presentation = {operatorAvailable: true, request}; }}}); return tool; };
+ const ask = request => { let tool; extension({registerTool: value => tool = value, on() {}, events: {emit(_name, probe) { probe.presentation = {operatorAvailable: true, request}; }}}); return tool; };
  // Desk answers null both when its timeout passes and when the user dismisses the question.
  const timedOut = await ask((_form, {timeout}) => new Promise(resolve => setTimeout(() => resolve(null), timeout)))
   .execute('id', {question: 'Restart the proxy?', options: ['Yes', 'No'], timeout: 200}, undefined, undefined, {hasUI: true, ui: {}});

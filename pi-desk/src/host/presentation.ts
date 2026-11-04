@@ -21,6 +21,7 @@ import {
 	type UiTranscriptHandle,
 } from "../../../pi-ui/index.ts";
 import type { InteractionSnapshot, PresentationSnapshot, ViewSnapshot } from "../shared/protocol.ts";
+import { asksInBackground } from "../shared/attention.ts";
 
 interface PendingInteraction {
 	snapshot: InteractionSnapshot;
@@ -174,6 +175,9 @@ export class DeskPresentation implements Presentation {
 		this.generation = randomUUID();
 		for (const scope of [...this.scopes.values()]) scope.close();
 		this.cancelInteractions();
+		// Questions asked without waiting go with the presentation, unanswered: ask_user asks them again when the session
+		// starts, so they must not read as closed by the user.
+		this.interactions.clear();
 		this.views.clear();
 		this.actions.clear(); this.actionErrors.clear();
 		this.statuses = {};
@@ -189,8 +193,9 @@ export class DeskPresentation implements Presentation {
 		this.reset();
 	}
 
+	/** Ends the questions of the run being stopped or replaced; one asked without waiting isn't part of it and stays. */
 	cancelInteractions(): void {
-		for (const pending of [...this.interactions.values()]) pending.finish(null);
+		for (const pending of [...this.interactions.values()]) if (!asksInBackground(pending.snapshot.form)) pending.finish(null);
 	}
 
 	publish(id: string, view: UiView | undefined, actions: PublishedView["actions"] = {}): void {

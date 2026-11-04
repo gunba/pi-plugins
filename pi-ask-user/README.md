@@ -28,6 +28,12 @@ Registered tool name: `ask_user`.
 | `allowComment` | `boolean?` | `false` | Allow an optional comment after a structured choice |
 | `timeout` | `number?` | — | Auto-dismiss after N ms |
 | `done_when` | `string?` | — | For a request to do something: a shell command (the bash tool's shell) re-run every 5 s; the question closes by itself once it exits 0 |
+| `wait` | `boolean?` | `true` | `false`: don't wait (Desk only). The call returns at once with the question's ID; the question stays open while the agent works, and the answer, or the user closing it, comes back as a `pi-ask-user/answer` message that joins the agent's run or starts a turn. Takes neither `done_when` nor `timeout`. |
+
+A question asked without waiting is recorded in the conversation and asked again when the conversation restarts,
+such as for a Desk update, so an answer given later still arrives. Desk shows it as "Question" beside the
+conversation's activity, and doesn't count it as waiting on the user: the composer stays free, settings can change,
+and stopping or interrupting a run leaves it open.
 
 In the terminal the question opens as an overlay. `PI_ASK_USER_DISPLAY_MODE=inline`
 shows it in place instead. `alt+o` hides and reopens the overlay and `ctrl+g` toggles

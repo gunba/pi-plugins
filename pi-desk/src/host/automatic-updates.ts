@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { SessionView } from "../shared/protocol.ts";
+import { asksInBackground } from "../shared/attention.ts";
 import type { UiConversation } from "../../../pi-ui/index.ts";
 import { atomicJson } from "../../manage/store.ts";
 
@@ -40,7 +41,8 @@ export function restartBlockers(view: SessionView, pendingInputs: boolean): stri
 	const snapshot = view.snapshot, ui = view.ui, reasons: string[] = [];
 	if (view.state !== "ready" || !snapshot) return ["not running"];
 	if (snapshot.activity !== "idle") reasons.push(snapshot.activity === "waiting" ? "waiting for an answer" : snapshot.activity === "error" ? "needs attention" : "working");
-	if (ui?.interactions.length) reasons.push("has an open question");
+	// A question asked without waiting is asked again after the restart.
+	if (ui?.interactions.some(item => !asksInBackground(item.form))) reasons.push("has an open question");
 	if (snapshot.queue.steering.count || snapshot.queue.followUp.count || pendingInputs) reasons.push("has messages waiting");
 	if (view.controls?.some(control => control.state === "running")) reasons.push("is changing a setting");
 	// Child agents run inside the parent's worker.

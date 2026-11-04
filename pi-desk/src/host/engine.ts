@@ -38,6 +38,7 @@ import { materializeSession } from "./session-storage.ts";
 import { attachOwnership, releaseOwnership, SessionLease, sessionPath } from "../../../pi-session-ownership/lease.ts";
 import { resumeLease } from "../../../pi-session-ownership/handoff.ts";
 import type { SessionSnapshot, WorkerCommand, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
+import { asksInBackground } from "../shared/attention.ts";
 import { cacheMisses, reduceSessionUsage, SESSION_USAGE_CHANGED } from "../../../pi-session-usage/index.ts";
 import { resourceSettings, runtimePin, stablePath } from "./runtime-resources.ts";
 import { packageCopies } from "./package-updates.ts";
@@ -533,7 +534,7 @@ export class DeskEngine {
 			defaultModel: defaults.defaultProvider && defaults.defaultModel ? { provider: defaults.defaultProvider, id: defaults.defaultModel } : undefined,
 			thinking: session.thinkingLevel, thinkingLevels: session.getAvailableThinkingLevels(),
 			modelSwitchConstraint: modelSwitchConstraint(session) ? { ...modelSwitchConstraint(session)!, portable: portableSummaryAvailable(session.sessionId) } : null,
-			activity: ui.interactions.some(item => !item.settings) ? "waiting" : this.running || this.transition || session.isCompacting ? "running" : this.failed || loaded.errors.length ? "error" : "idle",
+			activity: ui.interactions.some(item => !item.settings && !asksInBackground(item.form)) ? "waiting" : this.running || this.transition || session.isCompacting ? "running" : this.failed || loaded.errors.length ? "error" : "idle",
 			...inventory,
 			extensions: [
 				...loaded.extensions.map(extension => ({ path: extension.path })),
@@ -842,7 +843,7 @@ export class DeskEngine {
 	private async change<T>(operation: () => Promise<T>, interrupt = false): Promise<T> {
 		if (this.closed) throw new Error("This session is closing.");
 		const session = this.runtime!.session;
-		if (this.transition || session.isCompacting || this.presentation.snapshot().interactions.length
+		if (this.transition || session.isCompacting || this.presentation.snapshot().interactions.some(item => !asksInBackground(item.form))
 			|| !interrupt && (this.running || !session.isIdle)) throw new Error("Finish the pending control or interaction before changing this session.");
 		const resume = interrupt && (this.running || !session.isIdle);
 		this.transition = true;

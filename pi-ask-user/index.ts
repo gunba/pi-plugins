@@ -34,6 +34,7 @@ import { getPresentation } from "../pi-ui/index.ts";
 
 import { stripVTControlCharacters } from "node:util";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 /**
  * `getMarkdownTheme()` returns a bag of closures that read through a Proxy
@@ -83,6 +84,7 @@ interface AskParams {
    allowComment?: boolean;
    timeout?: number;
    done_when?: string;
+   wait?: boolean;
 }
 
 type AskResponse =
@@ -107,7 +109,15 @@ interface AskToolDetails {
    timedOut?: boolean;
    /** The question closed because its done_when command succeeded. */
    detected?: boolean;
+   /** A question asked without waiting (wait: false): its ID, until the answer arrives as a message. */
+   pending?: string;
 }
+
+/** A question asked without waiting, as recorded in the conversation so it is asked again after a restart. */
+interface BackgroundQuestion { id: string; question: string; context?: string; options: QuestionOption[]; allowMultiple: boolean; allowFreeform: boolean; allowComment: boolean }
+type BackgroundRecord = { op: "ask"; question: BackgroundQuestion } | { op: "done"; id: string };
+const BACKGROUND_ENTRY = "pi-ask-user/background";
+const ANSWER_MESSAGE = "pi-ask-user/answer";
 
 type AskUIResult = AskResponse;
 
@@ -1462,6 +1472,49 @@ function whenDone(command: string, ctx: ExtensionContext, signal: AbortSignal): 
 }
 
 export default function(pi: ExtensionAPI) {
+   /**
+    * Questions asked without waiting stay open in Desk, marked as not blocking, while the agent works on; the answer
+    * comes back as a message that joins the agent's run or starts a turn. They are recorded in the conversation and
+    * asked again when it restarts, so an answer given after a Desk update still arrives.
+    */
+   let open = new AbortController(), running = false;
+   const asking = new Set<string>();
+   const askInBackground = (item: BackgroundQuestion) => {
+      const presentation = getPresentation(pi);
+      if (!presentation || asking.has(item.id)) return;
+      asking.add(item.id);
+      const signal = open.signal;
+      void presentation.request({ kind: "question", title: item.question, context: item.context, options: item.options,
+         allowMultiple: item.allowMultiple, allowFreeform: item.options.length === 0 || item.allowFreeform, allowComment: item.allowComment, background: true },
+         { signal }).then(answer => {
+            asking.delete(item.id);
+            // Closed with the conversation: it is asked again when the conversation restarts.
+            if (signal.aborted) return;
+            const response = answer?.kind === "selection" ? createSelectionResponse(answer.selections, answer.comment)
+               : answer?.kind === "freeform" ? createFreeformResponse(answer.text) : null;
+            pi.appendEntry(BACKGROUND_ENTRY, { op: "done", id: item.id } satisfies BackgroundRecord);
+            const content = response ? `The user answered your question ${item.id} ("${item.question}"): ${formatResponseSummary(response)}`
+               : `The user closed your question ${item.id} ("${item.question}") without answering.`;
+            pi.sendMessage({ customType: ANSWER_MESSAGE, content, display: true, details: { id: item.id, question: item.question, response } },
+               { deliverAs: running ? "steer" : "followUp", triggerTurn: true });
+         }, () => { asking.delete(item.id); });
+   };
+   const restore = (ctx: ExtensionContext) => {
+      open.abort(); open = new AbortController(); asking.clear();
+      const pending = new Map<string, BackgroundQuestion>();
+      for (const entry of ctx.sessionManager.getBranch()) {
+         if (entry.type !== "custom" || entry.customType !== BACKGROUND_ENTRY) continue;
+         const record = entry.data as BackgroundRecord;
+         if (record.op === "ask") pending.set(record.question.id, record.question); else pending.delete(record.id);
+      }
+      for (const item of pending.values()) askInBackground(item);
+   };
+   pi.on("session_start", (_event, ctx) => restore(ctx));
+   pi.on("session_tree", (_event, ctx) => restore(ctx));
+   pi.on("session_shutdown", () => { open.abort(); asking.clear(); });
+   pi.on("agent_start", () => { running = true; });
+   pi.on("agent_end", () => { running = false; });
+
    pi.registerTool({
       name: "ask_user",
       label: "Ask User",
@@ -1499,9 +1552,23 @@ export default function(pi: ExtensionAPI) {
          ),
          timeout: Type.Optional(Type.Number({ description: "Milliseconds; only if the answer is useful only soon." })),
          done_when: Type.Optional(Type.String({ description: "For a request to do something: a shell command that exits 0 once it is done. The question then closes by itself." })),
+         wait: Type.Optional(Type.Boolean({ description: "false: don't wait. The question stays open for the user while you carry on, and the answer wakes you. For answers not needed yet." })),
       }),
 
       async execute(_toolCallId, params, toolSignal, onUpdate, ctx) {
+         if ((params as AskParams).wait === false) {
+            const given = params as AskParams;
+            if (given.done_when !== undefined || given.timeout !== undefined) throw new Error("wait: false takes neither done_when nor timeout: the question stays open until the user answers.");
+            if (!getPresentation(pi)) throw new Error("wait: false needs Desk; here, ask and wait for the answer.");
+            const item: BackgroundQuestion = { id: `q${randomUUID().slice(0, 8)}`, question: displayText(given.question),
+               ...(given.context && displayText(given.context).trim() ? { context: displayText(given.context).trim() } : {}),
+               options: normalizeOptions(given.options ?? []), allowMultiple: given.allowMultiple ?? false, allowFreeform: given.allowFreeform ?? true,
+               allowComment: given.allowComment ?? false };
+            pi.appendEntry(BACKGROUND_ENTRY, { op: "ask", question: item } satisfies BackgroundRecord);
+            askInBackground(item);
+            return { content: [{ type: "text", text: `Asked as ${item.id}; carry on with work that doesn't depend on the answer. It wakes you when the user answers.` }],
+               details: { question: item.question, context: item.context, options: item.options, response: null, cancelled: false, pending: item.id } as AskToolDetails };
+         }
          const doneWhen = (params as AskParams).done_when?.trim();
          let detected = false;
          if (!doneWhen || !ctx.hasUI) return ask(toolSignal);

@@ -1,5 +1,8 @@
-import type { UiConversation } from "../../../pi-ui/index.ts";
+import type { UiConversation, UiInteraction } from "../../../pi-ui/index.ts";
 import type { SessionView, ViewSnapshot } from "./protocol.ts";
+
+/** A question asked without waiting (ask_user wait: false): the agent works on, so it doesn't hold the conversation. */
+export const asksInBackground = (form: UiInteraction | undefined) => form?.kind === "question" && form.background === true;
 
 /** Agents a conversation started that are still working or have tasks queued; it wakes when they report. */
 export function workingAgents(views: readonly ViewSnapshot[]): ViewSnapshot[] {
