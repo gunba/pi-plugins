@@ -6,7 +6,7 @@
   "keywords": ["pi-package", "pi", "context", "environment"],
   "type": "module",
   "pi": {
-    "extensions": ["./extensions/system-context.ts"]
+    "extensions": ["./extensions/system-context.ts", "./extensions/folder-instructions.ts"]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

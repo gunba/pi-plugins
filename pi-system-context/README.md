@@ -19,6 +19,18 @@ Pi's own `<cwd>` section carries the folder. The tool versions are probed once p
 process, so the section only changes when the computer or the registered tools do,
 which keeps the prompt cache.
 
+## Instructions for other folders
+
+Pi loads `AGENTS.md` (and `AGENTS.override.md`, `CLAUDE.md`) from the folder a
+conversation started in and the folders above it. When the agent reads, edits or
+writes a file elsewhere, `folder-instructions.ts` adds the instructions of that file's
+folder and the folders above it that Pi didn't load, once each, after the tool's
+result. In a program they follow the program's output, so the file data the program
+reads is unchanged. Being tool output, they keep the prompt cache; after a compaction
+they are added again when next needed. Each file is cut at 24,000 characters.
+
+## Prompt sections
+
 The extension also replaces Pi's documentation section with a one-line pointer,
 drops rules that repeat tool descriptions, and removes codemode's call note from
 tools that resolve to a string.
