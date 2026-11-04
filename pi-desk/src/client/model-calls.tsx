@@ -66,11 +66,11 @@ export function ModelCalls({ computer, name, connected, view, saved }: {
 					{!providers && <option value="">Loading…</option>}
 					{providers?.map(item => <option key={item.provider} value={item.provider}>{item.name}</option>)}
 				</select>
-				<select aria-label="Model" value={model} disabled={disabled || !list} onChange={event => choose(list ?? [], event.target.value, effort)}>
+				<select className="model-calls-model" aria-label="Model" value={model} disabled={disabled || !list} onChange={event => choose(list ?? [], event.target.value, effort)}>
 					{!list && <option value="">Loading…</option>}
 					{list?.map(item => <option key={item.id} value={item.id}>{item.name + " · " + price(item.input) + " / " + price(item.output) + " per M"}</option>)}
 				</select>
-				<select aria-label="Effort" value={effort} disabled={disabled || !entry} onChange={event => setEffort(event.target.value)}>
+				<select className="model-calls-effort" aria-label="Effort" value={effort} disabled={disabled || !entry} onChange={event => setEffort(event.target.value)}>
 					{entry?.efforts.map(item => <option key={item} value={item}>{effortLabel(item)}</option>)}
 				</select>
 				<input type="password" aria-label={(providers?.find(item => item.provider === provider)?.name ?? "Provider") + " API key"} autoComplete="off" spellCheck={false}

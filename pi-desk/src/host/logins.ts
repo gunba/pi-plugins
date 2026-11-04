@@ -49,12 +49,16 @@ export class Logins {
 		return catalog.getProviders().filter(provider => provider.auth.apiKey?.login && catalog.getModels(provider.id).length)
 			.map(provider => ({ provider: provider.id, name: provider.name }));
 	}
-	/** One provider's chat models, listed separately because all providers' together are hundreds of kilobytes. */
+	/**
+	 * One provider's chat models, cheapest first, listed separately because all providers' together are hundreds of
+	 * kilobytes.
+	 */
 	async providerModels(id: string): Promise<ModelOption[]> {
 		const catalog = await this.providers();
 		if (!catalog.getProviders().some(provider => provider.id === id && provider.auth.apiKey?.login)) return [];
 		return catalog.getModels(id).map(model => ({ id: model.id, name: model.name, efforts: getSupportedThinkingLevels(model),
-			input: model.cost.input, output: model.cost.output }));
+			input: model.cost.input, output: model.cost.output }))
+			.sort((a, b) => a.input + a.output - b.input - b.output || a.name.localeCompare(b.name));
 	}
 	async snapshot(): Promise<LoginsSnapshot> {
 		let providers: LoginProvider[];
