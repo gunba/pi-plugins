@@ -63,19 +63,21 @@ outlive the call, and several calls in one program run at once.
 | Parameter | Default | |
 |---|---|---|
 | `command` | | the command, run in the working directory with Pi's environment and `shellCommandPrefix` |
-| `wait` | 60 | seconds the call waits for the command to end; 0 starts it in the background at once |
+| `wait` | 60 | seconds the call waits for the command to end, at most 60; 0 starts it in the background at once |
 | `warn` | 1800 | seconds between wakes while it runs in the background; 0 wakes the agent only at its end |
 | `progress` | | a command printing how far it is, such as a count of results, run each minute in the background |
 
 A command that ends within `wait` returns as Pi's bash does: `{output, truncated, full_output_path?, exit_code,
 wall_time_seconds}`, an error with the exit code when it is not 0, and its last 2,000 lines or 50 KB for the model. A
 program receives up to 1 MiB of output, or its first and last 512 KiB with the full output's path. A fast command
-leaves no files. One still running after `wait` goes on as a watch: the call returns its output so far with
+leaves no files. One still running after `wait`, or when Jordan sends a steering message (which reaches the agent
+only once its calls return), goes on as a watch, so no command holds up a turn for more than a minute: the call returns its output so far with
 `exit_code: null` and `running` (the watch's ID). The watch wakes the agent when the command ends, with its exit status,
 running time and progress, and every `warn` seconds while it runs, with its latest output and progress readings, so
 the agent can judge whether it is getting anywhere and stop it with `watch({stop})`. Nothing stops a command for
 taking long. New output alone doesn't wake the agent. Desk's view of the watch shows when it started and its latest
-progress. Pi's `timeout` parameter is accepted and ignored.
+progress. Pi's `timeout` parameter is accepted and ignored, and agents are told not to wrap commands in `timeout`, which
+would only cut short a command that can run on.
 
 ## Behaviour
 

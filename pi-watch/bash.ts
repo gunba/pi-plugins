@@ -9,7 +9,7 @@ import type { Watches, WatchSpec } from "./index.ts";
 
 const Parameters = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
-	wait: Type.Optional(Type.Number({ minimum: 0, description: "Seconds to wait for it to end (default 60; 0 starts it in the background). Still running then, it goes on in the background and you're woken when it ends." })),
+	wait: Type.Optional(Type.Number({ minimum: 0, description: "Seconds to wait for it to end, at most 60, the default; 0 starts it in the background. Still running then, or when Jordan sends a message, it goes on in the background and you're woken when it ends." })),
 	warn: Type.Optional(Type.Number({ minimum: 0, description: "In the background, wake you every this many seconds while it runs, with its progress (default 1800; 0: only at its end)." })),
 	progress: Type.Optional(Type.String({ description: "Command printing its progress, such as a count of results; run each minute in the background, its last line is shown to you and Jordan." })),
 });
@@ -24,7 +24,10 @@ const OutputSchema = Type.Object({
 	running: Type.Optional(Type.String({ description: "The watch it runs under in the background" })),
 });
 
+/** WAIT_S: the longest a call waits for its command, and the default; after it the command goes on in the background. */
 const WAIT_S = 60, WARN_S = 1800, UPDATE_MS = 500;
+/** Calls waiting for their commands; Jordan's message ends each wait, so he never waits behind a command. */
+const waiting = new Set<() => void>();
 /** What a program receives of the output: all of it up to 1 MiB, else its first and last 512 KiB. */
 const STRUCTURED_BYTES = 1 << 20;
 
@@ -70,11 +73,14 @@ function environment(ctx: ExtensionContext): NodeJS.ProcessEnv {
  */
 export function registerBash(pi: ExtensionAPI, current: () => Watches | undefined, labels: Map<string, string>): void {
 	const base = createBashToolDefinition(process.cwd());
+	// Steering reaches the agent only once its tool calls return.
+	pi.on("input", event => { if (event.streamingBehavior === "steer" && event.source !== "extension") for (const stop of waiting) stop(); });
 	pi.registerTool({
 		...base,
-		description: "Run a bash command in the working directory and return its output and exit code. It may take as long as it needs: "
-			+ "after wait seconds (default 60) one still running goes on in the background and you're woken when it ends, so independent "
-			+ "work can continue meanwhile. Give progress for long work so you can tell whether it is getting anywhere.",
+		description: "Run a bash command in the working directory and return its output and exit code. It may take as long as it needs "
+			+ "without holding up your turn: after wait seconds (at most 60), or as soon as Jordan sends a message, one still running goes on in "
+			+ "the background and you're woken when it ends, so other work can continue meanwhile. Don't wrap commands in timeout, which "
+			+ "only cuts them short. Give progress for long work so you can tell whether it is getting anywhere.",
 		parameters: Parameters,
 		outputSchema: OutputSchema,
 		async execute(id, params: Params, signal, onUpdate, ctx) {
@@ -83,7 +89,7 @@ export function registerBash(pi: ExtensionAPI, current: () => Watches | undefine
 			const watches = current();
 			if (!watches || watches.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("bash is not ready in this conversation.");
 			watches.useContext(ctx);
-			const shell = watches.shell(), started = Date.now(), wait = (params.wait ?? WAIT_S) * 1000;
+			const shell = watches.shell(), started = Date.now(), wait = Math.min(params.wait ?? WAIT_S, WAIT_S) * 1000;
 			const warn = params.warn ?? WARN_S, progress = params.progress?.trim() || undefined;
 			const spec: WatchSpec = { id: `b${randomUUID()}`, mode: "output", command: shell.prefix ? `${shell.prefix}\n${params.command}` : params.command,
 				cwd: ctx.cwd, created: started, computer: hostname(), ...(label ? { label } : {}),
@@ -97,21 +103,22 @@ export function registerBash(pi: ExtensionAPI, current: () => Watches | undefine
 				const size = sizeOf(log);
 				if (size !== shown) { shown = size; onUpdate({ content: [{ type: "text", text: tail(log).text }], details: undefined }); }
 			}, UPDATE_MS);
-			let timer: NodeJS.Timeout | undefined, onAbort: (() => void) | undefined;
+			let timer: NodeJS.Timeout | undefined, onAbort: (() => void) | undefined, steered: (() => void) | undefined;
 			const outcome = await Promise.race([
 				ended.then(() => "ended" as const),
 				new Promise<"waited">(resolve => { timer = setTimeout(() => resolve("waited"), wait); }),
+				new Promise<"steered">(resolve => { steered = () => resolve("steered"); waiting.add(steered); }),
 				new Promise<"aborted">(resolve => { onAbort = () => resolve("aborted"); if (signal?.aborted) onAbort(); else signal?.addEventListener("abort", onAbort, { once: true }); }),
-			]).finally(() => { clearTimeout(timer); if (update) clearInterval(update); if (onAbort) signal?.removeEventListener("abort", onAbort); });
+			]).finally(() => { clearTimeout(timer); if (update) clearInterval(update); if (onAbort) signal?.removeEventListener("abort", onAbort); waiting.delete(steered!); });
 			if (outcome === "aborted") {
 				watches.stopRun(spec);
 				await Promise.race([ended, new Promise(resolve => setTimeout(resolve, 2_000))]);
 				throw new Error(`${tail(log).text}\n\nCommand aborted`.trim());
 			}
-			if (outcome === "waited" && !existsSync(exit)) {
+			if (outcome !== "ended" && !existsSync(exit)) {
 				const adopted = watches.adopt({ ...spec, command: params.command });
 				const so = tail(log);
-				const note = `Still running after ${Math.round((Date.now() - started) / 1000)} s; it goes on in the background as watch ${adopted.id}, and you're woken when it ends${warn ? ` and every ${warn >= 60 ? `${Math.round(warn / 60)} min` : `${warn} s`} while it runs` : ""}. Stop it with watch({stop: "${adopted.id}"}). Full output so far: ${log}`;
+				const note = `${outcome === "steered" ? "Jordan sent a message, so this stopped waiting. " : ""}Still running after ${Math.round((Date.now() - started) / 1000)} s; it goes on in the background as watch ${adopted.id}, and you're woken when it ends${warn ? ` and every ${warn >= 60 ? `${Math.round(warn / 60)} min` : `${warn} s`} while it runs` : ""}. Stop it with watch({stop: "${adopted.id}"}). Full output so far: ${log}`;
 				return { content: [{ type: "text", text: so.text ? `${so.text}\n\n${note}` : note }], details: {},
 					structuredContent: { ...structured(log), exit_code: null, wall_time_seconds: Math.round((Date.now() - started) / 100) / 10, running: adopted.id } };
 			}

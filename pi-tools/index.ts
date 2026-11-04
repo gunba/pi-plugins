@@ -35,18 +35,18 @@ export const requestDescription = (others: readonly string[]) => `Run a JavaScri
 - await tools.NAME(args) returns the operation's data, or {error:string} if it failed. Check for an error before a step that depends on it.
 - Await side effects in order; use Promise.all only for independent steps. Calls still pending at return are cancelled; finished ones are not undone.
 - Return only the fields you need: const r=await tools.bash({command:"git status --short",description:"Check changes"}); return r.error??r.output;
-- Every operation takes description: a short sentence for the user on what the call does. The signatures below leave it out.
+- Every operation takes description: a short sentence for the user on what the call does; signatures leave it out.
 - Paths are relative to the working folder. Write valid JavaScript: every object field needs key:value. In template literals, escape \` and \${, or use quoted strings.
 - Before repeating a change over many files, make it once and check it.
 Core operations:
 read({path,offset?,limit?,page?}) -> the whole text (PDF and Office too), the lines asked (from 1), or an image; page: a PDF/Office page image.
-bash({command,wait?,warn?,progress?}) -> {output,exit_code,truncated,full_output_path?,wall_time_seconds,running?}. After wait s (60) it runs on, waking you when done; progress: a command printing how far it is; warn: s between wakes.
+bash({command,wait?,warn?,progress?}) -> {output,exit_code,truncated,full_output_path?,wall_time_seconds,running?}. After wait s (max 60) it runs on, waking you when done; never add timeout. progress: a command printing progress; warn: s between wakes.
 edit({path,edits:[{oldText,newText}]}) -> text. Each oldText must occur once in the original file; edits must not overlap.
-write({path,content}) -> text. Creates folders and replaces the file: for new files and full rewrites.
+write({path,content}) -> text. Creates folders; replaces the file: for new files and full rewrites.
 Common operations:
 ask_user({question,options?,context?,done_when?,wait?}) -> {response,cancelled}: when only Jordan can decide, supply or approve something. done_when: a command that exits 0 once it's done; wait:false: carry on; the answer wakes you.
 web_search({goal,queries}): current facts; one search per question. web_fetch({urls,goal?,full?}) -> {pages,failures}: read pages and PDFs by URL. Cite sources as links.
-watch({command?,program?,every?,until?,wake_when?,stop?}): end with a watch to be woken by a command, program, time or change; with every, checks run without you. Never loop to pass time.
+watch({command?,program?,every?,until?,wake_when?,stop?}): end with a watch to be woken by a command, program, time or change; with every, checks run without you. Never loop to wait.
 Other operations (describeTool(name) gives one's contract):
 ${others.join("\n")}
 searchTools(query,{limit?,namespace?}) and describeNamespace(name) find others, ALL_TOOLS lists all; tools.tool_search({query,limit?}) loads matches ({loaded}). This definition stays the same.
