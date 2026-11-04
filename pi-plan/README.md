@@ -31,6 +31,8 @@ extension event bus with a probe object, whose `plan` is then set.
 
 Step states are pending, in_progress and completed. Parallel active steps are
 allowed; normalized step content must be unique. Steps persist across turns.
+A model calling the tool directly rather than from a program has no schema for it,
+so a list sent as JSON text is parsed as the list.
 A plan can complete with steps still open; they keep their recorded states.
 Finishing every step does not by itself prove the objective complete.
 `create_plan` while a plan is unfinished completes that plan, as it stands, and

@@ -38,6 +38,10 @@ export function preparePlanArguments<T extends CreateParams | UpdateParams>(valu
 		if (field in input && (typeof input[field] !== "number" || !Number.isSafeInteger(input[field]) || (input[field] as number) < 1))
 			throw new Error(`${field} must be a positive safe integer`);
 	if ("auto_continue" in input && typeof input.auto_continue !== "boolean") throw new Error("auto_continue must be a boolean");
+	// A model calling the tool directly, not from a program, has no schema for it and may send the list as JSON text.
+	if (typeof input.steps === "string" && input.steps.trim().startsWith("[")) {
+		try { input.steps = JSON.parse(input.steps); } catch { throw new Error("steps is text that isn't a JSON array; send an array of step texts or {content, status} objects"); }
+	}
 	if ("steps" in input) planSteps(Array.isArray(input.steps) ? input.steps.map(pending) : input.steps, true);
 	return input as T;
 }

@@ -4,7 +4,7 @@ export interface PlanStep { content: string; status: StepStatus }
 
 /** Stored text stays exact; only new input is normalized. Parallel work is allowed. */
 export function planSteps(value: unknown, normalize = false): PlanStep[] {
-	if (!Array.isArray(value)) throw new Error("steps must be an array");
+	if (!Array.isArray(value)) throw new Error("steps must be an array of step texts or {content, status} objects");
 	const contents = new Set<string>();
 	return value.map(candidate => {
 		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)
