@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { ServicesSnapshot } from "../shared/services.ts";
 import { api, ApiError } from "./connection.ts";
 import { DictationKey } from "./dictation.tsx";
+import { ModelCalls } from "./model-calls.tsx";
 import { Row } from "./settings-pages.tsx";
 
 const names: Record<string, string> = { exa: "Exa", typesafe: "TypeSafe", elevenlabs: "ElevenLabs" };
@@ -43,6 +44,8 @@ export function ServiceAccounts({ computer, name, connected, legacy }: { compute
 				{snapshot?.exa.configured && !snapshot.exa.environment && <button className="quiet-action" disabled={locked} onClick={() => void save(null)}>Remove API key</button>}
 				<a className="quiet-action" href="https://dashboard.exa.ai/api-keys" target="_blank" rel="noopener noreferrer">Get a key ↗</a>
 			</Row>}
+			{!unsupported && snapshot?.models && <ModelCalls computer={computer} name={name} connected={connected} view={snapshot.models}
+				saved={models => setSnapshot(value => value ? { ...value, models } : value)} />}
 			{unsupported && legacy}
 			{error && <Row label=""><span className="error-text" role="alert">{error}</span></Row>}
 		</section>
@@ -57,7 +60,7 @@ export function ServiceAccounts({ computer, name, connected, legacy }: { compute
 						<td>{total && total.calls > total.unknown ? `$${total.cost.toFixed(4)}` : "—"}</td><td>{total?.unknown || "—"}</td></tr>;
 				})}</tbody>
 			</table>
-			<p className="muted">Estimates at API prices, not invoices. Requests whose cost isn't known are counted separately, not as free. Classifier and image calls made from a conversation also count in its cost.</p>
+			<p className="muted">Estimates at API prices, not invoices. Requests whose cost isn't known are counted separately, not as free. Classifier, image and ask_model calls made from a conversation also count in its cost.</p>
 		</section>}
 	</>;
 }

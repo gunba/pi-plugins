@@ -50,6 +50,13 @@ export class ServiceUsage {
 			SUM(unknown) AS unknown, SUM(seconds) AS seconds FROM usage GROUP BY service ORDER BY service`).all() as unknown as ServiceTotal[];
 		return { ...(since === null ? {} : { since }), totals };
 	}
+	/** Known cost of one operation, across services, since 00:00 UTC. */
+	spentToday(operation: string): number {
+		if (!this.db && !existsSync(this.file)) return 0;
+		const row = this.open().prepare("SELECT SUM(cost) AS cost FROM usage WHERE day=? AND operation=?")
+			.get(Math.floor(Date.now() / 86_400_000), operation) as { cost: number | null };
+		return row.cost ?? 0;
+	}
 	close(): void { this.db?.close(); this.db = undefined; }
 }
 

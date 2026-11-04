@@ -13,6 +13,7 @@ import type { ConversationMoves } from "./conversation-moves.ts";
 import { MAX_DICTATION_BYTES, type Dictation } from "./dictation.ts";
 import { ServiceUsage } from "../../../pi-service-usage/index.ts";
 import { exaSettings, saveExaKey } from "../../../pi-web-search/extensions/settings.ts";
+import { modelCallsView, saveModelCalls } from "../../../pi-model-calls/settings.ts";
 import type { Home } from "./home.ts";
 import { OpenHere, type OpenHereCommand } from "./open-here.ts";
 import type { EfficiencyReports } from "./efficiency.ts";
@@ -152,8 +153,23 @@ export class HostApi {
 		}
 		if (url.pathname === "/api/services" && request.method === "GET") {
 			const usage = new ServiceUsage(this.core.options.agentDir);
-			try { return reply({ exa: exaSettings(this.core.options.agentDir), usage: usage.snapshot() }); }
+			try { return reply({ exa: exaSettings(this.core.options.agentDir), models: modelCallsView(this.core.options.agentDir), usage: usage.snapshot() }); }
 			finally { usage.close(); }
+		}
+		if (url.pathname === "/api/services/models" && request.method === "GET") {
+			const provider = url.searchParams.get("provider");
+			return reply(provider ? await this.host.logins()!.providerModels(provider) : await this.host.logins()!.modelProviders());
+		}
+		if (url.pathname === "/api/services/models" && request.method === "POST") {
+			const agentDir = this.core.options.agentDir;
+			if (data.remove === true) { saveModelCalls(undefined, agentDir); return reply(modelCallsView(agentDir)); }
+			const provider = string(data.provider, 200), model = string(data.model, 300), effort = string(data.effort, 20);
+			const choice = (await this.host.logins()!.providerModels(provider)).find(item => item.id === model);
+			if (!choice) throw new Error("Choose a model.");
+			if (!choice.efforts.includes(effort)) throw new Error("Choose an effort this model supports.");
+			const key = data.key === undefined || data.key === "" ? undefined : string(data.key, 2000).trim();
+			saveModelCalls({ provider, model, effort, dailyLimit: Number(data.dailyLimit), ...key ? { apiKey: key } : {} }, agentDir);
+			return reply(modelCallsView(agentDir));
 		}
 		if (url.pathname === "/api/services/exa" && request.method === "POST") {
 			if (exaSettings(this.core.options.agentDir).environment) throw new Error("EXA_API_KEY is set in this computer’s environment. Change it there instead.");

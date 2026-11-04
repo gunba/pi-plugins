@@ -2400,6 +2400,10 @@ details[open] > summary:before {
 .settings-inline-form { display:flex; flex:1; min-width:220px; gap:8px; align-items:center; margin:0; }
 .settings-inline-form input { flex:1; min-width:0; margin:0; }
 .settings-inline-form select { flex:none; margin:0; }
+.model-calls-form { flex-wrap:wrap; }
+.model-calls-form select { flex:1 1 140px; min-width:0; }
+.model-calls-limit { display:flex; align-items:center; gap:4px; white-space:nowrap; }
+.model-calls-form .model-calls-limit input { width:80px; flex:none; }
 .settings-row-value > select, .settings-row-value > textarea { margin:0; }
 .settings-row-wide { grid-template-columns:1fr; }
 .settings-row-wide .provider-sign-in-status { margin:0; }

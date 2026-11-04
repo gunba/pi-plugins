@@ -4,10 +4,11 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import lockfile from "proper-lockfile";
 import { ModelRuntime, CredentialSynchronizationError, readStoredCredential, type CreateModelRuntimeOptions } from "@earendil-works/pi-coding-agent";
-import type { AuthPrompt, AuthEvent, Credential } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, type AuthPrompt, type AuthEvent, type Credential } from "@earendil-works/pi-ai";
 import { atomicJson } from "../../manage/store.ts";
 import { providerIdentity } from "./provider-identity.ts";
 import type { LoginProvider, LoginsSnapshot, ProviderAuthType, SignIn } from "../shared/logins.ts";
+import type { ModelOption, ModelProvider } from "../shared/services.ts";
 
 const pending = (state: SignIn["state"]) => ["starting", "waiting"].includes(state);
 const safeLinks = (links: { label?: string; url: string }[]) => links.map(link => {
@@ -15,7 +16,7 @@ const safeLinks = (links: { label?: string; url: string }[]) => links.map(link =
 	if (url.protocol !== "https:" || url.username || url.password) throw Error("Provider returned an invalid sign-in link.");
 	return { label: link.label ?? "Open sign-in page", url: url.href };
 });
-type RuntimeFactory = (options: CreateModelRuntimeOptions) => Promise<Pick<ModelRuntime, "getProvider" | "getProviders" | "login" | "logout">>;
+type RuntimeFactory = (options: CreateModelRuntimeOptions) => Promise<Pick<ModelRuntime, "getProvider" | "getProviders" | "getModels" | "login" | "logout">>;
 interface Active { controller: AbortController; work: Promise<void>; inputs: string[]; answer?: { id: string; finish: (answer?: string) => void } }
 
 /**
@@ -28,7 +29,7 @@ export class Logins {
 	private factory: RuntimeFactory;
 	private operations = new Map<string, SignIn>();
 	private active = new Map<string, Active>();
-	private catalog?: Promise<Pick<ModelRuntime, "getProviders">>;
+	private catalog?: Promise<Pick<ModelRuntime, "getProviders" | "getModels">>;
 	constructor(agentDir: string, factory: RuntimeFactory = options => ModelRuntime.create(options)) {
 		this.agentDir = agentDir; this.authPath = join(agentDir, "auth.json"); this.factory = factory;
 	}
@@ -36,14 +37,29 @@ export class Logins {
 		return this.factory({ authPath: this.authPath, modelsPath: join(this.agentDir, "models.json"), refreshOnCreate: false, allowModelNetwork: false, signal });
 	}
 	get signingIn(): boolean { return this.active.size > 0; }
-	async snapshot(): Promise<LoginsSnapshot> {
-		// The provider list needs no credentials: read with an empty store, so listing never creates or refreshes anything.
-		this.catalog ??= this.factory({ credentials: { read: async () => undefined, list: async () => [], delete: async () => {},
+	/** The provider list needs no credentials: read with an empty store, so listing never creates or refreshes anything. */
+	private providers() {
+		return this.catalog ??= this.factory({ credentials: { read: async () => undefined, list: async () => [], delete: async () => {},
 			modify: async () => { throw Error("The provider list cannot change logins."); } },
 			modelsPath: join(this.agentDir, "models.json"), refreshOnCreate: false, allowModelNetwork: false });
+	}
+	/** Providers that take API keys and have chat models: ask_model's choices. */
+	async modelProviders(): Promise<ModelProvider[]> {
+		const catalog = await this.providers();
+		return catalog.getProviders().filter(provider => provider.auth.apiKey?.login && catalog.getModels(provider.id).length)
+			.map(provider => ({ provider: provider.id, name: provider.name }));
+	}
+	/** One provider's chat models, listed separately because all providers' together are hundreds of kilobytes. */
+	async providerModels(id: string): Promise<ModelOption[]> {
+		const catalog = await this.providers();
+		if (!catalog.getProviders().some(provider => provider.id === id && provider.auth.apiKey?.login)) return [];
+		return catalog.getModels(id).map(model => ({ id: model.id, name: model.name, efforts: getSupportedThinkingLevels(model),
+			input: model.cost.input, output: model.cost.output }));
+	}
+	async snapshot(): Promise<LoginsSnapshot> {
 		let providers: LoginProvider[];
 		try {
-			providers = (await this.catalog).getProviders().flatMap(provider => {
+			providers = (await this.providers()).getProviders().flatMap(provider => {
 				const types: ProviderAuthType[] = [...provider.auth.oauth ? ["oauth" as const] : [], ...provider.auth.apiKey?.login ? ["api_key" as const] : []];
 				if (!types.length) return [];
 				const credential = readStoredCredential(provider.id, this.authPath);

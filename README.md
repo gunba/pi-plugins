@@ -31,6 +31,8 @@ Do not pin a ref, or Pi's update checks will not see new commits.
 
 ## Models, context and cost
 
+- [`pi-model-calls`](pi-model-calls/README.md): `ask_model`, free-text answers for programs from one model chosen in
+  Desk's Settings, billed to its API key, with a daily spending limit.
 - [`pi-openai-images`](pi-openai-images/README.md): GPT Image 2.5 generation and editing through native codemode,
   using an OpenAI API key or the ChatGPT Codex image service.
 - [`pi-codex-wire`](pi-codex-wire/README.md): the ChatGPT Codex transport (requests identify as Codex Desktop or CLI),

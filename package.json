@@ -32,6 +32,7 @@
       "./pi-message-timestamps/extensions/message-timestamps.ts",
       "./pi-local-links/extensions/local-links.ts",
       "./pi-web-search/extensions/web-search.ts",
+    "./pi-model-calls/index.ts",
       "./pi-ask-user/index.ts",
       "./pi-config/extensions/pi-config.ts",
       "./pi-system-context/extensions/system-context.ts",
