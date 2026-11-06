@@ -13,6 +13,8 @@ export interface ManagedSession { view: SessionView; worker?: SessionWorker; ini
 	keepOnClose?: boolean;
 	/** Its process is being replaced: closing it is the first half of a restart, so it stays open and selected. */
 	replacing?: boolean;
+	/** The restart stopped waiting for its close, which went on: when that close control completes, the restart finishes. */
+	replaceAfter?: { control: string; agent?: string; armed?: boolean };
 	/** Desk reopened it for a watch while it was closed; it closes again, kept, once it has been idle a while. */
 	sleepWhenIdle?: boolean;
 	/** When it was last seen idle while it may go back to sleep. */

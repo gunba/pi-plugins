@@ -11,7 +11,7 @@ import { AccessStore } from "./access.ts";
 import { SessionWorker } from "./worker-client.ts";
 import { readWorkerRecord, workerDirectory, workerOccupied } from "./worker-registry.ts";
 import { sessionDisplay } from "./session-display.ts";
-import type { HostState, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
+import type { HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { PackageUpdates } from "./package-updates.ts";
 import { homeFolder } from "./local-path.ts";
 import { readSessionHeader, SessionCatalog } from "./session-files.ts";
@@ -387,6 +387,13 @@ export class DeskHost {
 			const controls = [...managed.view.controls ?? []].filter(control => control.id !== message.control.id);
 			controls.push(message.control);
 			managed.view = { ...managed.view, controls: controls.slice(-16) };
+			const late = managed.replaceAfter?.control === message.control.id && message.control.state !== "running" ? managed.replaceAfter : undefined;
+			if (late) {
+				managed.replaceAfter = undefined;
+				// The close failed, so the conversation goes on in its old process and the restart is over.
+				if (message.control.state !== "completed") managed.replacing = undefined;
+			}
+			const closed = managed.worker;
 			if (message.control.kind === "close" && message.control.state === "completed") {
 				this.inputs?.interrupt(key, "The conversation closed");
 				managed.worker = undefined;
@@ -400,6 +407,7 @@ export class DeskHost {
 			this.events.emit({ type: "session", session: managed.view });
 			this.persistEvent(true);
 			if (message.control.kind === "close" && message.control.state === "completed") this.updates.refresh();
+			if (late && message.control.state === "completed") void this.finishReplacement(managed, late, closed);
 			if (message.control.state !== "running") this.drainInputs(managed);
 			return;
 		}
@@ -702,12 +710,22 @@ export class DeskHost {
 			await this.waitForControl(view.key, id);
 			await worker.close(true);
 		} catch (error) {
-			managed.replacing = undefined;
+			// Still closing, as when its extensions are slow to stop: the restart finishes when the close does (workerEvent).
+			// Without that, the late close would end the conversation as though it had been closed from the sidebar.
+			const closing = managed.worker === worker && managed.view.controls?.some(control => control.id === id && control.state === "running");
+			if (closing) managed.replaceAfter = { control: id, agent, armed };
+			else managed.replacing = undefined;
 			const message = error instanceof Error ? error.message : String(error);
 			managed.view = { ...managed.view, updating: undefined, ...(managed.worker ? {} : { state: "failed" as const, error: message, interrupted: true }) };
 			this.events.emit({ type: "session", session: managed.view }); this.persistEvent(true);
+			if (closing) throw new Error("The conversation is still closing. It restarts once it has closed.");
 			throw error;
 		}
+		return this.reopenReplaced(managed, view, agent, armed);
+	}
+
+	/** The second half of a restart, once the old process has stopped: the saved session starts again on this host's runtime. */
+	private reopenReplaced(managed: ManagedSession, view: SessionView, agent: string | undefined, armed: boolean | undefined): string {
 		// The old process has released its registration. Peers see "restarting" rather than offline, and
 		// messages wait in its inbox. Refreshes stop once the new process registers under its own owner.
 		const owner = agent ? this.parties?.store.restarting(agent, undefined, armed) : undefined;
@@ -728,6 +746,24 @@ export class DeskHost {
 			this.events.emit({ type: "session", session: current.view }); this.persistEvent(true);
 			throw error;
 		}
+	}
+
+	/** Finishes a restart whose close completed after replaceWorker stopped waiting for it. */
+	private async finishReplacement(managed: ManagedSession, late: NonNullable<ManagedSession["replaceAfter"]>, worker?: SessionWorker): Promise<void> {
+		const key = managed.view.key;
+		const current = () => !this.closing && this.sessions.get(key) === managed && !managed.worker;
+		try { await worker?.close(true); }
+		catch (error) {
+			if (!current()) return;
+			managed.replacing = undefined;
+			managed.view = { ...managed.view, state: "failed", error: error instanceof Error ? error.message : String(error), interrupted: true };
+			this.events.emit({ type: "session", session: managed.view }); this.persistEvent(true);
+			return;
+		}
+		if (!current()) return;
+		try { this.reopenReplaced(managed, managed.view, late.agent, late.armed); }
+		catch (error) { console.error(`Could not restart ${managed.view.title ?? key} after it closed:`, error instanceof Error ? error.message : String(error)); }
+		this.updates.refresh();
 	}
 
 	/** The earlier login store goes once no running conversation still uses the code that read it. */
@@ -760,7 +796,9 @@ export class DeskHost {
 			deskDirectory: this.options.dataDir ?? join(this.options.agentDir, "desk"),
 			...(existing?.view.home ? { homeDirectory: join(this.directory, "home") } : {}),
 			...(existing?.view.leaf !== undefined ? { leaf: existing.view.leaf } : {}) };
-		const managed: ManagedSession = { reconnectAt: adopt ? existing?.reconnectAt : undefined, view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
+		// Adopting the same process carries over a restart waiting for its close to complete.
+		const managed: ManagedSession = { reconnectAt: adopt ? existing?.reconnectAt : undefined,
+			...(adopt && existing?.replaceAfter ? { replacing: true, replaceAfter: existing.replaceAfter } : {}), view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
 			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false, kept: undefined, asleep: undefined, waiting: undefined,
 			reconnecting: adopt ? existing?.view.reconnecting : undefined,
 			snapshot: undefined, ui: undefined, historyReady: false, activation: adopt ? existing?.view.activation : randomUUID(), inputs: this.inputs!.pending(key) } };

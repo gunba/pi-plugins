@@ -42,7 +42,8 @@ export class HostUpdates {
 	/** The version each conversation was last restarted for, so a failed restart is not repeated. */
 	private restartAttempts = new Map<string, string>();
 	private maintaining = false;
-	private forcedMaintenance?: { only?: string };
+	/** Restarts asked for during a pass, run once it ends: every outdated conversation, or these ones. */
+	private forcedMaintenance?: { all: boolean; keys: Set<string> };
 	private hostUpdateAttempt?: { version: string; at: number };
 	private hostUpdateWaiting?: string;
 	private readonly started = Date.now();
@@ -146,7 +147,13 @@ export class HostUpdates {
 	 * this host's version, and update the host itself when every conversation has been quiet for a while.
 	 */
 	async maintain(force = false, only?: string): Promise<void> {
-		if (this.maintaining) { if (force) this.forcedMaintenance = { only }; return; }
+		if (this.maintaining) {
+			if (force) {
+				const queued = this.forcedMaintenance ??= { all: false, keys: new Set() };
+				if (only === undefined) queued.all = true; else queued.keys.add(only);
+			}
+			return;
+		}
 		if (this.core.closing || this.core.held || this.core.restoringUpdate) return;
 		this.maintaining = true;
 		try {
@@ -204,7 +211,9 @@ export class HostUpdates {
 			this.maintaining = false;
 			// A request made during a background pass runs once that pass ends.
 			const queued = this.forcedMaintenance; this.forcedMaintenance = undefined;
-			if (queued) void this.maintain(true, queued.only);
+			// The first starts a pass; the rest wait for it as requests made during a pass do.
+			if (queued?.all) void this.maintain(true);
+			else for (const key of queued?.keys ?? []) void this.maintain(true, key);
 		}
 	}
 

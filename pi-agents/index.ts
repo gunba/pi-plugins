@@ -55,8 +55,6 @@ export default function party(pi: ExtensionAPI): void {
 	let pumping = false;
 	let stopped = false;
 	let armed = false;
-	// Messages that arrived before this process opened the conversation wait for its next turn; later ones may wake it.
-	let wakeAfter = 0;
 	let preparingPrompt = false;
 	let chat: PartyChat | undefined;
 	let remote: PartyPresentation | undefined;
@@ -136,7 +134,8 @@ export default function party(pi: ExtensionAPI): void {
 		pumping = true;
 		try {
 			syncFlight();
-			const queued = store.pending(session, owner).filter(message => !inFlight.has(message.id) && (starting || message.seq > wakeAfter));
+			// Messages that asked to wake it while it was closed start a turn now, as they would have had it been idle.
+			const queued = store.pending(session, owner).filter(message => !inFlight.has(message.id));
 			const pending = queued.slice(0, 8);
 			// Managed child starts are accounted by their owning driver.
 			const wake = !starting && !child && ctx.isIdle() && pending.some(message => message.wake === 1);
@@ -201,8 +200,6 @@ export default function party(pi: ExtensionAPI): void {
 		source = ui.source("messages");
 		safely(() => {
 			database().register(session, owner, label(), ctx!.cwd, child ? "child" : "session", ctx!.sessionManager.getSessionFile());
-			// Messages that asked to wake it while it was closed start a turn now, as they would have had it been idle.
-			wakeAfter = 0;
 			if (!child) { armed = true; database().setDelivery(session, owner, armed); }
 			database().admit(session, owner, deliveredPartyIds(ctx!.sessionManager.getBranch()));
 			bindRemote();
@@ -211,9 +208,14 @@ export default function party(pi: ExtensionAPI): void {
 	});
 	pi.on("session_tree", (_event, context) => {
 		chat?.close();
-		for (const id of inFlight) revoked.add(id);
+		// Pi navigates only while idle, so a message sent and not yet read was added to the branch left behind. It goes again
+		// into this branch under the same id, so that id is not hidden from context as a withdrawn message's is. One this
+		// branch already holds counts as delivered.
 		inFlight.clear(); armed = false; preparingPrompt = false;
-		if (store && member()?.owner === owner) store.setDelivery(session, owner, false);
+		if (store && member()?.owner === owner) {
+			store.setDelivery(session, owner, false);
+			store.admit(session, owner, deliveredPartyIds(context.sessionManager.getBranch()));
+		}
 		ctx = context; source = ui.source("messages"); signature = ""; publish();
 		bindRemote(); publish();
 	});
@@ -227,7 +229,6 @@ export default function party(pi: ExtensionAPI): void {
 	});
 	pi.on("input", event => {
 		if (event.source !== "extension" && store && member()?.owner === owner) {
-			wakeAfter = 0;
 			armed = true; store.setDelivery(session, owner, armed);
 		}
 	});
