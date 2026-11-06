@@ -130,5 +130,7 @@
 .home-log .message-user { margin-left:auto; margin-right:0; min-width:0; max-width:85%; }
 .home-log .message-user .message-body { background:color-mix(in srgb,var(--text) 7%,var(--bg)); border:0; border-radius:14px 14px 4px 14px; padding:8px 12px; }
 .home-log .message-assistant > .message-body { padding-left:0; }
+/* Without headings, consecutive replies ran together: a hairline marks where one ends and the next begins. */
+.home-log .message-assistant + .message-assistant { border-top:1px solid var(--border); padding-top:12px; }
 .home-log .markdown p { margin:0 0 8px; }
 .home-log .markdown ul, .home-log .markdown ol { margin:0 0 8px; padding-left:18px; }
