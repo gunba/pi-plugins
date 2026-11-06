@@ -72,8 +72,51 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
     localStorage.setItem("pi-desk-folded-computers", JSON.stringify([...next])); return next;
   });
   const [closedShown, setClosedShown] = useState<Set<string>>(() => new Set());
+  // Conversations that aren't running (closed, or asleep until a watch or timer wakes them) are folded under one
+  // heading per computer unless shown; kept per browser.
+  const [restingShown, setRestingShown] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem("pi-desk-resting-shown") ?? "[]")); } catch { return new Set(); } });
+  const toggleResting = (id: string) => setRestingShown(previous => {
+    const next = new Set(previous); if (!next.delete(id)) next.add(id);
+    localStorage.setItem("pi-desk-resting-shown", JSON.stringify([...next])); return next;
+  });
   const computers = host.computers ?? [{ id: undefined, name: host.name, platform: host.platform, connected, updates: host.updates, storageError: host.storageError,
     connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties, release: host.release }];
+  /** A conversation's row in its computer's list. */
+  const sessionRow = (item: SessionView, computer: (typeof computers)[number]) => {
+    const renamable = computer.connected && item.state === "ready" && !!item.ui;
+    if (renaming === item.key && renamable) return <div className="session-row" key={item.key}>
+      <SidebarRename title={conversationTitle(item)} close={() => setRenaming("")}
+        rename={name => api(`/sessions/${item.key}/command`, { id: crypto.randomUUID(), generation: item.ui!.generation, command: { kind: "name", name } })} />
+    </div>;
+    const background = backgroundWork(item), activity = sessionActivity(item);
+    // Finished since anyone looked: nothing will wake it, so it waits for the user (shared/attention.ts).
+    const fresh = unseen(item) && !background && ["idle", "ready", "sleeping", "error"].includes(activity);
+    const label = background?.label ?? (fresh && activity !== "error" ? "Finished" : activityLabel(activity));
+    // Questions asked without waiting: the agent works on, so they show beside its activity rather than as it.
+    const asked = item.ui?.interactions.filter(question => asksInBackground(question.form)).length ?? 0;
+    // A conversation that isn't running shows the model it resumes with.
+    const model = item.snapshot?.model ?? item.lastModel, thinking = item.snapshot ? item.snapshot.thinking : item.lastModel?.thinking;
+    // An idle conversation still waiting on something is not done: its dot and label say what it waits on.
+    const dot = background && (activity === "idle" || activity === "ready") ? "background" : fresh && activity !== "error" ? "finished" : activity;
+    return <div className="session-row" key={item.key}>
+      <button className={`session-item ${selected === item.key ? "selected" : ""}${fresh ? " unseen" : ""}`} onClick={() => select(item.key)} onDoubleClick={() => { if (renamable) setRenaming(item.key); }}>
+        <span className={`status-dot ${dot}`} role="img" aria-label={label} title={label} />
+        <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{conversationTitle(item)}</strong></span>
+          <small className="session-metadata"><span className="session-activity" title={background?.title}>
+            {label}</span>{asked > 0 && <><span aria-hidden="true">·</span><span className="session-question" title="The agent asked you something and carries on meanwhile">
+            {asked === 1 ? "Question" : `${asked} questions`}</span></>}<span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
+            <span className="session-marks"><VersionTag session={item} computer={computer} />
+            {model && <span className="session-model" title={`${model.name}${thinking && thinking !== "off" ? ` · ${thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}${item.snapshot ? "" : " · resumes with these"}`}>
+              <ProviderIcon id={model.provider} title={model.name} />
+              <span>{model.provider === "anthropic" ? model.name.replace(/^Claude\s+/i, "") : model.name}</span></span>}</span></small></span>
+      </button>
+      {renamable && <button type="button" className="icon-button session-rename" aria-label={`Rename ${conversationTitle(item)}`} title="Rename (or double-click the name)"
+        onClick={() => setRenaming(item.key)}><Icon name="edit" /></button>}
+      <CloseConversationButton icon session={item} name={conversationTitle(item)} computer={computer.name} connected={computer.connected}
+         disabled={selected === item.key && sending} report={report}
+        confirmed={() => closed(item.key)} />
+    </div>;
+  };
 
   return <Navigation open={open} close={close}>
     <div className="brand">
@@ -125,44 +168,20 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
         </button>}
       {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
         <button onClick={() => location.reload()}>Reload app</button></div>}
-      {host.sessions.filter(item => !item.home && item.computer === computer.id)
-        .sort((a, b) => restRank(a) - restRank(b) || Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created).map((item, index, rows) => {
-        // A divider heads the conversations that aren't running.
-        const resting = index === rows.findIndex(row => restRank(row) > 0) ? " first-resting" : "";
-        const renamable = computer.connected && item.state === "ready" && !!item.ui;
-        if (renaming === item.key && renamable) return <div className={`session-row${resting}`} key={item.key}>
-          <SidebarRename title={conversationTitle(item)} close={() => setRenaming("")}
-            rename={name => api(`/sessions/${item.key}/command`, { id: crypto.randomUUID(), generation: item.ui!.generation, command: { kind: "name", name } })} />
-        </div>;
-        const background = backgroundWork(item), activity = sessionActivity(item);
-        // Finished since anyone looked: nothing will wake it, so it waits for the user (shared/attention.ts).
-        const fresh = unseen(item) && !background && ["idle", "ready", "sleeping", "error"].includes(activity);
-        const label = background?.label ?? (fresh && activity !== "error" ? "Finished" : activityLabel(activity));
-        // Questions asked without waiting: the agent works on, so they show beside its activity rather than as it.
-        const asked = item.ui?.interactions.filter(question => asksInBackground(question.form)).length ?? 0;
-        // A conversation that isn't running shows the model it resumes with.
-        const model = item.snapshot?.model ?? item.lastModel, thinking = item.snapshot ? item.snapshot.thinking : item.lastModel?.thinking;
-        // An idle conversation still waiting on something is not done: its dot and label say what it waits on.
-        const dot = background && (activity === "idle" || activity === "ready") ? "background" : fresh && activity !== "error" ? "finished" : activity;
-        return <div className={`session-row${resting}`} key={item.key}>
-          <button className={`session-item ${selected === item.key ? "selected" : ""}${fresh ? " unseen" : ""}`} onClick={() => select(item.key)} onDoubleClick={() => { if (renamable) setRenaming(item.key); }}>
-            <span className={`status-dot ${dot}`} role="img" aria-label={label} title={label} />
-            <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{conversationTitle(item)}</strong></span>
-              <small className="session-metadata"><span className="session-activity" title={background?.title}>
-                {label}</span>{asked > 0 && <><span aria-hidden="true">·</span><span className="session-question" title="The agent asked you something and carries on meanwhile">
-                {asked === 1 ? "Question" : `${asked} questions`}</span></>}<span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
-                <span className="session-marks"><VersionTag session={item} computer={computer} />
-                {model && <span className="session-model" title={`${model.name}${thinking && thinking !== "off" ? ` · ${thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}${item.snapshot ? "" : " · resumes with these"}`}>
-                  <ProviderIcon id={model.provider} title={model.name} />
-                  <span>{model.provider === "anthropic" ? model.name.replace(/^Claude\s+/i, "") : model.name}</span></span>}</span></small></span>
-          </button>
-          {renamable && <button type="button" className="icon-button session-rename" aria-label={`Rename ${conversationTitle(item)}`} title="Rename (or double-click the name)"
-            onClick={() => setRenaming(item.key)}><Icon name="edit" /></button>}
-          <CloseConversationButton icon session={item} name={conversationTitle(item)} computer={computer.name} connected={computer.connected}
-             disabled={selected === item.key && sending} report={report}
-            confirmed={() => closed(item.key)} />
-        </div>;
-      })}
+      {(() => {
+        const rows = host.sessions.filter(item => !item.home && item.computer === computer.id)
+          .sort((a, b) => restRank(a) - restRank(b) || Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created);
+        const resting = rows.filter(item => restRank(item) > 0), id = computer.id ?? "local", shown = restingShown.has(id);
+        // Folded away, a conversation still shows while it is open here or has something new.
+        const visible = shown ? resting : resting.filter(item => item.key === selected || unseen(item));
+        return <>
+          {rows.filter(item => restRank(item) === 0).map(item => sessionRow(item, computer))}
+          {resting.length > 0 && <button type="button" className="resting-toggle" aria-expanded={shown}
+            title={shown ? "Hide conversations that aren't running" : "Show conversations that aren't running"} onClick={() => toggleResting(id)}>
+            <Icon name="chevron" /><span>Not running</span><span className="computer-count">{resting.length}</span></button>}
+          {visible.map(item => sessionRow(item, computer))}
+        </>;
+      })()}
       {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
         (keptFor(computer).length > 0 ? <>{keptFor(computer).filter(copy => copy.open || closedShown.has(computer.id!)).map(copy => <div className="session-row kept-copy" key={copy.session}>
           <span className="kept-copy-name" title={`${copy.cwd} · last active ${localDateTime(copy.updated)}`}>

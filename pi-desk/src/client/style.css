@@ -439,7 +439,11 @@ details[open] > summary:before {
 .session-label-line > strong { flex:1; min-width:0; }
 .session-row { position:relative; }
 /* Conversations that aren't running (asleep or closed) follow the running ones, under a divider. */
-.session-row.first-resting { margin-top:6px; padding-top:6px; border-top:1px solid var(--border); }
+/* Heads a computer's conversations that aren't running, which fold away under it. */
+.resting-toggle { display:flex; align-items:center; gap:6px; width:100%; margin-top:6px; padding:7px 10px 3px; border:0; border-top:1px solid var(--border); border-radius:0; background:none; color:var(--muted); font-size:12px; font-weight:600; cursor:pointer; }
+.resting-toggle:hover { background:none; color:var(--text); }
+.resting-toggle > .ui-icon { flex:none; width:12px; height:12px; transition:transform .15s; }
+.resting-toggle[aria-expanded="false"] > .ui-icon { transform:rotate(-90deg); }
 .session-row:hover .session-item:not(.selected) { background:var(--hover); }
 /* The row's buttons sit on its title line, which keeps room for them; the second line, with its marks, runs to the edge. */
 .session-close {
