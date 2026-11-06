@@ -52,18 +52,18 @@ export function everyLabel(seconds: number): string {
 }
 
 export function backgroundWork(session: Parameters<typeof sessionActivity>[0] & Pick<SessionView, "watching" | "wakes" | "waiting" | "watchEvery">):
-	{ label: string; title: string } | undefined {
+	{ kind: "agents" | "wake" | "watch"; label: string; title: string } | undefined {
 	const activity = sessionActivity(session);
 	if (!showsWake(activity)) return;
 	const running = activity !== "sleeping" && activity !== "closed";
 	const agents = running ? agentInventory(session.ui?.views ?? []).current : [];
-	if (agents.length) return { label: agents.length === 1 ? "Agent working" : `${agents.length} agents working`,
+	if (agents.length) return { kind: "agents", label: agents.length === 1 ? "Agent working" : `${agents.length} agents working`,
 		title: `Waiting on ${agents.map(view => view.title).join(", ")}` };
-	if (session.wakes) return { label: wakeLabel(session.wakes),
+	if (session.wakes) return { kind: "wake", label: wakeLabel(session.wakes),
 		title: `A watch wakes it ${localDateTime(session.wakes)}${session.state === "closed" ? "; Desk reopens it then" : ""}` };
 	// Running, its watches are listed by its view; asleep, by what Desk kept when it closed.
 	const watches = session.ui?.views.find(view => view.id === "pi-watch")?.badges?.[0]?.description
 		?? session.waiting?.map(item => `${item.title}${item.detail ? `: ${item.detail}` : ""}`).join("\n");
-	if (session.watching) return { label: session.watchEvery ? `Watching \u00b7 ${everyLabel(session.watchEvery)}` : "Watching",
+	if (session.watching) return { kind: "watch", label: session.watchEvery ? `Watching \u00b7 ${everyLabel(session.watchEvery)}` : "Watching",
 		title: watches ? `Watching:\n${watches}` : "A watch wakes it when something happens" };
 }

@@ -17,8 +17,15 @@ import { Navigation } from "./surfaces.tsx";
 import { conversationTitle, folderName, type Computer, type WorkspaceState } from "./workspace.ts";
 
 /** Renames a conversation in place in the sidebar: Enter saves, Escape or leaving the field cancels. */
-/** Running conversations first, then sleeping ones (kept with a watch to wake them), then the rest that aren't running. */
-const restRank = (item: SessionView) => item.state !== "closed" && item.state !== "failed" ? 0 : item.kept && (item.wakes || item.watching) ? 1 : 2;
+/**
+ * Conversations at work or waiting for the user first; then those only waiting for a watch or timer to wake them, open
+ * and then asleep (closed, kept to be woken); then the rest that are closed. All but the first fold away.
+ */
+const restRank = (item: SessionView) => {
+  if (item.state === "closed" || item.state === "failed") return item.kept && (item.wakes || item.watching) ? 2 : 3;
+  const waits = backgroundWork(item)?.kind;
+  return waits === "wake" || waits === "watch" ? 1 : 0;
+};
 
 function SidebarRename({ title, rename, close }: { title: string; rename: (name: string) => Promise<unknown>; close: () => void }) {
   const [draft, setDraft] = useState(title), [saving, setSaving] = useState(false), [error, setError] = useState("");
@@ -72,8 +79,8 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
     localStorage.setItem("pi-desk-folded-computers", JSON.stringify([...next])); return next;
   });
   const [closedShown, setClosedShown] = useState<Set<string>>(() => new Set());
-  // Conversations that aren't running (closed, or asleep until a watch or timer wakes them) are folded under one
-  // heading per computer unless shown; kept per browser.
+  // Conversations waiting for a watch or timer, and closed ones, are folded under one heading per computer unless
+  // shown; kept per browser.
   const [restingShown, setRestingShown] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem("pi-desk-resting-shown") ?? "[]")); } catch { return new Set(); } });
   const toggleResting = (id: string) => setRestingShown(previous => {
     const next = new Set(previous); if (!next.delete(id)) next.add(id);
@@ -177,8 +184,8 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
         return <>
           {rows.filter(item => restRank(item) === 0).map(item => sessionRow(item, computer))}
           {resting.length > 0 && <button type="button" className="resting-toggle" aria-expanded={shown}
-            title={shown ? "Hide conversations that aren't running" : "Show conversations that aren't running"} onClick={() => toggleResting(id)}>
-            <Icon name="chevron" /><span>Not running</span><span className="computer-count">{resting.length}</span></button>}
+            title={shown ? "Hide conversations waiting for a watch or timer, and closed ones" : "Show conversations waiting for a watch or timer, and closed ones"}
+            onClick={() => toggleResting(id)}><Icon name="chevron" /><span>Waiting or closed</span><span className="computer-count">{resting.length}</span></button>}
           {visible.map(item => sessionRow(item, computer))}
         </>;
       })()}
