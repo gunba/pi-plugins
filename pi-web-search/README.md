@@ -4,8 +4,8 @@ Two tools for every model:
 
 | Tool | Takes | Returns |
 |---|---|---|
-| `web_search` | `goal` (what to find, as a sentence) and `queries` (1–5 short keyword searches) | Ranked pages with dated excerpts that usually answer the goal |
-| `web_fetch` | `urls` (up to 20), optional `goal`, optional `full` | Excerpts focused on the goal, or each page's whole text, and which pages could not be read and why |
+| `web_search` | `goal` (what to find, as a sentence) and `queries` (one or more short keyword searches) | Ranked pages with dated excerpts that usually answer the goal |
+| `web_fetch` | `urls` (one or more), optional `goal`, optional `full` | Excerpts focused on the goal, or each page's whole text, and which pages could not be read and why |
 
 Pages that need JavaScript, PDFs and sites behind bot checks are read by the service. Pages the service cannot read,
 such as sites that turn away its data-centre addresses, are then requested from this computer, and so are local
