@@ -9,7 +9,7 @@ import { PlanStore, PlanStateError } from "../src/store.ts";
 import { DEFAULT_BLOCKED_AFTER_ROUNDS, DEFAULT_MAX_PLAN_ROUNDS, PLAN_COMMAND_ENTRY, PLAN_ROUND_MESSAGE } from "../src/constants.ts";
 import { type PlanRef, type PlanRoundIdentity, type PlanView } from "../src/domain.ts";
 import { branchContainsRound, decodePlanRoundDetails } from "../src/replay.ts";
-import { PLAN_CHECK_EVERY, renderPlanCheck, renderPlanGuidance, renderPlanRoundPrompt, renderPlanWrapup, renderStepNotes } from "../src/prompt.ts";
+import { PLAN_CHECK_EVERY, renderDroppedSteps, renderPlanCheck, renderPlanGuidance, renderPlanRoundPrompt, renderPlanWrapup, renderStepNotes } from "../src/prompt.ts";
 import { CreateParameters, UpdateParameters, definition, preparePlanArguments, type CreateParams, type UpdateParams } from "../src/tools.ts";
 import { planControls, planPresentation } from "../src/presentation.ts";
 import { STEP_STATUSES, currentSteps, stepSummary } from "../src/steps.ts";
@@ -85,6 +85,8 @@ class PlanController {
 	private sinceUpdate = 0;
 	/** The current steps' notes as the model was last shown them. */
 	private noted = "";
+	/** Unfinished steps the model's last update left out, to tell it about on its next result. */
+	private dropped: string[] = [];
 	private seen = "";
 	/** The plan revision the model last saw, as seenKey gives it; "" when it has seen none. */
 	private modelSeen = "";
@@ -207,16 +209,23 @@ class PlanController {
 		return result(plan);
 	}
 	private control(params: UpdateParams, planRef: PlanRef): PlanView | undefined {
-		const replacements = definition(params, this.store.get()?.steps);
+		const before = this.store.get()?.steps ?? [], replacements = definition(params, before);
+		const kept = replacements.steps && new Set(replacements.steps.map(step => step.content.trim()));
+		const dropped = kept ? before.filter(step => step.status !== "completed" && !kept.has(step.content.trim())).map(step => step.content) : [];
 		// Definition fields sent with another action (complete with the final steps, say) are applied first, in one call.
 		if (params.action !== "edit" && Object.keys(replacements).length) {
 			const edited = this.store.edit(planRef, replacements);
+			this.dropped = dropped;
 			planRef = { id: edited.id, revision: edited.revision };
 		}
 		if (params.action !== "blocked" && params.blocked_reason !== undefined) throw new Error("blocked_reason is only valid with action blocked.");
 		// An edit that changes nothing is how models look at the plan (there is no read tool): it returns the plan.
 		if (params.action === "edit" && !Object.keys(replacements).length) return this.store.get();
-		if (params.action === "edit") return this.store.edit(planRef, replacements);
+		if (params.action === "edit") {
+			const edited = this.store.edit(planRef, replacements);
+			this.dropped = dropped;
+			return edited;
+		}
 		if (params.action === "pause") return this.store.pause(planRef);
 		if (params.action === "resume") {
 			const current = this.store.get();
@@ -348,9 +357,12 @@ class PlanController {
 			// program, the program's result does.
 			const notes = plan && key ? renderStepNotes(plan) : "", fresh = notes !== this.noted ? notes : "";
 			this.noted = notes;
-			if (!plan || !key || PLAN_TOOL_NAMES.has(event.toolName)) { this.sinceUpdate = 0; return; }
+			const dropped = this.dropped.length ? renderDroppedSteps(this.dropped) : "";
+			this.dropped = [];
+			let text = dropped;
+			if (!plan || !key || PLAN_TOOL_NAMES.has(event.toolName)) this.sinceUpdate = 0;
 			// A check repeats the notes.
-			const text = ++this.sinceUpdate % PLAN_CHECK_EVERY ? fresh : renderPlanCheck(plan, this.sinceUpdate);
+			else text = [dropped, ++this.sinceUpdate % PLAN_CHECK_EVERY ? fresh : renderPlanCheck(plan, this.sinceUpdate)].filter(Boolean).join("\n");
 			if (!text) return;
 			return { content: [...event.content, { type: "text" as const, text: `\n${text}` }],
 				// Replacing the content alone would drop a result's structured form.

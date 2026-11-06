@@ -175,6 +175,22 @@ test("a plan untouched for 25 of the model's tool calls is recalled in the next 
 	await h.emit("session_shutdown");
 });
 
+test("an update that leaves out unfinished steps says so in the next result, since steps replaces the whole list", async () => {
+	// An agent sent only its new steps from a program, twice; the plan lost five unfinished steps and nothing said so.
+	const h = createExtensionHarness(); await h.start();
+	await executeTool(h, "create_plan", { objective: "Ship", steps: [{ content: "Study", status: "completed" }, { content: "Design", status: "in_progress" }, { content: "Release", status: "pending" }] });
+	await update(h, { action: "edit", steps: [{ content: "Study", status: "completed" }, "Sidebar"] });
+	const call = async () => (await h.emit("tool_result", { toolName: "codemode", toolCallId: `c${Math.random()}`, content: [{ type: "text", text: "ok" }], isError: false }))
+		.find(result => result !== undefined);
+	assert.equal((await call()).content[1].text, '\n[Plan] Your last plan update removed 2 unfinished steps: "Design"; "Release". '
+		+ "steps replaces the whole list; if you meant to keep them, update the plan again with every step.");
+	assert.equal(await call(), undefined, "said once");
+	// Leaving out finished steps, or rewording none, says nothing.
+	await update(h, { action: "edit", steps: ["Sidebar", "Release"] });
+	assert.equal(await call(), undefined);
+	await h.emit("session_shutdown");
+});
+
 test("a step given as a string is a pending step", async () => {
 	const h = createExtensionHarness(); await h.start();
 	await create(h, { auto_continue: false, steps: ["Read the case", { content: "Draft the deck", status: "in_progress" }] });

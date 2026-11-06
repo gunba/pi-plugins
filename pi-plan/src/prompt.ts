@@ -22,6 +22,16 @@ export function renderPlanCheck(plan: PlanSnapshot, calls: number): string {
 	return `[Plan check] ${calls} tool calls since the plan was last updated. ${where}.${notes ? `\n${notes}` : ""}`;
 }
 
+/**
+ * Told after a plan update that left out unfinished steps: steps replaces the whole list, and a model that sends only
+ * its new steps loses the rest without noticing (the call's result goes to a program, which may not read it).
+ */
+export function renderDroppedSteps(steps: readonly string[]): string {
+	const names = steps.map(step => JSON.stringify(step.length > 80 ? `${step.slice(0, 77)}…` : step)).join("; ");
+	return `[Plan] Your last plan update removed ${steps.length === 1 ? "an unfinished step" : `${steps.length} unfinished steps`}: ${names}. `
+		+ "steps replaces the whole list; if you meant to keep them, update the plan again with every step.";
+}
+
 /** The notes the model wrote for the steps it is on, which it is shown when it reaches them; empty when there are none. */
 export function renderStepNotes(plan: Pick<PlanSnapshot, "steps" | "phase">): string {
 	if (plan.phase === "complete") return "";
