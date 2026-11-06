@@ -42,22 +42,23 @@ test("new and forked conversation ids do not inherit an approval", async t => {
 	const fork = new ConversationModelPermissions(directory, "fork-id", { available: true, confirm: async () => false });
 	t.after(() => fork.dispose());
 	assert.equal(fork.status(), "ask");
-	await assert.rejects(fork.authorize(selection), /user approval/);
+	await assert.rejects(fork.authorize(selection), /The user declined/);
 	assert.equal(permissions.status(), "allowed");
 });
 
 test("denial does not nag; a later explicit user permission command can reopen approval", async t => {
 	let allowed = false, prompts = 0;
 	const { permissions } = permissionsHarness(t, async () => { prompts++; return allowed; });
-	await assert.rejects(permissions.authorize(selection), /user approval/);
-	await assert.rejects(permissions.authorize(selection), /user approval/);
+	// The agent is told the user said no, not that approval is missing.
+	await assert.rejects(permissions.authorize(selection), /The user declined/);
+	await assert.rejects(permissions.authorize(selection), /The user declined/);
 	assert.equal(prompts, 1);
 	allowed = true;
 	await permissions.allow();
 	assert.equal(prompts, 2);
 	await permissions.authorize(selection);
 	permissions.revoke();
-	await assert.rejects(permissions.authorize(selection), /user approval/);
+	await assert.rejects(permissions.authorize(selection), /The user declined/);
 	assert.equal(prompts, 2);
 });
 

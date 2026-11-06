@@ -163,10 +163,10 @@ export function createSubagentToolDefinitions(
 					const agents = primaries(ctx);
 					if (!agents) throw Error("Only a conversation in Pi Desk or Pi's terminal can start primary agents; a secondary agent can't.");
 					const started = await agents.start({ name: params.name, task: params.task, copy: params.context === "copy", computer: params.computer,
-						cwd: params.cwd, model: params.model, reasoning: params.reasoning }, toolCallId, signal, ctx) as ToolJson & { approved?: false; agent?: string;
+						cwd: params.cwd, model: params.model, reasoning: params.reasoning }, toolCallId, signal, ctx) as ToolJson & { declined?: true; note?: string; agent?: string;
 						result?: { model?: string; reasoning?: string }; warning?: string };
 					const setup = [started.result?.model, started.result?.reasoning].filter(Boolean).join(", ");
-					return response(started, started.approved === false ? "Jordan did not approve it; nothing was started."
+					return response(started, started.declined ? started.note!
 						: `Started ${params.name}: agent ${started.agent}${setup ? ` (${setup})` : ""}.${started.warning ? ` ${started.warning}` : ""}`);
 				}
 				if (params.computer !== undefined || params.cwd !== undefined)

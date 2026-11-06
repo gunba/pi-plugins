@@ -16,6 +16,8 @@ export type ModelPermissionUI = {
 };
 
 const REQUIRED = "Subagent model and thinking overrides need user approval for this conversation. Inherit the parent settings, or ask the user to run /subagents permissions allow.";
+/** After the user answered no, or withdrew permission: said plainly, so the agent does not report it as a missing approval. */
+const DECLINED = "The user declined to let subagents choose models and thinking levels in this conversation. Inherit the parent settings, or ask the user to run /subagents permissions allow.";
 
 /** Root-conversation consent, shared by all descendants and independent of branch history. */
 export class ConversationModelPermissions {
@@ -80,7 +82,7 @@ export class ConversationModelPermissions {
 				dialogSignal.throwIfAborted();
 				if (this.read()?.revision !== revision) throw new Error("Subagent model permission changed while approval was open; try again.");
 				this.save(allowed === true ? "allowed" : "denied");
-				if (allowed !== true) throw new Error(REQUIRED);
+				if (allowed !== true) throw new Error(DECLINED);
 			})().finally(() => { this.pending = undefined; this.promptController = undefined; });
 		}
 		const pending = this.pending;
@@ -97,7 +99,7 @@ export class ConversationModelPermissions {
 		this.lifetime.signal.throwIfAborted();
 		signal?.throwIfAborted();
 		const decision = this.status();
-		if (decision === "denied") throw new Error(REQUIRED);
+		if (decision === "denied") throw new Error(DECLINED);
 		if (decision === "ask") await this.requestGrant(
 			`Requested child: ${selection.model.provider}/${selection.model.id}; thinking: ${selection.thinkingLevel}.`, signal);
 		signal?.throwIfAborted();

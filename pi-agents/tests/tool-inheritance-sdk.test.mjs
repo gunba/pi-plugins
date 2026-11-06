@@ -301,6 +301,20 @@ test("party messages reach an SDK child at its next turn without starting one", 
 	assert.ok(h.observations.slice(before).some(item => item.peerMessageSeen), "queued direct message reaches the next native SDK child turn");
 	assert.equal(h.requests.length, 0);
 });
+test("a primary agent Jordan declines says he declined; a turn stopped while he was asked says it was cancelled", { timeout: 25000 }, async (t) => {
+	// A program saw only {approved: false} and told Jordan that Desk hadn't approved the launch he had refused.
+	const h = await integration(t, { party: true });
+	const agents = primaryAgents(h.rootSession.sessionId);
+	const asking = (confirm) => ({ hasUI: true, cwd: process.cwd(), ui: { confirm } });
+	const request = { name: "Outlook checker", task: "Check the Outlook connection.", copy: false };
+	assert.deepEqual(await agents.start(request, "declined", undefined, asking(async () => false)),
+		{ declined: true, note: "Jordan declined to start this agent. Nothing was started." });
+	const stop = new AbortController();
+	await assert.rejects(agents.start(request, "stopped", stop.signal, asking(async (_title, _detail, options) => {
+		assert.equal(options.signal, stop.signal, "stopping the turn closes the question");
+		stop.abort(); return false;
+	})), /cancelled: the turn stopped before Jordan answered/);
+});
 test("arbitrary tools use child cwd/model/session, retain false parent flags and hooks, and isolate shutdown state", { timeout: 25000 }, async (t) => {
 	const h = await integration(t);
 	const rootTool = h.rootSession.agent.state.tools.find((tool) => tool.name === "custom_inventory");

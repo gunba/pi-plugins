@@ -19,6 +19,8 @@ import { partyDelivery } from "./availability.ts";
 import { providePrimaryAgents, rememberAgentLabels, type PrimaryAgents } from "./primary.ts";
 
 export const PARTY_MESSAGE = "pi-party/message";
+/** agent_start's result when Jordan answers no. Programs get only this data, so it says who refused. */
+const DECLINED = { declined: true, note: "Jordan declined to start this agent. Nothing was started." } as const;
 export function deliveredPartyIds(entries: readonly unknown[]): string[] {
 	const ids: string[] = [];
 	for (const entry of entries) {
@@ -358,13 +360,18 @@ export default function party(pi: ExtensionAPI): void {
 	const primary: PrimaryAgents = {
 		async start(request, toolCallId, abort, context) {
 			if (!context.hasUI) throw Error("Starting a primary agent needs Jordan's approval in Pi's interface.");
+			const approve = async (detail: string) => {
+				const approved = await context.ui.confirm("Start agent", detail, { signal: abort });
+				// confirm() reports a stopped turn and Jordan's refusal alike; the agent must not tell him he refused.
+				if (abort?.aborted) throw Error("Starting the agent was cancelled: the turn stopped before Jordan answered.");
+				return approved;
+			};
 			if (request.copy) {
 				if (request.computer !== undefined || request.cwd !== undefined || request.model !== undefined || request.reasoning !== undefined)
 					throw Error("A copy of this conversation starts here, in its folder, with its model; start a fresh one to choose those.");
 				if (!context.sessionManager.getSessionFile()) throw Error("Save this native session before copying it.");
 				partyForkPoint(context.sessionManager.getBranch(), toolCallId);
-				if (!(await context.ui.confirm("Start agent", `${request.name}\nDirectory: ${context.cwd}\nContext: a copy of this conversation, with its model and reasoning\n\n${request.task}`))) return { approved: false };
-				if (abort?.aborted) throw Error("Starting the agent was cancelled.");
+				if (!(await approve(`${request.name}\nDirectory: ${context.cwd}\nContext: a copy of this conversation, with its model and reasoning\n\n${request.task}`))) return DECLINED;
 				const queued = operations().queue(database(), session, owner, { kind: "fork", label: request.name.slice(0, 120), task: request.task, cwd: context.cwd, call: toolCallId });
 				const response = await operations().wait(queued.id, abort);
 				return { ...response, agent: response.result!.session, parent: session };
@@ -373,8 +380,7 @@ export default function party(pi: ExtensionAPI): void {
 			if (computer && computer !== "local" && request.cwd === undefined) throw Error("Give cwd: the folder to work in on that computer.");
 			const cwd = request.cwd ?? context.cwd;
 			const setup = [request.model && `Model: ${request.model}`, request.reasoning && `Reasoning: ${request.reasoning}`].filter(Boolean).join(" · ");
-			if (!(await context.ui.confirm("Start agent", `${request.name}\nComputer: ${request.computer ?? "this one"}\nDirectory: ${cwd}${setup ? `\n${setup}` : ""}\n\n${request.task}`))) return { approved: false };
-			if (abort?.aborted) throw Error("Starting the agent was cancelled.");
+			if (!(await approve(`${request.name}\nComputer: ${request.computer ?? "this one"}\nDirectory: ${cwd}${setup ? `\n${setup}` : ""}\n\n${request.task}`))) return DECLINED;
 			const queued = operations().queue(database(), session, owner, { kind: "create", computer, cwd, label: request.name.slice(0, 120), task: request.task,
 				...(request.model ? { model: request.model } : {}), ...(request.reasoning ? { reasoning: request.reasoning } : {}) });
 			const response = await operations().wait(queued.id, abort), created = response.result!.session;
