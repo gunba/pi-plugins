@@ -54,7 +54,8 @@ budget's 40-line/3,000-byte excerpts remain in use.
   pi-watch) keeps Pi's shape; a command still running after its `wait` gives `exit_code: null` and
   `running`, its watch's ID, and runs on in the background. Calls in `Promise.all` run at once.
 - Agent operations expose their existing response objects, rather than their compact
-  display strings. Primary approval denial remains `{approved: false}`.
+  display strings. When Jordan declines a primary agent, `agent_start` gives
+  `{declined: true, note}`, the note saying he declined.
 - Plans expose `{plan}`.
 - `ask_user` exposes its response, cancellation state and question details.
 - `show` exposes its existing shown-file description.
