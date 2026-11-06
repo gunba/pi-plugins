@@ -92,7 +92,7 @@ test('compaction is a Claude Code summary of the whole conversation, written fro
  assert.equal(text.slice(0, text.indexOf('\n\n[Earlier history]')), '1. Primary Request and Intent:\n   Build the importer');
  assert.ok(text.includes(`\n\n${CONTINUE}\n\n## Files from before the summary\n`), 'the history note and the instruction to carry on follow the summary');
  const files = text.slice(text.indexOf('## Files'), text.indexOf('## Plan'));
- assert.ok(files.indexOf('src/b.ts') < files.indexOf('src/a.ts'), 'newest first');
+ assert.ok(files.indexOf(join('src', 'b.ts')) < files.indexOf(join('src', 'a.ts')) && files.includes(join(cwd, 'src', 'a.ts')), 'newest first');
  assert.ok(files.includes('````ts\nconst fence = "```";\n````'));
  assert.doesNotMatch(files, /c\.ts|SKILL/, 'files in the kept messages are already in context; skills have their own section');
  assert.match(text, /## Plan\nPlan \(active\): Ship the importer\n\[>\] Write parser tests/);
