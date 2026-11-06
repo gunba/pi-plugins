@@ -1,7 +1,7 @@
 {
   "name": "pi-compaction-context",
   "version": "0.1.0",
-  "description": "Pi extension that carries loaded markdown context into compaction requests.",
+  "description": "Pi extension that writes compaction summaries the way Claude Code does, and briefs from the prompt cache.",
   "private": true,
   "keywords": ["pi-package", "pi", "compaction", "context"],
   "type": "module",

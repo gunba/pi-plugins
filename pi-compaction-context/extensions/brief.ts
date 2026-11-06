@@ -1,7 +1,7 @@
 import { buildSessionContext, convertToLlm, serializeConversation, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Usage } from "@earendil-works/pi-ai";
 import { cacheExpired } from "../../pi-context-window/prompt-cache.ts";
-import type { SentRequest } from "./in-place.ts";
+import type { SentRequest } from "./summary.ts";
 
 /** Marks a request made beside the conversation, not part of it (read and removed by pi-codex-wire). */
 export const SIDE_REQUEST_HEADER = "x-pi-side-request";
@@ -128,7 +128,7 @@ export async function writeBrief(ctx: ExtensionContext, sent: SentRequest | unde
 	const headers = { [SIDE_REQUEST_HEADER]: "1" };
 	let result;
 	if (payload) {
-		// The request built from this placeholder is replaced by the copied payload, as in-place compaction does.
+		// The request built from this placeholder is replaced by the copied payload.
 		result = await ctx.modelRegistry.complete(model, { systemPrompt: "", messages: [{ role: "user", content: "Brief.", timestamp: Date.now() }] },
 			{ signal: options.signal, sessionId: ctx.sessionManager.getSessionId(), headers, onPayload: () => payload });
 	} else {

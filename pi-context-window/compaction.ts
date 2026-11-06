@@ -1,9 +1,9 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isContextOverflow, isRetryableAssistantError, type AssistantMessage } from "@earendil-works/pi-ai";
 import { COMPACTION_FAILURE_ENTRY, RETRY_AFTER_MINUTES, compactionHeld, compactionKey, failures, type Failure } from "./compaction-state.ts";
 
 export { compactionHeld, compactionKey } from "./compaction-state.ts";
-type Budget = { reserveTokens: number; keepRecentTokens: number };
 
 /**
  * A failed compaction holds automatic compaction back. Pi otherwise retries before every turn, resending the
@@ -19,16 +19,24 @@ export function recordCompactionFailure(sessionId: string, key: string, message:
 }
 
 /**
- * Pi gives a prose summary 80% of the compaction reserve, thinking included: 13,107 tokens by default. A
- * 1M-token conversation's summaries took 13,265 and then 20,880, so every attempt hit the cap. Allow a sixteenth
- * of the window instead, within the model's output limit and the room the reserve and kept messages leave at the
- * checkpoint. Returns the reserve that gives Pi that budget.
+ * Runs a compaction request again after a transient failure, such as a dropped stream or a server error, with
+ * Pi's retry settings: up to maxRetries more attempts, waiting baseDelayMs and then twice as long each time.
  */
-export function summaryReserve(model: { contextWindow: number; maxTokens: number }, settings: Budget): number {
-	const room = settings.reserveTokens + settings.keepRecentTokens;
-	const budget = Math.min(model.maxTokens > 0 ? model.maxTokens : Infinity,
-		Math.max(Math.floor(0.8 * settings.reserveTokens), Math.min(Math.floor(model.contextWindow / 16), room)));
-	return Math.max(settings.reserveTokens, Math.ceil(budget / 0.8));
+export async function retryCompaction<T>(produce: () => Promise<T>, settings: { enabled: boolean; maxRetries: number; baseDelayMs: number },
+	signal: AbortSignal, notify: (attempt: number, maximum: number, delayMs: number) => void): Promise<T> {
+	for (let attempt = 0; ; attempt++) {
+		signal.throwIfAborted();
+		try { return await produce(); }
+		catch (error) {
+			signal.throwIfAborted();
+			const errorMessage = error instanceof Error ? error.message : "Compaction failed";
+			if (!settings.enabled || attempt >= settings.maxRetries
+				|| !isRetryableAssistantError({ stopReason: "error", errorMessage } as AssistantMessage)) throw error;
+			const ms = settings.baseDelayMs * 2 ** attempt;
+			notify(attempt + 1, settings.maxRetries, ms);
+			await delay(ms, undefined, { signal });
+		}
+	}
 }
 
 function failureText(failure: Pick<Failure, "message"> & Partial<Failure>): string {
@@ -41,16 +49,12 @@ function failureText(failure: Pick<Failure, "message"> & Partial<Failure>): stri
 export default function compactionPolicy(pi: ExtensionAPI): void {
 	let attempt: string | undefined;
 	pi.on("session_before_compact", (event, ctx) => {
-		const sessionId = ctx.sessionManager.getSessionId(), { settings } = event.preparation;
-		const key = compactionKey(ctx.model, settings, ctx.thinkingLevel ?? pi.getThinkingLevel());
-		// Codex Wire runs first and applies the same hold to Codex models.
+		const sessionId = ctx.sessionManager.getSessionId();
+		const key = compactionKey(ctx.model, event.preparation.settings, ctx.thinkingLevel ?? pi.getThinkingLevel());
+		// Codex Wire runs first and applies the same hold to Codex models; pi-compaction-context records its
+		// failures under this same key.
 		if (event.reason !== "manual" && compactionHeld(sessionId, key)) return { cancel: true };
 		attempt = key;
-		// Pi's prose summary reads its budget from the preparation it passes on to compact().
-		if (ctx.model && ctx.model.provider !== "openai-codex") {
-			const reserveTokens = summaryReserve(ctx.model, settings);
-			if (reserveTokens > settings.reserveTokens) event.preparation.settings = { ...settings, reserveTokens };
-		}
 	});
 	pi.on("session_compact", (_event, ctx) => {
 		attempt = undefined;

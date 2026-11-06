@@ -87,11 +87,11 @@ Claude subscription sign-in uses Pi's native OAuth with the pinned
 [`@gotgenes/pi-anthropic-auth`](https://github.com/gotgenes/pi-anthropic-auth)
 compatibility extension. Its OAuth request identity, billing-header system block
 and prompt shaping apply through the configured native provider, including child
-sessions and prose compaction. No Claude Code executable or wrapper is used;
+sessions and compaction requests. No Claude Code executable or wrapper is used;
 API-key requests and other providers keep their native transport.
 
-Claude uses Pi's native thinking levels, tools, model request handling and prose
-compaction. Codex Fast/Ultrafast, Wire transport and encrypted compaction remain
+Claude uses Pi's native thinking levels, tools and model request handling, and
+compacts the way Claude Code does (`pi-compaction-context`). Codex Fast/Ultrafast, Wire transport and encrypted compaction remain
 Codex-specific. Claude startup does not activate Codex Wire; Wire activates when
 a Codex model or child needs it. Recorded token, cache and cost totals work across models, but are
 not a subscription balance; Claude's remaining subscription allowance is not

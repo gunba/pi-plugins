@@ -1,14 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compactionHeld, compactionKey, recordCompactionFailure, summaryReserve } from "../compaction.ts";
+import { compactionHeld, compactionKey, recordCompactionFailure } from "../compaction.ts";
 import { measuredContextTokens } from "../compaction-state.ts";
-
-test("a 1M-token conversation's prose summary gets room beyond 80% of the default reserve", () => {
-	// Opus 1M summaries needed 13,265 and 20,880 tokens; Pi allowed 13,107.
-	const reserve = summaryReserve({ contextWindow: 1_000_000, maxTokens: 128_000 }, { reserveTokens: 16_384, keepRecentTokens: 20_000 });
-	assert.equal(Math.floor(0.8 * reserve), 36_384);
-	assert.equal(summaryReserve({ contextWindow: 200_000, maxTokens: 64_000 }, { reserveTokens: 16_384, keepRecentTokens: 20_000 }), 16_384, "small windows are unchanged");
-});
 
 test("a failed compaction is not repeated automatically until something it depends on changes", () => {
 	const model = { provider: "anthropic", id: "claude-opus-5-5", contextWindow: 1_000_000 };

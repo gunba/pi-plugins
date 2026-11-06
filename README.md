@@ -41,7 +41,7 @@ Do not pin a ref, or Pi's update checks will not see new commits.
   workflow updates it hourly to its latest release.
 - [`pi-output-budget`](pi-output-budget/README.md): Pi's own output limits (2,000 lines or 50 KB) for every tool, with
   the full text saved to a file; images read at most 1.5 MB.
-- [`pi-compaction-context`](pi-compaction-context/README.md): compaction summaries and briefs from the prompt cache
+- [`pi-compaction-context`](pi-compaction-context/README.md): compaction summaries written as Claude Code writes them, and briefs from the prompt cache
   while it is warm; Pi's own summary otherwise.
 - [`pi-session-memory`](pi-session-memory/README.md): frees the memory held for compacted history; Desk reads it back
   from the session file when shown.

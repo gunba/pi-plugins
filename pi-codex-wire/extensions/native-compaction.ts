@@ -1,13 +1,12 @@
-import { setTimeout as delay } from "node:timers/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { isContextOverflow, isRetryableAssistantError, type AssistantMessage, type Context, type Provider } from "@earendil-works/pi-ai";
+import { isContextOverflow, type AssistantMessage, type Context, type Provider } from "@earendil-works/pi-ai";
 import { SettingsManager, convertToLlm, type AgentSession, type ExtensionAPI, type ExtensionContext, type ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
 import { CHECKPOINT_CAPTION, assertCheckpointContext, carrier, checkpointMessages, checkpointUsage, compactionPrefix, projectCheckpoints, type Checkpoint } from "./checkpoint.ts";
 import { CHECKPOINT, entryCheckpoint } from "./checkpoint-state.ts";
 import { restorePrunedSession } from "../../pi-session-memory/extensions/session-memory.ts";
-import { compactionHeld, compactionKey, recordCompactionFailure } from "../../pi-context-window/compaction.ts";
+import { compactionHeld, compactionKey, recordCompactionFailure, retryCompaction } from "../../pi-context-window/compaction.ts";
 
 type AgentMessage = AgentSession["messages"][number];
 type Settings = Pick<SettingsManager, "getRetrySettings" | "getProviderRetrySettings" | "getHttpIdleTimeoutMs">;
@@ -64,22 +63,7 @@ function splitPoint(messages: AgentMessage[]): number | undefined {
 	return best;
 }
 
-export async function retryCompaction<T>(produce: () => Promise<T>, settings: ReturnType<Settings["getRetrySettings"]>, signal: AbortSignal,
-	notify: (attempt: number, maximum: number, delayMs: number) => void): Promise<T> {
-	for (let attempt = 0; ; attempt++) {
-		signal.throwIfAborted();
-		try { return await produce(); }
-		catch (error) {
-			signal.throwIfAborted();
-			const errorMessage = error instanceof Error ? error.message : "Codex compaction failed";
-			if (!settings.enabled || attempt >= settings.maxRetries
-				|| !isRetryableAssistantError({ stopReason: "error", errorMessage } as AssistantMessage)) throw error;
-			const ms = settings.baseDelayMs * 2 ** attempt;
-			notify(attempt + 1, settings.maxRetries, ms);
-			await delay(ms, undefined, { signal });
-		}
-	}
-}
+export { retryCompaction };
 
 async function checkpointSummary(ctx: ExtensionContext, settings: Settings, signal: AbortSignal, instruction: string,
 	thinking: CompactOperation["thinking"]): Promise<{ summary: string; usage: AssistantMessage["usage"] }> {
