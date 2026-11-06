@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import Markdown from "react-markdown";
 import type { UiAnswer } from "../../../pi-ui/index.ts";
 import type { InteractionSnapshot } from "../shared/protocol.ts";
@@ -35,6 +35,14 @@ export function InteractionForm({ interaction, questions = [], choose, owner = "
 	const [error, setError] = useState("");
 	const [submitting, setSubmitting] = useState(false);
 	const blocked = disabled || submitting;
+	const ready = !blocked && !(form.kind === "question" && (freeform ? !text.trim() : !choices.length));
+	// Enter sends the answer, as in the composer; Shift+Enter starts a new line. An editor's text is long, so Enter
+	// stays a new line there.
+	const sendOnEnter = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+		if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+		event.preventDefault();
+		if (ready) event.currentTarget.form?.requestSubmit();
+	};
 	const submit = async (value: UiAnswer | null) => {
 		if (submitting) return;
 		setSubmitting(true); setError("");
@@ -78,19 +86,19 @@ export function InteractionForm({ interaction, questions = [], choose, owner = "
 						<input type="radio" name="choice" checked={freeform} onChange={() => setFreeform(true)} /><span>Write an answer</span>
 					</label>}
 				</div>
-				{freeform && <textarea data-autofocus aria-label="Your answer" value={text} onChange={event => setText(event.target.value)} placeholder="Your answer…" rows={1} />}
+				{freeform && <textarea data-autofocus aria-label="Your answer" value={text} onChange={event => setText(event.target.value)} onKeyDown={sendOnEnter} placeholder="Your answer…" rows={1} />}
 				{form.allowComment && !freeform && <label>
 					Comment <span className="muted">(optional)</span>
-					<textarea value={text} onChange={event => setText(event.target.value)} rows={1} />
+					<textarea value={text} onChange={event => setText(event.target.value)} onKeyDown={sendOnEnter} rows={1} />
 				</label>}
 			</>
 			: <textarea data-autofocus aria-label={form.title} value={text} onChange={event => setText(event.target.value)} placeholder={form.placeholder}
-				rows={form.kind === "editor" ? 14 : 3} />}
+				onKeyDown={form.kind === "editor" ? undefined : sendOnEnter} rows={form.kind === "editor" ? 14 : 3} />}
 			{error && <p className="error-text" role="alert">{error}</p>}
 		</div>
 		<div className="dialog-actions">
 			<button type="button" disabled={blocked} onClick={() => void submit(null)}>Cancel</button>
-			<button className="primary" disabled={blocked || form.kind === "question" && (freeform ? !text.trim() : !choices.length)}>
+			<button className="primary" disabled={!ready}>
 				{form.kind === "confirm" ? "Confirm" : "submitLabel" in form && form.submitLabel ? form.submitLabel
 					: settings ? "Apply" : form.kind === "question" ? "Send answer" : "Save"}
 			</button>
