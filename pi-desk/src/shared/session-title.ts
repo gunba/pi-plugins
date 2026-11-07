@@ -4,7 +4,8 @@ import { splitDictationNote } from "./dictation-note.ts";
 export function sessionTitle(name?: string, opening?: string): string {
 	return name?.trim() || opening?.replace(/\s+/g, " ").trim().slice(0, 100) || "New conversation";
 }
-export function openingMessage<Entry>(entries: readonly Entry[], full: (entry: Entry) => Entry = entry => entry): string | undefined {
+/** The first user message's text without Desk's dictation note, its whitespace collapsed, up to `length` characters. */
+export function openingMessage<Entry>(entries: readonly Entry[], full: (entry: Entry) => Entry = entry => entry, length = 100): string | undefined {
 	for (const entry of entries) {
 		const value = full(entry) as { type?: string; message?: { role?: string; content?: unknown } };
 		if (value.type !== "message" || value.message?.role !== "user") continue;
@@ -12,6 +13,6 @@ export function openingMessage<Entry>(entries: readonly Entry[], full: (entry: E
 		const text = typeof content === "string" ? content : Array.isArray(content)
 			? content.filter(block => block?.type === "text" && typeof block.text === "string").map(block => block.text).join(" ") : "";
 		// Desk's note on dictated messages is not part of what the user said.
-		if (text.trim()) return splitDictationNote(text).text.replace(/\s+/g, " ").trim().slice(0, 100);
+		if (text.trim()) return splitDictationNote(text).text.replace(/\s+/g, " ").trim().slice(0, length);
 	}
 }

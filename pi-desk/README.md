@@ -114,6 +114,13 @@ unsupported credentials are not silently replaced with another billing method.
 Generated images appear in tool results. Reported token costs are API-equivalent
 estimates, not a ChatGPT subscription balance.
 
+Each named conversation has a banner picture behind its sidebar row and its top
+bar, drawn by the computer it runs on (`src/host/pictures.ts`) with that
+computer's ChatGPT Codex sign-in and no other: a ChatGPT text model chooses a
+subject unlike the other conversations' pictures, GPT Image 2.5 Flare draws it,
+and it is drawn again when the conversation is renamed. Conversation settings
+has **Draw a new one**. A computer without that sign-in draws none.
+
 ## Home
 
 Home is Jordan's tasks and live work on one page. A

@@ -22,6 +22,7 @@ import { reply, type HostCore } from "./host-core.ts";
 import type { HostEvents } from "./host-events.ts";
 import type { HostUpdates } from "./host-updates.ts";
 import type { Logins } from "./logins.ts";
+import type { Pictures } from "./pictures.ts";
 import type { Presence } from "./presence.ts";
 import type { RemoteAccess } from "./relay-connector.ts";
 import { CatalogChanged, type SavedSessionIndex } from "./saved-sessions.ts";
@@ -41,6 +42,7 @@ interface ApiHost {
 	teleport(): Teleport | undefined;
 	search?(): ConversationSearch | undefined;
 	watches?(): WatchService | undefined;
+	pictures?(): Pictures | undefined;
 	account: AccountConnection;
 	agents: AgentOperations;
 	moves: ConversationMoves;
@@ -89,7 +91,7 @@ export class HostApi {
 				return reply(result);
 			}
 			const response = await this.workspace(url, request, data) ?? await this.home(url, request, data) ?? await this.computer(url, request, data)
-				?? await sessionRoute(this.core, this.host.saved, url, request, data);
+				?? this.picture(url, request) ?? await sessionRoute(this.core, this.host.saved, url, request, data);
 			if (response) return response;
 			if (typeof device !== "string") return reply({ error: "Not found." }, 404);
 			if (url.pathname === "/api/devices" && request.method === "GET") return reply(this.host.access().devices());
@@ -126,6 +128,18 @@ export class HostApi {
 			return reply({});
 		}
 		return undefined;
+	}
+
+	/** A conversation's banner picture, whether or not it is running: the image (GET), or a new one drawn (POST). */
+	private picture(url: URL, request: ApiRequest): ApiResponse | undefined {
+		const route = /^\/api\/sessions\/([a-f0-9-]+)\/picture$/.exec(url.pathname);
+		if (!route || !["GET", "POST"].includes(request.method)) return undefined;
+		const pictures = this.host.pictures?.();
+		if (!pictures) return reply({ error: "Desk can't draw banners on this computer." }, 503);
+		if (!this.core.sessions.has(route[1]!)) return reply({ error: "Unknown session." }, 404);
+		if (request.method === "POST") { pictures.redraw(route[1]!); return reply({ drawing: true }, 202); }
+		const asset = pictures.read(route[1]!);
+		return asset ? { status: 200, body: null, asset } : reply({ error: "This conversation has no banner yet." }, 404);
 	}
 
 	private async home(url: URL, request: ApiRequest, data: Record<string, unknown>): Promise<ApiResponse | undefined> {

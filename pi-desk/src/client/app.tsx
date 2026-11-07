@@ -55,6 +55,7 @@ import { TranscriptView } from "./transcript-view.tsx";
 import { ViewCard } from "./view-card.tsx";
 import { ViewPreviews } from "./view-previews.tsx";
 import { openView, panelViews } from "./work-views.ts";
+import { Banner } from "./picture.tsx";
 import { conversationTitle, folderName, sessionKey, type WorkspaceState as HostState } from "./workspace.ts";
 
 /** What "Review the changes" sends: a review of the turn's work with the code-review skill, reported before anything changes. */
@@ -515,6 +516,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         {homeSelected ? <Home host={host} connected={connected} openNavigation={() => setSidebar(true)}
           openConversation={(key, view) => { setSelected(key); setSidebar(false); setPanel(view ? "view" : undefined); if (view) setFocusedView(view); }} /> : <>
         <header className="topbar">
+          <Banner session={session} className="topbar-picture" />
           <button
             className="icon-button mobile-nav"
             aria-label="Open navigation"

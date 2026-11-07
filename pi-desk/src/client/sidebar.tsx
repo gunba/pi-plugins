@@ -10,6 +10,7 @@ import { VersionTag } from "./conversation-version.tsx";
 import { Icon, ProviderIcon } from "./icons.tsx";
 import type { MoveRequest } from "./move-conversation.tsx";
 import { OsIcon } from "./os-icon.tsx";
+import { Banner } from "./picture.tsx";
 
 import type { SessionView } from "../shared/protocol.ts";
 import { asksInBackground, unseen } from "../shared/attention.ts";
@@ -107,6 +108,7 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
     const dot = background && (activity === "idle" || activity === "ready") ? "background" : fresh && activity !== "error" ? "finished" : activity;
     return <div className="session-row" key={item.key}>
       <button className={`session-item ${selected === item.key ? "selected" : ""}${fresh ? " unseen" : ""}`} onClick={() => select(item.key)} onDoubleClick={() => { if (renamable) setRenaming(item.key); }}>
+        <Banner session={item} className="session-picture" />
         <span className={`status-dot ${dot}`} role="img" aria-label={label} title={label} />
         <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{conversationTitle(item)}</strong></span>
           <small className="session-metadata"><span className="session-activity" title={background?.title}>

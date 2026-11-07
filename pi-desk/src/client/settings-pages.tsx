@@ -9,6 +9,7 @@ import { ControlHistory } from "./control-status.tsx";
 import { DraftRecovery } from "./draft-recovery.tsx";
 import { Disclosure } from "./disclosure.tsx";
 import { toolAvailability } from "./tool-availability.ts";
+import { usePicture } from "./picture.tsx";
 import { SettingControl } from "./settings-controls.tsx";
 import type { Computer, WorkspaceState } from "./workspace.ts";
 
@@ -52,6 +53,7 @@ export function ConversationPage({ session, computer, host, views, connected, bu
 			</Row>}
 			<Row label="Pinned"><input type="checkbox" role="switch" aria-label="Pin conversation" checked={!!session.pinned} disabled={locked}
 				onChange={event => run(api(`/sessions/${session.key}/metadata`, { generation: ui?.generation, pinned: event.target.checked }))} /></Row>
+			<BannerRow session={session} connected={connected} run={run} />
 		</section>
 		{ready && <ContextGroup session={session} window={window} machine={{ id: computer?.id, name: computer?.name ?? host.name, threshold: computer ? computer.cacheCompaction : host.cacheCompaction }}
 			locked={locked || settingBusy} invoke={invoke} act={act} run={run} />}
@@ -82,6 +84,18 @@ export function ConversationPage({ session, computer, host, views, connected, bu
 			<DraftRecovery available={available} target={session.key} busy={busy} restored={restore} />
 		</section>
 	</div>;
+}
+
+/** The conversation's banner, drawn from its name by its computer with that computer's ChatGPT sign-in, and a new one on asking. */
+function BannerRow({ session, connected, run }: { session: SessionView; connected: boolean; run: (work: Promise<unknown>) => void }) {
+	const url = usePicture(session), picture = session.picture, named = !!session.name?.trim();
+	const status = !named ? "Drawn once the conversation has a name." : picture?.drawing ? "Drawing…" : picture?.error ?? (url || picture?.version ? "" : "Not drawn yet.");
+	return <Row label="Banner" hint="Drawn from the conversation's name with the ChatGPT sign-in of the computer it runs on, and drawn again when it is renamed.">
+		{url && <img className="settings-banner" src={url} alt="" />}
+		{status && <span className={picture?.error && !picture.drawing ? "error-text" : "muted"}>{status}</span>}
+		{named && <button className="quiet-action" disabled={!connected || !!picture?.drawing}
+			onClick={() => run(api(`/sessions/${session.key}/picture`, {}))}><Icon name="refresh" />Draw a new one</button>}
+	</Row>;
 }
 
 /** Context in one bar: what is used, where Pi compacts, and the budget, which can be changed in place. */

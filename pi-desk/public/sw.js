@@ -44,9 +44,10 @@ self.addEventListener("install", event => {
   }));
   self.skipWaiting();
 });
+// Older shells' caches go; the conversations' banner pictures, which the app keeps itself (connection.ts), stay.
 self.addEventListener("activate", event => {
   event.waitUntil(Promise.all([self.clients.claim(), caches.keys().then(keys =>
-    Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key))))]));
+    Promise.all(keys.filter(key => key !== CACHE && key !== "pi-desk-pictures").map(key => caches.delete(key))))]));
 });
 // An open app asks whether a newer page is ready: the page is fetched, and its files cached, before the reply names
 // them. Reloading then opens the newer page from the cache.

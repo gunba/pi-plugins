@@ -51,6 +51,7 @@ import { HostHttp } from "./host-http.ts";
 import { HostUpdates } from "./host-updates.ts";
 import { asksInBackground, settle } from "../shared/attention.ts";
 import { WATCHES, WatchService } from "./watches.ts";
+import { Pictures } from "./pictures.ts";
 
 /** What an agent is told when Desk continues its work after the computer stopped mid-turn. */
 const RESUME_NOTE = "Desk restarted after this computer stopped while you were working. Commands, tools and helpers that were running then were stopped and are not run again. Check where your work stands (files, processes, partial results) before carrying on.";
@@ -87,6 +88,7 @@ export class DeskHost {
 	private partyOperations?: PartyOperations;
 	/** The computer's watches, which Desk runs for the agents they wake (watches.ts). */
 	private watches?: WatchService;
+	private pictures?: Pictures;
 	private dictation?: Dictation;
 	private catalogTimer?: ReturnType<typeof setTimeout>;
 	private sessions = new Map<string, ManagedSession>();
@@ -172,7 +174,7 @@ export class DeskHost {
 		this.api = new HostApi(this.core, { access: () => this.access, runtimeHome: () => this.runtimeHome, logins: () => this.logins, home: () => this.home,
 			dictation: () => this.dictation, folders: () => this.folders!, saved: () => this.saved!, teleport: () => this.teleport, search: () => this.search,
 			account: this.account, agents: this.agents, moves: this.moves, updates: this.updates, efficiency: this.efficiency, events: this.events,
-			presence: () => this.presence, watches: () => this.watches });
+			presence: () => this.presence, watches: () => this.watches, pictures: () => this.pictures });
 		this.http = new HostHttp(this.core, { access: () => this.access, control: () => this.control, status: () => this.hostStatus(), checkpoints: () => this.checkpoints,
 			runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, signingIn,
 			stop: preserveWorkers => {
@@ -256,6 +258,8 @@ export class DeskHost {
 				console.error("Desk can't run watches:", error instanceof Error ? error.message : String(error));
 				const failed = this.watches; this.watches = undefined; await failed?.close().catch(() => {});
 			}
+			try { this.pictures = new Pictures(this.core); this.pictures.start(); }
+			catch (error) { console.error("Desk can't draw banners:", error instanceof Error ? error.message : String(error)); }
 			this.home = new Home(this.core,
 				() => this.account.localOnly || !!this.teleport?.settings.hold,
 				() => this.account.network?.homeWork() ?? [], async notice => {
@@ -324,7 +328,7 @@ export class DeskHost {
 			this.inputs?.close();
 			this.inputs = undefined;
 			this.account.close(); await this.search?.close();
-			this.home?.close(); await this.watches?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
+			this.home?.close(); this.pictures?.close(); await this.watches?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
 			finally { this.hostLease.close(); }
@@ -427,6 +431,7 @@ export class DeskHost {
 		if (message.type === "snapshot") {
 			if (managed.view.leaf !== message.snapshot.leaf || managed.view.name !== message.snapshot.name
 				|| managed.view.file !== message.snapshot.file) this.saved?.invalidate();
+			if (managed.view.name !== message.snapshot.name) this.pictures?.changed();
 			const model = message.snapshot.model;
 			managed.view = { ...managed.view, cwd: message.snapshot.cwd, file: message.snapshot.file,
 				agentId: message.snapshot.id, name: message.snapshot.name, title: message.snapshot.title, leaf: message.snapshot.leaf, state: "ready", ...sessionDisplay(message.snapshot),
@@ -950,6 +955,7 @@ export class DeskHost {
 		this.account.close();
 		try { await this.search?.close(); } catch (error) { errors.push(error); }
 		try { await this.watches?.close(); } catch (error) { errors.push(error); }
+		this.pictures?.close();
 		try { this.home?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
 		this.events.end();

@@ -521,6 +521,30 @@ details[open] > summary:before {
 .session-model .provider-icon { width:13px; height:13px; border-radius:0; background:none; color:inherit; }
 .session-model .provider-icon svg { width:12px; height:12px; }
 .session-model .provider-icon > span { font-size:8px; }
+/* A conversation's banner picture (picture.tsx) behind its row, faded to the sidebar where the text is; its subject
+   is in its right third, which shows most. */
+.session-row:has(.session-picture) { margin:3px 0; }
+.session-item:has(> .session-picture) { position:relative; isolation:isolate; overflow:hidden; border-radius:8px; }
+.session-picture { position:absolute; inset:0; z-index:-1; border-radius:inherit; background:right center / cover no-repeat; pointer-events:none; animation:picture-in .4s ease-out; }
+.session-picture::after { content:""; position:absolute; inset:0; border-radius:inherit; transition:opacity .15s;
+  background:linear-gradient(90deg, var(--sidebar) 0%, color-mix(in srgb, var(--sidebar) 90%, transparent) 34%, color-mix(in srgb, var(--sidebar) 50%, transparent) 66%, color-mix(in srgb, var(--sidebar) 12%, transparent) 100%); }
+:root:not([data-theme="dark"]) .session-picture::after {
+  background:linear-gradient(90deg, var(--sidebar) 0%, color-mix(in srgb, var(--sidebar) 94%, transparent) 40%, color-mix(in srgb, var(--sidebar) 62%, transparent) 72%, color-mix(in srgb, var(--sidebar) 22%, transparent) 100%); }
+.session-item:not(.selected) > .session-picture { filter:saturate(.85) brightness(.9); }
+.session-row:hover .session-picture::after { opacity:.82; }
+.session-item.selected > .session-picture::after { box-shadow:inset 3px 0 var(--accent), inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+  background:linear-gradient(90deg, color-mix(in srgb, var(--sidebar) 82%, transparent) 0%, color-mix(in srgb, var(--sidebar) 55%, transparent) 42%, transparent 100%); }
+:root:not([data-theme="dark"]) .session-item.selected > .session-picture::after {
+  background:linear-gradient(90deg, color-mix(in srgb, var(--sidebar) 92%, transparent) 0%, color-mix(in srgb, var(--sidebar) 78%, transparent) 50%, color-mix(in srgb, var(--sidebar) 10%, transparent) 100%); }
+.session-item:has(> .session-picture) strong { text-shadow:0 1px 2px color-mix(in srgb, var(--sidebar) 80%, transparent); }
+.session-item:has(> .session-picture) small { text-shadow:0 1px 2px var(--sidebar); }
+/* The model's name would cover the picture's subject; it shows while the row is pointed at. */
+.session-item:has(> .session-picture) .session-model { display:none; }
+.session-row:hover .session-item:has(> .session-picture) .session-model { display:inline-flex; }
+.session-row:has(.session-picture) :is(.session-close, .session-rename) { background:color-mix(in srgb, var(--sidebar) 72%, transparent); }
+.session-row:has(.session-picture) :is(.session-close, .session-rename):hover:not(:disabled) { background:var(--surface); }
+@keyframes picture-in { from { opacity:0; } }
+@media (prefers-reduced-motion: reduce) { .session-picture, .topbar-picture { animation:none; } }
 .status-dot {
   --status-color: var(--muted);
   position:relative; display:inline-grid; place-items:center; flex:none;
@@ -597,6 +621,7 @@ details[open] > summary:before {
   position: relative;
 }
 .topbar {
+  position: relative;
   height: 56px;
   flex-shrink: 0;
   display: flex;
@@ -606,6 +631,14 @@ details[open] > summary:before {
   padding: 0 28px;
   border-bottom: 1px solid var(--border);
 }
+/* The open conversation's banner (picture.tsx) behind the top bar, faded under its title and buttons. */
+.topbar > :not(.topbar-picture) { position:relative; }
+.topbar-picture { position:absolute; inset:0; background:right 30% / cover no-repeat; pointer-events:none; animation:picture-in .4s ease-out; }
+.topbar-picture::after { content:""; position:absolute; inset:0;
+  background:linear-gradient(90deg, var(--bg) 0%, color-mix(in srgb, var(--bg) 85%, transparent) 45%, color-mix(in srgb, var(--bg) 30%, transparent) 100%); }
+:root:not([data-theme="dark"]) .topbar-picture::after {
+  background:linear-gradient(90deg, var(--bg) 0%, color-mix(in srgb, var(--bg) 90%, transparent) 50%, color-mix(in srgb, var(--bg) 55%, transparent) 100%); }
+.settings-banner { flex:none; width:150px; height:50px; object-fit:cover; border-radius:6px; }
 .conversation-heading {
   min-width: 0;
 }

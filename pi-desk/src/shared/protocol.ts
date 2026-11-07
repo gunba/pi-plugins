@@ -131,6 +131,11 @@ export interface SavedSession {
 }
 /** brief: the worker writes "What do I need to know?" briefs (Desk 0.5.141 and later); briefReply: on any turn, not only the latest (0.5.224). */
 export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; queueCancel?: boolean; queueEdit?: boolean; brief?: boolean; briefReply?: boolean; learn?: boolean }
+/**
+ * A conversation's banner picture (host pictures.ts): the version of the one drawn for its name, or for its earlier
+ * name until a new one is drawn; whether one is being drawn or waits its turn; and why the last drawing failed.
+ */
+export interface SessionPicture { version?: string; drawing?: boolean; error?: string }
 export interface SessionView {
 	key: string;
 	/** The workspace's persistent Home assistant. */
@@ -188,6 +193,8 @@ export interface SessionView {
 	activation?: string;
 	workerRuntime?: WorkerRuntimeInfo;
 	inputs?: InputStatus[];
+	/** Drawn once it has a name, by the computer it runs on. */
+	picture?: SessionPicture;
 }
 /** A conversation's copy kept on another computer (host copies.ts): whose it is, where it ran, how much there is. */
 export type ConversationCopy = { session: string; computer: string; cwd: string; title?: string; size: number; head: string; updated: number; moved?: { to: string; at: number };

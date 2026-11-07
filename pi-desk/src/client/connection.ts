@@ -239,6 +239,39 @@ const assetBlobs = new BlobPool();
 export function acquireAsset(session: string, asset: string, origin: string): BlobLease {
 	return assetBlobs.acquire(`${session}/${asset}?${origin}`, () => assetBlob(session, asset, origin));
 }
+/** Banner pictures kept by this browser, named by version, so each is fetched once per device (public/sw.js keeps them). */
+const PICTURE_CACHE = "pi-desk-pictures";
+async function pictureBlob(session: string, version: string): Promise<Blob> {
+	// Cache Storage exists only on secure origins, and can be refused; without it the picture is fetched each time.
+	const cache = typeof caches === "undefined" ? undefined : await caches.open(PICTURE_CACHE).catch(() => undefined);
+	const name = `/pictures/${version}`;
+	const cached = await cache?.match(name).catch(() => undefined);
+	if (cached) return cached.blob();
+	const path = `/sessions/${session}/picture`;
+	let blob: Blob;
+	if (mode === "local") {
+		const response = await fetch(`/api${path}`, { cache: "no-store", headers: { [API_HEADER]: String(API_VERSION) } });
+		if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? "Picture unavailable.");
+		blob = await response.blob();
+	} else {
+		const target = route(path);
+		const result = await target.remote.client.request({ path: `/api${target.path}`, method: "GET" });
+		if (!result.asset) throw new Error((result.body as { error?: string }).error ?? "Picture unavailable.");
+		blob = new Blob([decodeBase64(result.asset.base64)], { type: result.asset.mimeType });
+	}
+	if (cache) void (async () => {
+		await cache.put(name, new Response(blob, { headers: { "Content-Type": blob.type } }));
+		// The oldest go first once there are more than a few computers' worth.
+		const kept = await cache.keys();
+		for (const old of kept.slice(0, Math.max(0, kept.length - 200))) await cache.delete(old);
+	})().catch(() => {});
+	return blob;
+}
+const pictureBlobs = new BlobPool(4);
+/** A conversation's banner picture (SessionView.picture); the URL lasts until every lease on it is released. */
+export function acquirePicture(session: string, version: string): BlobLease {
+	return pictureBlobs.acquire(`${session}/${version}`, () => pictureBlob(session, version));
+}
 export function subscribe(events: (batch: WorkspaceEvent[]) => void, connection: (connected: boolean) => void): () => void {
 	if (!mode) { connection(false); return () => {}; }
 	let timer: ReturnType<typeof setTimeout> | undefined, source: EventSource | undefined;
