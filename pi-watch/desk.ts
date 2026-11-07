@@ -242,7 +242,7 @@ export class DeskClient implements WatchBackend {
 		spec.id = this.nextName();
 		spec.key = id;
 		if (folder) spec.cwd = folder;
-		if (target) return this.startThere(spec, target, asked.cwd?.trim() ?? "", ctx);
+		if (target) return this.startThere(spec, target, asked.cwd?.trim() ?? "");
 		this.store.insert({ id, agent: this.sessionId, home: "", runs: "", name: spec.id, spec, state: "new", created: spec.created, progress: {} });
 		this.pi.appendEntry(WATCH_ENTRY, { op: "desk", id: spec.id, watch: id, computer: hostname() } satisfies WatchRecord);
 		this.store.signal();
@@ -269,20 +269,10 @@ export class DeskClient implements WatchBackend {
 		return found;
 	}
 
-	/** Asks Jordan, then asks the other computer to run the watch; its events come back here. */
-	private async startThere(spec: WatchSpec, target: KnownComputer, cwd: string, ctx: ExtensionContext): Promise<string> {
-		if (!ctx.hasUI) throw new Error(`A watch on ${target.name} needs Jordan's approval, which this conversation can't ask for.`);
+	/** Asks the other computer to run the watch; its events come back here. */
+	private async startThere(spec: WatchSpec, target: KnownComputer, cwd: string): Promise<string> {
 		spec.cwd = cwd;
 		spec.computer = target.name;
-		const what = spec.program !== undefined ? `this program` : `this command`;
-		const body = (spec.program ?? spec.command ?? "").trim();
-		const schedule = [spec.every ? `every ${interval(spec.every)}` : "once, until it ends",
-			spec.keep ? "until stopped" : spec.mode === "change" ? "until a result wakes the agent" : "",
-			spec.wakeWhen ? `waking the agent when ${spec.wakeWhen}` : "waking the agent with each result",
-			spec.expires ? `ending ${when(spec.expires)}` : ""].filter(Boolean).join(", ");
-		const approved = await ctx.ui.confirm(`Run a watch on ${target.name}?`,
-			`${this.pi.getSessionName() || "This conversation"} asks to run ${what} on ${target.name}, in ${cwd || "its home folder"}, ${schedule}:\n\n${body.length > 3000 ? `${body.slice(0, 3000)}…` : body}`);
-		if (!approved) throw new Error(`Jordan declined the watch on ${target.name}; nothing was started.`);
 		const id = spec.key!;
 		this.store.insert({ id, agent: this.sessionId, home: "", runs: target.id, name: spec.id, spec, state: "new", created: spec.created, progress: {} });
 		this.pi.appendEntry(WATCH_ENTRY, { op: "desk", id: spec.id, watch: id, computer: hostname() } satisfies WatchRecord);

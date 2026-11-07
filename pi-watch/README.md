@@ -12,7 +12,7 @@ with what happened. It replaces sleep loops, repeated checks and waiting on a lo
 | `watch({})` | | lists the conversation's watches |
 | `watch({stop})` | | stops a watch and its command |
 | `watch({close: true})` | | closes the conversation when this turn ends, to sleep until a watch wakes it (alone or with a new watch) |
-| `watch({command or program, computer, cwd})` | the command or program on another of Jordan's computers, in `cwd` there (default: its home folder) | as above, once Jordan has approved it |
+| `watch({command or program, computer, cwd})` | the command or program on another of Jordan's computers, in `cwd` there (default: its home folder) | as above |
 
 `wake_when` describes, in plain words, which events should wake the agent ("the build fails or finishes"). A
 classifier model judges each event: TypeSafe's Jev when signed in (`/login typesafe`), otherwise another signed-in
@@ -50,8 +50,7 @@ as described under Behaviour: they last while its process does and are picked up
 ### Other computers
 
 `computer` names another of Jordan's computers, by name or ID as `agent_list` shows them, that runs this version of
-Desk or later; `cwd` is the folder there. Before anything is sent, Jordan approves the watch in the conversation, with
-the command or program, the folder and the schedule shown. The watch then runs there, judged by that computer's
+Desk or later; `cwd` is the folder there. The watch runs there, judged by that computer's
 classifier, and its events come back over Desk's connection between the computers and wake the agent as a watch here
 would. Only commands and programs run on another computer; a time watch wakes the agent from its own. The agent can
 stop it with `watch({stop})`, and Jordan from either computer's settings page. A request the other computer hasn't

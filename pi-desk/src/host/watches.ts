@@ -513,6 +513,8 @@ export class WatchService {
 		if (!row || row.runs !== computer) return;
 		if (input.state === "running") {
 			if (row.state === "new") this.store.setState(id, "running", undefined, ["new"]);
+			// It started after this computer had given up on it: it is stopped there, quietly, as nothing here wants its news.
+			else if (row.state === "ended") this.store.setState(id, "stopping", row.reason, ["ended"]);
 		} else if (input.state === "ended") {
 			const reason = optional(input.reason, 2_000) ?? "it ended";
 			if (row.state !== "ended") this.store.setState(id, "ended", reason);
@@ -530,6 +532,8 @@ export class WatchService {
 		const row = this.store.get(watch), body = text(input.text, 1_000_000), ended = optional(input.ended, 2_000);
 		// Only news of watches agents here asked for, while they want it, and the news that one ended.
 		if (!row || row.runs !== computer || row.agent !== agent) return id;
+		// News of one this computer had given up on: it is still running there, so it is stopped.
+		if (row.state === "ended" && !ended) { this.store.setState(watch, "stopping", row.reason, ["ended"]); this.host.flush(); return id; }
 		if (body && (row.state === "running" || row.state === "new" || row.state === "stopping" && ended))
 			this.store.addEvent({ id, watch, agent, home: "", name: row.name, text: body, ...(wireEvent(input.event) ? { event: wireEvent(input.event) } : {}),
 				...(ended ? { ended } : {}), created: whole(input.created), state: "pending" } satisfies EventRow);

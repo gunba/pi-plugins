@@ -50,7 +50,7 @@ export const Parameters = Type.Object({
 	until: Type.Optional(Type.String({ description: "Wake after a delay (90s, 5m, 2h), at HH:MM (local) or at an ISO time." })),
 	wake_when: Type.Optional(Type.String({ description: "Wake only for output showing this, in plain words." })),
 	hours: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
-	computer: Type.Optional(Type.String({ description: "Run the command or program on another of Jordan's computers, by name or ID as agent_list shows; Jordan approves it once." })),
+	computer: Type.Optional(Type.String({ description: "Run the command or program on another of Jordan's computers, by name or ID as agent_list shows." })),
 	cwd: Type.Optional(Type.String({ description: "With computer: the folder to run it in there (default: its home folder)." })),
 	stop: Type.Optional(Type.String({ description: "Watch ID to stop." })),
 	close: Type.Optional(Type.Boolean({ description: "Close this conversation until a watch wakes it." })),
