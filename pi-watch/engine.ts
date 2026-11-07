@@ -62,10 +62,14 @@ interface Active {
 	readings: { at: number; value: string }[];
 	/** A program watch's next run. */
 	run?: NodeJS.Timeout;
+	/** When a "change" watch's runner was last started again. */
+	relaunched?: number;
 }
 
 /** A program watch without a context to run in tries again this often. */
 const RESUME_MS = 5_000;
+/** A runner that stops again this soon after being started again can't run, and isn't started a third time. */
+const RELAUNCH_MS = 60_000;
 /** A watch's key in its engine: Desk's id for it, which is unique on the computer, else its name. */
 const keyOf = (spec: WatchSpec) => spec.key ?? spec.id;
 
@@ -336,7 +340,10 @@ export class WatchEngine {
 			if (status && status.stopped !== "stopped") {
 				this.finishWith(active, status.stopped === "expired" ? "it expired" : status.error ? `its command could not run: ${status.error}` : "its runner stopped", { kill: false });
 			// Stopped when its owner last shut down, or gone with the computer: it starts again.
-			} else if (status || !alive(spec.pid!)) this.relaunch(active);
+			} else if (status || !alive(spec.pid!)) {
+				if (active.relaunched && Date.now() - active.relaunched < RELAUNCH_MS) this.finishWith(active, "its command's runner stopped as soon as it started", { kill: false });
+				else this.relaunch(active);
+			}
 		});
 		active.timers.push(setInterval(tick, TAIL_MS));
 		tick();
@@ -346,6 +353,7 @@ export class WatchEngine {
 		const { spec } = active;
 		const { folder, file } = spec.change ? { folder: dirname(spec.change), file: basename(spec.change, ".change") } : this.owner.place(spec);
 		launchRunner(spec, folder, this.owner.shell(spec.cwd), this.owner.environment?.(), file);
+		active.relaunched = Date.now();
 		this.owner.progress(spec, { pid: spec.pid! });
 	}
 

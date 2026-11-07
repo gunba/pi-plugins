@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { isBuiltin } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,9 @@ for (const output of Object.values(host.metafile.outputs)) for (const dependency
   if (!Object.hasOwn(manifest.dependencies, name)) undeclared.add(name);
 }
 if (undeclared.size) throw new Error(`Undeclared host runtime dependencies: ${[...undeclared].join(", ")}`);
+// pi-watch's engine, bundled into the host, starts each command watch's runner from runner.mjs beside its own module,
+// which is now a chunk in dist/host.
+copyFileSync(resolve(root, "../pi-watch/runner.mjs"), resolve(root, "dist/host/runner.mjs"));
 await build({
   absWorkingDir: root,
   entryPoints: { "gmail-send": "manage/gmail-send.mjs" },

@@ -75,7 +75,7 @@ export function renderPlanWrapup(plan: Pick<PlanView, "objective">, blockedReaso
 		blockedReason === undefined ? "<plan_complete>" : "<plan_blocked>",
 		`Objective: ${JSON.stringify(plan.objective)}`,
 		...(blockedReason === undefined ? [] : [`Blocked: ${JSON.stringify(blockedReason)}`]),
-		"Automatic continuation has stopped. Summarize the outcome, verification, relevant artifacts and any remaining work or blocking condition.",
+		"Automatic continuation has stopped. Write your final report: the result first, in terms of the objective; then any decision or action that is the user's; then what you didn't test or confirm, what you assumed, and what is unfinished or blocked; then where the work is. Leave out the steps you took.",
 		blockedReason === undefined ? "</plan_complete>" : "</plan_blocked>",
 	].join("\n");
 }
