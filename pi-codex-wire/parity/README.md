@@ -1,7 +1,7 @@
 # Keeping Codex Wire in step with Codex
 
 Codex Wire sends Pi's requests the way the latest stable Codex (Desktop and CLI) sends its own. When Codex changes
-what it sends, Wire follows. This folder holds what the parity agent, a sleeping Desk conversation on the Perth server,
+what it sends, Wire follows. This folder holds what the parity agent, a sleeping Desk conversation,
 uses to notice a release that matters and to work out what Wire needs.
 
 ## Rules
@@ -41,7 +41,7 @@ watch({
 `~/codex-parity/baseline`. Its output changes only with a release, and the classifier wakes the agent only for releases
 that touch requests. The conversation sleeps in between: no process runs, and the watch's runner re-runs the check.
 
-## On Perth
+## Workspace
 
 | Path | What |
 |---|---|
@@ -50,10 +50,10 @@ that touch requests. The conversation sleeps in between: no process runs, and th
 | `~/codex-parity/baseline` | The Codex tag Wire last matched, such as `rust-v0.164.0`. |
 | `~/codex-parity/reports/<tag>/` | One folder per release: `report.md` and the patches. |
 
-Perth can push to `gunba/pi-plugins` through its repository-scoped SSH deploy key. Keep `origin` on
+Git pushes to `gunba/pi-plugins` use its repository-scoped SSH deploy key. Keep `origin` on
 `git@github.com:gunba/pi-plugins.git`; the upstream Codex clone stays read-only over HTTPS. The deploy key does not
 provide GitHub API access. Every parity change is delivered as a draft PR, then handed to **Pi Desk Developer** for
-review and merge. Use an already authorized environment to open the PR; if Perth has only SSH access, ask that agent
+review and merge. Use an already authorized environment to open the PR; if the current computer has only SSH access, ask that agent
 to create the PR for the pushed branch and return its URL. Do not start an account-wide GitHub device login for
 unattended parity work. A pushed branch or compare link is not a completed handoff.
 
@@ -104,8 +104,8 @@ unattended parity work. A pushed branch or compare link is not a completed hando
    - Put the PR URL in the report. Patches may be retained beside the evidence with
      `git format-patch origin/main -o ~/codex-parity/reports/<tag>/`, but do not replace the PR.
    - Notify **Pi Desk Developer** with the PR URL, head commit, test results and limitations, prompt-cache impact,
-     and evidence location on pi-desk-perth. That agent owns review and merge. Use `agent_list` to find it and
-     `agent_send` to deliver the handoff or supporting files.
+     and evidence location on the computer hosting this checkout. That agent owns review and merge. Use `agent_list`
+     to find it and `agent_send` to deliver the handoff or supporting files.
    - Do not add a routine parity-review quest for Jordan. Ask him only for a concrete decision or access that the
      agents cannot resolve. If nothing needs to change, write the report without opening a PR or adding a quest.
 7. **Move on.** Write the new tag to `~/codex-parity/baseline`, switch the clean checkout back to `main` so the next
@@ -122,7 +122,7 @@ node pi-codex-wire/parity/run-captures.mjs /path/to/codex /tmp/codex-models.json
 python3 -B pi-codex-wire/parity/compare-captures.py /path/to/captures > /path/to/comparison.json
 ```
 
-The version is a plain number such as `0.166.0`. The runner covers standard and Lite first turns, tool continuation,
+The version is a plain number such as `0.167.0`. The runner covers standard and Lite first turns, tool continuation,
 prewarm, missing response IDs, cold resume, terminal model-not-found errors, and policy-capacity failures with and
 without retry advice over WebSocket and SSE. Capacity captures deliberately permit Wire's extra unadvised resend,
 assert identical request bodies, and require one successful Pi turn with no model switch. They use the real 30-second
@@ -165,7 +165,9 @@ This is how Codex 0.164.0 parity was checked. Keep any tooling you build in this
 
    Leave out the following:
    - Codex's harness messages: content kinds starting `host_skills`, `permissions`, `collaboration_mode`,
-     `multi_agent` or `environments`.
+     `multi_agent`, `environments` or `tools.deferred_namespaces`. The last is native deferred-tool instruction
+     text, not a free request field. Exclude an item only when all its content kinds are harness kinds;
+     keep ordinary `additional_tools` items and mixed non-harness content in the comparison.
    - `turn_trigger`, which only `codex exec` sends.
 
 Delete the scratch folders and the downloaded binary when done.
