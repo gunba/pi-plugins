@@ -23,9 +23,19 @@ const COMPONENTS: Components = {
 	img: ({ alt, src }) => src ? <a href={src} target="_blank" rel="noreferrer">{alt || "Open image"}</a> : <span>{alt}</span>,
 };
 
+/** YAML front matter, which skills and many sites' pages start with. */
+const FRONT_MATTER = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
+/** The text with its front matter as a YAML code block: Markdown would read it as a rule and a heading. */
+function showFrontMatter(text: string): string {
+	return text.replace(FRONT_MATTER, (_, yaml: string) => {
+		const fence = "`".repeat(Math.max(3, ...[...yaml.matchAll(/`+/g)].map(run => run[0].length + 1)));
+		return `${fence}yaml\n${yaml}\n${fence}\n\n`;
+	});
+}
+
 /** Markdown text formatted as Desk formats messages. */
 export const MarkdownText = memo(function MarkdownText({ text, className }: { text: string; className?: string }) {
-	return <div className={`markdown${className ? ` ${className}` : ""}`}><Markdown remarkPlugins={PLUGINS} urlTransform={url} components={COMPONENTS}>{text}</Markdown></div>;
+	return <div className={`markdown${className ? ` ${className}` : ""}`}><Markdown remarkPlugins={PLUGINS} urlTransform={url} components={COMPONENTS}>{showFrontMatter(text)}</Markdown></div>;
 });
 
 /** The start of a document, cut at a paragraph and with any open code block closed, so it still formats. */

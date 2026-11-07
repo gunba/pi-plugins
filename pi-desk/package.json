@@ -43,6 +43,7 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@fontsource-variable/libre-franklin": "5.3.0",
     "@json-render/core": "0.21.3",
     "@json-render/react": "0.21.3",
     "@tanstack/react-virtual": "3.14.13",

@@ -156,7 +156,11 @@ body,
   margin: 0;
 }
 body {
+  /* Of the 16 fonts in a study of on-screen reading speed (Wallace et al. 2022,
+     https://dl.acm.org/doi/full/10.1145/3502222), Franklin Gothic was most often the faster of two fonts the same person
+     read. Libre Franklin is its open revival, bundled so every device shows the same font. */
   font-family:
+    "Libre Franklin Variable",
     Inter,
     ui-sans-serif,
     system-ui,
