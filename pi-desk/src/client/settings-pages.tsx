@@ -174,31 +174,39 @@ function CopiesRow({ teleport, computer, connected }: { teleport?: { hold: boole
 		{error && <span className="error-text" role="alert">{error}</span>}
 	</Row>;
 }
+/** Where a watch list's watches come from: a computer, with the watches its host listed (none from an older Desk). */
+interface WatchSource { id?: string; name: string; connected: boolean; watches?: WatchSummary[] }
+
 /**
- * The watches Desk runs on a computer for its agents and those on other computers, and the watches its agents asked
- * other computers to run. Stopping one tells its agent.
+ * The watches Desk runs on computers for their agents and for agents elsewhere, and those their agents asked other
+ * computers to run, listed once each, by the computer running it. Stopping one tells its agent.
  */
-function WatchList({ watches, computer, connected }: { watches?: WatchSummary[]; computer?: string; connected: boolean }) {
+function WatchList({ sources }: { sources: WatchSource[] }) {
 	const [error, setError] = useState(""), [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
-	const stop = (id: string) => {
+	const stop = (id: string, computer?: string) => {
 		setError(""); setStopping(current => new Set(current).add(id));
 		void api(`/watches/${id}/stop`, {}, computer).catch(failure => {
 			setError(failure instanceof Error ? failure.message : String(failure));
 			setStopping(current => { const next = new Set(current); next.delete(id); return next; });
 		});
 	};
-	if (!watches) return <section className="settings-group"><Row label="Watches"><span className="muted">Update Desk on this computer to see its watches here.</span></Row></section>;
+	const several = sources.length > 1;
+	const running = new Set(sources.flatMap(source => (source.watches ?? []).flatMap(watch => watch.runs ? [] : [watch.id])));
+	const rows = sources.flatMap(source => (source.watches ?? []).filter(watch => !watch.runs || !running.has(watch.id)).map(watch => ({ source, watch })));
+	const older = sources.filter(source => source.connected && !source.watches).map(source => source.name);
 	return <section className="settings-group">
-		{!watches.length && <Row label="Watches"><span className="muted">No agent is watching anything on this computer.</span></Row>}
-		{watches.map(watch => {
+		{!rows.length && <Row label="Watches"><span className="muted">{older.length === sources.length ? "Update Desk to see watches here."
+			: `No agent is watching anything${several ? "" : " on this computer"}.`}</span></Row>}
+		{rows.map(({ source, watch }) => {
 			const busy = watch.state === "stopping" || stopping.has(watch.id);
 			const about = [watch.detail, watch.at ? `at ${when(watch.at)}` : "", `wakes ${watch.agent}${watch.home ? ` on ${watch.home}` : ""}`,
-				watch.runs ? `runs on ${watch.runs}` : "", watch.state === "new" ? "starting" : ""].filter(Boolean).join(" · ");
-			return <Row key={watch.id} label={watch.name}>
+				watch.runs ? `runs on ${watch.runs}` : several ? `runs on ${source.name}` : "", watch.state === "new" ? "starting" : ""].filter(Boolean).join(" · ");
+			return <Row key={`${source.id ?? ""}:${watch.id}`} label={watch.name}>
 				<span className="grow"><span className="settings-watch-title">{watch.title}</span><span className="muted">{about}</span></span>
-				<button className="quiet-action" disabled={!connected || busy} onClick={() => stop(watch.id)}>{busy ? "Stopping…" : "Stop"}</button>
+				<button className="quiet-action" disabled={!source.connected || busy} onClick={() => stop(watch.id, source.id)}>{busy ? "Stopping…" : "Stop"}</button>
 			</Row>;
 		})}
+		{several && older.length > 0 && older.length < sources.length && <Row label=""><span className="muted">Update Desk on {older.join(" and ")} to see {older.length > 1 ? "their" : "its"} watches.</span></Row>}
 		{error && <Row label=""><span className="error-text" role="alert">{error}</span></Row>}
 	</section>;
 }
@@ -229,7 +237,10 @@ export function ComputerPage({ host, computer, connected, children, views, act }
 			</Row>
 		</section>
 		<h3 className="settings-subheading">Watches</h3>
-		<WatchList watches={computer ? computer.watches : host.watches} computer={computer?.id} connected={connected} />
+		<WatchList sources={computer ? [{ id: computer.id, name: computer.name, connected: computer.connected, watches: computer.watches }]
+			// The workspace's page, with no computer chosen, lists every computer's.
+			: host.computers ? host.computers.map(item => ({ id: item.id, name: item.name, connected: item.connected, watches: item.watches }))
+			: [{ name: host.name, connected, watches: host.watches }]} />
 		<h3 className="settings-subheading">Models & API keys</h3>
 		{children.accounts}
 		<h3 className="settings-subheading">API services</h3>

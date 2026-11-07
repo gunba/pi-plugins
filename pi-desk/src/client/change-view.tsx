@@ -17,6 +17,7 @@ import { Icon } from "./icons.tsx";
 import { dragPaneWidth } from "./pane-width.ts";
 import { BriefView, type Brief } from "./brief.tsx";
 import { markdownPlugins } from "./markdown-links.ts";
+import { MARKDOWN_FILE, MarkdownFile } from "./markdown-file.tsx";
 import { shownUrl } from "../../../pi-show/extensions/links.ts";
 import { AgentFilesContext, AgentSurface } from "./agent-ui/index.tsx";
 import { visibleWorkItems } from "./work-items.ts";
@@ -337,19 +338,26 @@ function HtmlPage({ session, file, large }: { session: string; file: FileReferen
 /** Several Office files in one result render on request: each opens Word, Excel or PowerPoint on its computer. */
 const officeCount = (items: ShownItem[]) => items.filter(item => item.path && OFFICE_PAGES.test(item.path) && !item.missing).length;
 function ShownEntry({ item, file, session, title, large, office = 1 }: { item: ShownItem; file: FileReference | null; session: string; title: string; large?: boolean; office?: number }) {
+	const [source, setSource] = useState(false);
 	const where = item.path ? name(item.path) : title;
 	if (item.url) return <ShownLink item={item} />;
+	// A Markdown file reads formatted; its text, or what changed, is a click away. An excerpt stays as lines.
+	const markdown = !!item.path && MARKDOWN_FILE.test(item.path) && !!file && !item.missing && !item.excerpt;
+	const created = !!item.diff && diffRows(item.diff.text).every(row => row.kind === "add" || row.kind === "hunk");
 	return <div className="shown-item">
 		{item.path && <div className="shown-item-heading"><FileName session={session} path={item.path} file={file} />
 			{item.missing && <span className="error-text">not found</span>}
 			{item.changes && <span className="change-summary">{item.changes.summary}</span>}
-			{item.diff && <Stats added={item.diff.added} removed={item.diff.removed} />}</div>}
+			{item.diff && <Stats added={item.diff.added} removed={item.diff.removed} />}
+			{markdown && item.diff && <button type="button" className="quiet-action shown-markdown-toggle" aria-pressed={source} onClick={() => setSource(value => !value)}>
+				{source ? "Show formatted" : created ? "Show text" : "Show changes"}</button>}</div>}
 		{item.unlisted && <p className="shown-warning" role="note"><Icon name="warning" />Desk found {item.unlisted.count} changed cell{item.unlisted.count === 1 ? "" : "s"} the agent did not mention: {item.unlisted.examples.join(", ")}{item.unlisted.count > item.unlisted.examples.length ? ", …" : ""}</p>}
 		{item.kind === "image" && file && <InlineImage session={session} file={file} zoom={large} />}
 		{item.kind === "html" && file && <HtmlPage session={session} file={file} large={large} />}
 		{item.changes && <DocumentChangesView changes={item.changes} where={where} />}
 		{item.path && OFFICE_PAGES.test(item.path) && file && !item.missing && <OfficePages session={session} file={file} large={large} auto={office <= 1} />}
-		{item.diff && <CodeDiff text={item.diff.text} path={item.path} limit={large ? undefined : 80} />}
+		{markdown && !source ? <MarkdownFile session={session} file={file!} whole={large} />
+			: item.diff && <CodeDiff text={item.diff.text} path={item.path} limit={large ? undefined : 80} />}
 		{item.excerpt && <CodeExcerpt text={item.excerpt.text} firstLine={item.excerpt.firstLine} path={item.path} />}
 		{item.described && <p className="change-source">Described by the agent</p>}
 		{item.described && <ul className="shown-described">{item.described.map((change, index) => <li key={index}>

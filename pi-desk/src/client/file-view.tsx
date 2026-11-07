@@ -6,6 +6,7 @@ import { CHUNK_BYTES } from "../shared/attachments.ts";
 import { Icon } from "./icons.tsx";
 import { CopyButton } from "./transcript-parts.tsx";
 import { useReferenceQuery } from "./reference-origin.tsx";
+import { MARKDOWN_FILE, MarkdownText } from "./markdown-file.tsx";
 import { decodeBase64 } from "./blob-pool.ts";
 import { FILE_CHUNK_BYTES, FILE_DOWNLOAD_LIMIT, FILE_IMAGE_LIMIT, type FileChunk, type FileInfo, type FileReference, type FileTextPage } from "../shared/files.ts";
 
@@ -131,6 +132,7 @@ export function FileViewer({ session, reference, close }: { session: string; ref
 	const [image, setImage] = useState("");
 	const [download, setDownload] = useState("");
 	const [progress, setProgress] = useState<number>();
+	const [formatted, setFormatted] = useState(true);
 	const urls = useRef<string[]>([]);
 	const url = (blob: Blob) => { const value = URL.createObjectURL(blob); urls.current.push(value); return value; };
 	const textPage = async (file: FileInfo, position: { offset: number } | { line: number }) => {
@@ -190,6 +192,8 @@ export function FileViewer({ session, reference, close }: { session: string; ref
 		} catch (error) { if (!controller.signal.aborted) setError(String(error)); }
 		finally { if (!controller.signal.aborted) setProgress(undefined); }
 	};
+	// A Markdown file reads formatted, a page at a time as the text does.
+	const markdown = info?.kind === "text" && MARKDOWN_FILE.test(info.name);
 	return <SurfaceFrame className="artifact-dialog file-dialog" label={info?.name ?? reference.name} close={close} portal>
 		<header><div><h2 data-surface-heading tabIndex={-1}>{info?.name ?? reference.name}</h2><small>{info?.path ?? "File on the host"}</small></div>
 			<button aria-label="Close file" onClick={close}>×</button></header>
@@ -199,6 +203,7 @@ export function FileViewer({ session, reference, close }: { session: string; ref
 			{progress !== undefined && <><small role="status">{Math.round(progress / Math.max(1, info?.size ?? 1) * 100)}%</small>
 				<button onClick={() => { transfer.current?.abort(); setProgress(undefined); }}>Cancel download</button></>}
 			{download && <a href={download} download={info?.name}>Save file</a>}
+			{markdown && <button onClick={() => setFormatted(value => !value)}>{formatted ? "Show text" : "Show formatted"}</button>}
 			{info && <small>{info.size.toLocaleString()} bytes · {info.kind === "binary" ? "Download only" : info.kind}</small>}
 		</div>
 		{info?.kind === "text" && <div className="artifact-controls">
@@ -217,7 +222,8 @@ export function FileViewer({ session, reference, close }: { session: string; ref
 		{loading && <p className="muted" role="status">Loading file…</p>}
 		{error && <p className="error-text" role="alert">{error}</p>}
 		{page && <><small className="file-position">Bytes {page.offset.toLocaleString()}–{(page.next ?? info?.size ?? 0).toLocaleString()}{page.line ? ` · from line ${page.line}` : ""}</small>
-			<pre ref={content} className="artifact-text" tabIndex={0} aria-label="File contents">{page.text}</pre></>}
+			{markdown && formatted ? <div className="artifact-text file-markdown" tabIndex={0} aria-label="File contents"><MarkdownText text={page.text} /></div>
+				: <pre ref={content} className="artifact-text" tabIndex={0} aria-label="File contents">{page.text}</pre>}</>}
 		{image && <div className="file-image"><a href={image} target="_blank" rel="noopener noreferrer" aria-label="Open full-size image">
 			<img src={image} alt={info?.name} onError={() => setError("This image could not be decoded. Download it to inspect the file.")} /></a></div>}
 		{info?.kind === "image" && info.size > FILE_IMAGE_LIMIT && <p className="muted">Image previews are limited to 16 MiB.</p>}
