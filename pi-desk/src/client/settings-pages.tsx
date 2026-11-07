@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import type { UiAction, UiDetails } from "../../../pi-ui/index.ts";
 import type { SessionView, ViewSnapshot, WorkerCommand } from "../shared/protocol.ts";
+import type { WatchSummary } from "../shared/watches.ts";
 import { api } from "./connection.ts";
 import { Icon } from "./icons.tsx";
 import { ContextPanel } from "./context-panel.tsx";
@@ -173,6 +174,34 @@ function CopiesRow({ teleport, computer, connected }: { teleport?: { hold: boole
 		{error && <span className="error-text" role="alert">{error}</span>}
 	</Row>;
 }
+/**
+ * The watches Desk runs on a computer for its agents and those on other computers, and the watches its agents asked
+ * other computers to run. Stopping one tells its agent.
+ */
+function WatchList({ watches, computer, connected }: { watches?: WatchSummary[]; computer?: string; connected: boolean }) {
+	const [error, setError] = useState(""), [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
+	const stop = (id: string) => {
+		setError(""); setStopping(current => new Set(current).add(id));
+		void api(`/watches/${id}/stop`, {}, computer).catch(failure => {
+			setError(failure instanceof Error ? failure.message : String(failure));
+			setStopping(current => { const next = new Set(current); next.delete(id); return next; });
+		});
+	};
+	if (!watches) return <section className="settings-group"><Row label="Watches"><span className="muted">Update Desk on this computer to see its watches here.</span></Row></section>;
+	return <section className="settings-group">
+		{!watches.length && <Row label="Watches"><span className="muted">No agent is watching anything on this computer.</span></Row>}
+		{watches.map(watch => {
+			const busy = watch.state === "stopping" || stopping.has(watch.id);
+			const about = [watch.detail, watch.at ? `at ${when(watch.at)}` : "", `wakes ${watch.agent}${watch.home ? ` on ${watch.home}` : ""}`,
+				watch.runs ? `runs on ${watch.runs}` : "", watch.state === "new" ? "starting" : ""].filter(Boolean).join(" · ");
+			return <Row key={watch.id} label={watch.name}>
+				<span className="grow"><span className="settings-watch-title">{watch.title}</span><span className="muted">{about}</span></span>
+				<button className="quiet-action" disabled={!connected || busy} onClick={() => stop(watch.id)}>{busy ? "Stopping…" : "Stop"}</button>
+			</Row>;
+		})}
+		{error && <Row label=""><span className="error-text" role="alert">{error}</span></Row>}
+	</section>;
+}
 export function ComputerPage({ host, computer, connected, children, views, act }: {
 	host: WorkspaceState; computer?: Computer; connected: boolean; children: { accounts: ReactNode; services: ReactNode; updates?: ReactNode };
 	views: ViewSnapshot[]; act: Act;
@@ -199,6 +228,8 @@ export function ComputerPage({ host, computer, connected, children, views, act }
 				})()}</span>
 			</Row>
 		</section>
+		<h3 className="settings-subheading">Watches</h3>
+		<WatchList watches={computer ? computer.watches : host.watches} computer={computer?.id} connected={connected} />
 		<h3 className="settings-subheading">Models & API keys</h3>
 		{children.accounts}
 		<h3 className="settings-subheading">API services</h3>

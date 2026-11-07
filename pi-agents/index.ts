@@ -198,6 +198,8 @@ export default function party(pi: ExtensionAPI): void {
 		ctx = context; session = ctx.sessionManager.getSessionId();
 		providePrimaryAgents(session, primary); stopped = false; armed = false; preparingPrompt = false; signature = "";
 		source = ui.source("messages");
+		// Desk's background processes (watch programs) are not agents: nothing may message them or start their turns.
+		if (process.env.PI_DESK_BACKGROUND) return;
 		safely(() => {
 			database().register(session, owner, label(), ctx!.cwd, child ? "child" : "session", ctx!.sessionManager.getSessionFile());
 			if (!child) { armed = true; database().setDelivery(session, owner, armed); }

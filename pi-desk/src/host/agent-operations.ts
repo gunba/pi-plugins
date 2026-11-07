@@ -13,6 +13,7 @@ import type { Parties } from "./parties.ts";
 import type { PartyNetwork } from "./party-network.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
 import type { Teleport } from "./teleport.ts";
+import { WATCHES, type WatchService } from "./watches.ts";
 
 /** An agent as this computer names it: its id here, or id@computer for one on another computer. */
 const requester = (computer: string, sender: string) => computer === "local" ? sender : `${sender}@${computer}`;
@@ -46,6 +47,7 @@ interface AgentHost {
 	network(): PartyNetwork | undefined;
 	teleport(): Teleport | undefined;
 	search?(): ConversationSearch | undefined;
+	watches?(): WatchService | undefined;
 	moves: ConversationMoves;
 }
 
@@ -63,7 +65,7 @@ export class AgentOperations {
 		const teleport = this.host.teleport();
 		return { name: hostname(), platform: process.platform, version: RELEASE.version,
 			operations: [HOME_WORK, "create", "fork", "resume", "files", "settings", "close", MESSAGE_PARTS, ...teleport ? [...teleport.operations(), "move"] : [],
-				...this.host.search?.()?.operations() ?? []] };
+				...this.host.search?.()?.operations() ?? [], ...this.host.watches?.() ? [WATCHES] : []] };
 	}
 
 	/** Carry out the requests agents on this computer have made of it. */

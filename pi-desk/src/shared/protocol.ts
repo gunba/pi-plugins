@@ -204,6 +204,8 @@ export interface HostState { release: ReleaseInfo; operator?: import("./operator
 	teleport?: { hold: boolean; send: boolean; copies: ConversationCopy[] };
 	/** This computer has an ElevenLabs key for dictation; browsers send recordings to a computer that does. */
 	dictation?: boolean;
+	/** The watches this computer runs, and those its agents asked other computers to run (host watches.ts). */
+	watches?: import("./watches.ts").WatchSummary[];
 	relay?: { origin: string; appOrigin: string; state: "connecting" | "online" | "offline"; error?: string } }
 /** A computer's dictation settings as the settings page sees them; the ElevenLabs key never leaves the computer. */
 export interface DictationSettings { configured: boolean; keyterms: string[]; hourlyRate?: number; keytermHourlyRate?: number }
@@ -222,6 +224,8 @@ export interface WorkerInit {
 	homeDirectory?: string;
 	/** Explicit user resume may ask a participating terminal owner to shut down. */
 	takeover?: boolean;
+	/** A background process with no conversation: "programs" runs watches' programs for Desk (program-runner.ts). */
+	background?: "programs";
 }
 export type WorkerCommand =
 	| (FileCommand & { origin: ReferenceOrigin })
@@ -264,7 +268,9 @@ export type WorkerCommand =
 	| { kind: "name"; name: string }
 	| { kind: "model"; provider: string; id: string; makeDefault?: boolean; context?: { mode: "portable"; leaf: string } }
 	| { kind: "thinking"; level: string }
-	| { kind: "reload" };
+	| { kind: "reload" }
+	/** Run a watch's program with this process's tools, outside any turn; only Desk's program runner sends it. */
+	| { kind: "program"; code: string };
 export interface WorkerState {
 	runtime?: WorkerRuntimeInfo;
 	snapshot?: SessionSnapshot;

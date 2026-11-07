@@ -5,6 +5,7 @@ import { SEARCH_PACKET_TYPES, type SearchPacket } from "../shared/conversation-s
 import type { ConversationSearch, SearchBinding } from "./conversation-search.ts";
 import type { SettingsSync } from "./settings-sync.ts";
 import { TELEPORT_PACKETS, type Teleport, type TeleportPacket } from "./teleport.ts";
+import { WATCH_PACKETS, WATCHES, type WatchPacket, type WatchService } from "./watches.ts";
 
 import { HOME_WORK, type HomeWork } from "../shared/home.ts";
 
@@ -35,9 +36,10 @@ export class PartyNetwork {
 	private work = new Map<string, HomeWork[]>();
 	private sentWork = new Map<string, string>();
 	private localWork?: () => HomeWork[];
+	private watches?: () => WatchService | undefined;
 	constructor(store: PartyStore, scope: string, changed: () => void, lifecycle?: PartyNetwork["lifecycle"], self?: PartyComputer, sync?: SettingsSync, teleport?: Teleport, search?: ConversationSearch,
-		localWork?: () => HomeWork[]) {
-		this.localWork = localWork;
+		localWork?: () => HomeWork[], watches?: () => WatchService | undefined) {
+		this.localWork = localWork; this.watches = watches;
 		this.store = store; this.changed = changed; this.self = self; this.sync = sync; this.teleport = teleport;
 		store.setNetworkScope(scope); this.lifecycle = lifecycle; lifecycle?.operations.setScope(scope);
 		this.timer = setInterval(() => this.flush(), 10_000); this.timer.unref();
@@ -106,6 +108,12 @@ export class PartyNetwork {
 				if (this.closed || this.peers.get(id) !== send) return Promise.reject(Error("The search peer disconnected."));
 				return send(packet as PartyPacket);
 			});
+			// Watches agents here asked that computer for, and news of the watches its agents have here.
+			const watches = this.watches?.();
+			if (watches && this.announced.get(id)?.operations.includes(WATCHES)) for (const packet of watches.outgoing(id)) {
+				if (this.closed || this.peers.get(id) !== send) return;
+				await send(packet as PartyPacket);
+			}
 		} finally { this.flushing.delete(id); }
 	}
 	/** Ask a computer for the next part of a held message's files: one at a time, so a large set never fills the channel. */
@@ -208,12 +216,17 @@ export class PartyNetwork {
 			});
 			return;
 		}
+		const watches = this.watches?.();
+		if (watches && WATCH_PACKETS.has(String(packet.type))) {
+			await watches.receive(id, packet, reply => this.send(id, reply));
+			return;
+		}
 		throw Error("Unknown party packet.");
 	}
 	/** This computer's announcement changed (what it supports): every computer is sent it again. */
 	reannounce(self: PartyComputer): void { this.self = self; this.directories.clear(); this.flush(); }
 	/** One packet to a connected computer. */
-	send(id: string, packet: TeleportPacket | SearchPacket): Promise<void> {
+	send(id: string, packet: TeleportPacket | SearchPacket | WatchPacket): Promise<void> {
 		const send = this.peers.get(id);
 		return send ? send(packet as PartyPacket) : Promise.reject(new Error("That computer is not connected."));
 	}

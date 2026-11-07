@@ -9,6 +9,7 @@ import type { Parties } from "./parties.ts";
 import type { PartyNetwork } from "./party-network.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
 import { COPIES, HOLD, placeMoved, sessionFolder, type Conversation, type Move, type Teleport } from "./teleport.ts";
+import { CLOSED, MOVED } from "./watches.ts";
 
 interface MoveHost {
 	teleport(): Teleport | undefined;
@@ -71,7 +72,7 @@ export class ConversationMoves {
 	 * Stops a conversation here: for good when it moved, or is moving, to another computer. Kept, it closes as Desk's
 	 * "Close until needed" does: it stays in the sidebar and its watches go on, reopening it.
 	 */
-	async stop(managed: ManagedSession, moved?: Move, keep = false): Promise<void> {
+	async stop(managed: ManagedSession, moved?: Move, keep = false, ended = moved ? MOVED : CLOSED): Promise<void> {
 		const worker = managed.worker;
 		if (worker) {
 			managed.keepOnClose = keep;
@@ -79,6 +80,7 @@ export class ConversationMoves {
 			for (let wait = 0; wait < 600 && managed.worker === worker; wait++) await new Promise(resolve => setTimeout(resolve, 100));
 			if (managed.worker === worker) throw new Error("The conversation did not stop in time.");
 		}
+		if (!keep) this.core.endWatches(managed.view.agentId ?? managed.view.snapshot?.id, ended);
 		managed.view = keep ? { ...managed.view, state: "closed", kept: true }
 			: { ...managed.view, state: "closed", kept: undefined, wakes: undefined, watching: undefined, watchEvery: undefined, asleep: undefined, waiting: undefined, ...(moved ? { moved } : {}) };
 		this.core.persist(true); this.core.emit({ type: "session", session: managed.view });
@@ -99,7 +101,7 @@ export class ConversationMoves {
 		for (let wait = 0; busy() && wait < 600 && this.host.moving(session); wait++) await new Promise(resolve => setTimeout(resolve, 100));
 		if (busy()) throw new Error("It is working on its computer: let it finish, or stop it, then move it.");
 		const title = managed.view.snapshot?.name ?? managed.view.name ?? managed.view.snapshot?.title ?? managed.view.title;
-		await this.stop(managed);
+		await this.stop(managed, undefined, false, MOVED);
 		return { file, cwd: managed.view.cwd, ...(title ? { title } : {}) };
 	}
 

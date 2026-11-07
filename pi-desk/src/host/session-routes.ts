@@ -5,6 +5,7 @@ import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
 import { commandFrom, string, workerCommandFrom } from "./commands.ts";
 import { reply, type HostCore } from "./host-core.ts";
 import type { SavedSessionIndex } from "./saved-sessions.ts";
+import { REMOVED } from "./watches.ts";
 import { StaleGeneration } from "./worker-errors.ts";
 
 /**
@@ -102,6 +103,7 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 				// Removing a conversation from the sidebar cancels Desk's reopening it for a watch. Deleting its wake files tells
 				// what writes them, which goes on while it sleeps, to stop (pi-ui UiView.wakeFiles).
 				if (data.keep !== true) for (const file of managed.view.asleep?.files ?? []) rmSync(file.path, { force: true });
+				if (data.keep !== true) core.endWatches(managed.view.agentId ?? managed.view.snapshot?.id, REMOVED);
 				managed.view = { ...managed.view, state: "closed", interrupted: false, error: undefined, kept: data.keep === true || undefined,
 					...(data.keep === true ? {} : { wakes: undefined, watching: undefined, watchEvery: undefined, asleep: undefined, waiting: undefined }),
 					snapshot: undefined, ui: undefined, inputs: core.inputs.pending(managed.view.key) };
@@ -111,6 +113,8 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 			}
 			managed.keepOnClose = data.keep === true;
 			const result = await managed.worker.submitControl({ kind: "close", ...(data.keep === true ? { keep: true } : {}) }, managed.worker.generation, string(data.id, 100));
+			// Removed from the sidebar, it has nothing for its watches to wake; kept, they go on and reopen it.
+			if (data.keep !== true) core.endWatches(managed.view.agentId ?? managed.view.snapshot?.id, REMOVED);
 			if (result.control.state === "running") {
 				core.inputs.interrupt(managed.view.key, "The conversation is closing");
 				core.inputEvent(managed);

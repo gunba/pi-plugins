@@ -41,7 +41,9 @@ export type PartyPacket =
 	| { type: "message-file-part"; message: string; name: string; offset: number; data?: string; error?: string }
 	/** Conversation copies and moves (Desk teleport.ts), sent only to computers that announce "copies". */
 	| { type: "copies-status" | "copies" | "copies-ack" | "moves" | "copy-fetch" | "copy-data"; [key: string]: unknown }
-	| { type: "search-inventory" | "search-offer" | "search-fetch" | "search-data" | "search-query" | "search-result"; [key: string]: unknown };
+	| { type: "search-inventory" | "search-offer" | "search-fetch" | "search-data" | "search-query" | "search-result"; [key: string]: unknown }
+	/** Watches run for agents on other computers (Desk watches.ts), sent only to computers that announce "watches". */
+	| { type: "watch-requests" | "watch-results" | "watch-events" | "watch-acks"; [key: string]: unknown };
 
 export function record(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw Error("Invalid party packet.");

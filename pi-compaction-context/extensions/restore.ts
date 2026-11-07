@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, resolve } from "node:path";
 import type { ExtensionAPI, SessionBeforeCompactEvent, SessionProjection } from "@earendil-works/pi-coding-agent";
 import { PLAN_READ, planText } from "../../pi-plan/extensions/plan.ts";
-import { WATCH_ENTRY, describeWatch, type WatchSpec } from "../../pi-watch/index.ts";
+import { WATCH_ENTRY, describeWatch, watchList, type WatchSpec } from "../../pi-watch/index.ts";
 
 /**
  * What Claude Code puts back after a summary, so the conversation does not have to find it again: the files it
@@ -63,9 +63,10 @@ export interface Restored { text: string; files: string[]; skills: string[]; pla
 
 /**
  * Sections to follow the summary. Files and skills come from the newest calls first and are read again now; those in
- * the kept messages are already in context. The plan is current; the watches are those still running.
+ * the kept messages are already in context. The plan is current; the watches are those still running: as pi-watch
+ * lists them for the session when it runs in this process (Desk runs them outside it), else as the branch records them.
  */
-export function restore(pi: ExtensionAPI, cwd: string, branch: readonly Entry[], kept: readonly AgentMessage[]): Restored {
+export function restore(pi: ExtensionAPI, cwd: string, branch: readonly Entry[], kept: readonly AgentMessage[], sessionId?: string): Restored {
 	const seen = new Set(kept.flatMap(message => fileCalls(message).map(call => absolute(call.path, cwd))));
 	const files: string[] = [], skills: string[] = [];
 	for (let index = branch.length - 1; index >= 0; index--) {
@@ -102,6 +103,13 @@ export function restore(pi: ExtensionAPI, cwd: string, branch: readonly Entry[],
 		skillParts.push(`### Skill: ${basename(dirname(path))}\nPath: ${path}\n\n${body}`);
 	}
 	if (skillParts.length) sections.push(`## Skills loaded earlier\nThese skills were loaded earlier in this conversation, before the summary, not on the current turn. They are here so their guidance still applies; do not repeat their one-time setup steps.\n\n${skillParts.join("\n\n---\n\n")}`);
+	const watches = (sessionId ? watchList(sessionId) : undefined) ?? recordedWatches(branch);
+	if (watches.length) sections.push(`## Watches still running\nEach reports back on its own:\n${watches.map(item => `- ${item}`).join("\n")}`);
+	return { text: sections.join("\n\n"), files: restoredFiles, skills: restoredSkills, plan, watches: watches.length };
+}
+
+/** The watches a branch's records leave running, as pi-watch lists them ("w3: `make`"). */
+function recordedWatches(branch: readonly Entry[]): string[] {
 	const watches = new Map<string, WatchSpec>();
 	for (const entry of branch) {
 		if (entry.type !== "custom" || entry.customType !== WATCH_ENTRY) continue;
@@ -109,6 +117,5 @@ export function restore(pi: ExtensionAPI, cwd: string, branch: readonly Entry[],
 		if (record?.op === "start" && record.watch) watches.set(record.watch.id, record.watch);
 		else if (record?.op === "end" && record.id) watches.delete(record.id);
 	}
-	if (watches.size) sections.push(`## Watches still running\nEach reports back on its own:\n${[...watches.values()].map(spec => `- ${spec.id}: ${describeWatch(spec)}`).join("\n")}`);
-	return { text: sections.join("\n\n"), files: restoredFiles, skills: restoredSkills, plan, watches: watches.size };
+	return [...watches.values()].map(spec => `${spec.id}: ${describeWatch(spec)}`);
 }

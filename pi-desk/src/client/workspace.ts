@@ -20,6 +20,7 @@ export interface Computer {
 	dictation?: boolean;
 	cacheCompaction?: number;
 	settingsSync?: HostState["settingsSync"];
+	watches?: HostState["watches"];
 }
 export interface WorkspaceSession extends SessionView { computer?: string }
 export interface WorkspaceState extends HostState { sessions: WorkspaceSession[]; computers?: Computer[]; directoryError?: string }

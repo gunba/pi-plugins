@@ -7,6 +7,8 @@ import { homedir, hostname } from "node:os";
 import { SessionLease } from "../../../pi-session-ownership/lease.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { PartyOperations } from "../../../pi-agents/operations.ts";
+import { agentId } from "../../../pi-agents/network.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { AccessStore } from "./access.ts";
 import { SessionWorker } from "./worker-client.ts";
 import { readWorkerRecord, workerDirectory, workerOccupied } from "./worker-registry.ts";
@@ -48,6 +50,7 @@ import { HostEvents } from "./host-events.ts";
 import { HostHttp } from "./host-http.ts";
 import { HostUpdates } from "./host-updates.ts";
 import { asksInBackground, settle } from "../shared/attention.ts";
+import { WATCHES, WatchService } from "./watches.ts";
 
 /** What an agent is told when Desk continues its work after the computer stopped mid-turn. */
 const RESUME_NOTE = "Desk restarted after this computer stopped while you were working. Commands, tools and helpers that were running then were stopped and are not run again. Check where your work stands (files, processes, partial results) before carrying on.";
@@ -82,6 +85,8 @@ export class DeskHost {
 	private readonly wakeTried = new Map<string, { wakes: number; at: number }>();
 	private parties?: Parties;
 	private partyOperations?: PartyOperations;
+	/** The computer's watches, which Desk runs for the agents they wake (watches.ts). */
+	private watches?: WatchService;
 	private dictation?: Dictation;
 	private catalogTimer?: ReturnType<typeof setTimeout>;
 	private sessions = new Map<string, ManagedSession>();
@@ -138,15 +143,16 @@ export class DeskHost {
 			drainInputs: managed => this.drainInputs(managed),
 			attachments: key => this.attachments(key),
 			refreshParties: () => this.refreshParties(),
+			endWatches: (agent, reason) => this.watches?.endAgent(agent, reason),
 		};
 		const signingIn = () => !!this.logins?.signingIn;
 		this.updates = new HostUpdates(this.core, { runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, signingIn });
 		this.moves = new ConversationMoves(this.core, { teleport: () => this.teleport, parties: () => this.parties, network: () => this.account.network,
 			self: () => this.account.identity?.device.id, moving: session => this.partyOperations?.moving(session) });
 		this.agents = new AgentOperations(this.core, { parties: () => this.parties!, operations: () => this.partyOperations, network: () => this.account.network,
-			teleport: () => this.teleport, search: () => this.search, moves: this.moves });
+			teleport: () => this.teleport, search: () => this.search, watches: () => this.watches, moves: this.moves });
 		this.account = new AccountConnection(this.core, { parties: () => this.parties!, operations: () => this.partyOperations!,
-			settingsSync: () => this.settingsSync, teleport: () => this.teleport, search: () => this.search,
+			settingsSync: () => this.settingsSync, teleport: () => this.teleport, search: () => this.search, watches: () => this.watches,
 			computer: () => this.agents.computer(), execute: (computer, request) => this.agents.execute(computer, request),
 			request: (access, request) => this.api.handle(access, request),
 			watch: handler => {
@@ -166,7 +172,7 @@ export class DeskHost {
 		this.api = new HostApi(this.core, { access: () => this.access, runtimeHome: () => this.runtimeHome, logins: () => this.logins, home: () => this.home,
 			dictation: () => this.dictation, folders: () => this.folders!, saved: () => this.saved!, teleport: () => this.teleport, search: () => this.search,
 			account: this.account, agents: this.agents, moves: this.moves, updates: this.updates, efficiency: this.efficiency, events: this.events,
-			presence: () => this.presence });
+			presence: () => this.presence, watches: () => this.watches });
 		this.http = new HostHttp(this.core, { access: () => this.access, control: () => this.control, status: () => this.hostStatus(), checkpoints: () => this.checkpoints,
 			runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, signingIn,
 			stop: preserveWorkers => {
@@ -244,6 +250,12 @@ export class DeskHost {
 			this.partyOperations = new PartyOperations(join(this.options.agentDir, "party"));
 			this.partyOperations.startHost(); this.agents.flushLocal();
 			this.partyOperations.settled = (request, computer, response) => { if (request.kind === "move" && response.error) void this.moves.failed(request, computer, response.error); };
+			// Without its watch service, Desk still runs; conversations then run their watches themselves (pi-watch/index.ts).
+			try { this.watches = new WatchService(this.watchHost(directory)); this.watches.start(); }
+			catch (error) {
+				console.error("Desk can't run watches:", error instanceof Error ? error.message : String(error));
+				const failed = this.watches; this.watches = undefined; await failed?.close().catch(() => {});
+			}
 			this.home = new Home(this.core,
 				() => this.account.localOnly || !!this.teleport?.settings.hold,
 				() => this.account.network?.homeWork() ?? [], async notice => {
@@ -275,7 +287,7 @@ export class DeskHost {
 			this.control = new HostControl(this.origin);
 			this.heartbeat = setInterval(() => {
 				this.events.heartbeat();
-				this.updates.refresh(); this.refreshParties(); void this.updates.maintain(); void this.retireLogins(); this.wakeDue(); this.sleepIdle();
+				this.updates.refresh(); this.refreshParties(); void this.updates.maintain(); void this.retireLogins(); this.wakeDue(); this.sleepIdle(); this.watches?.heartbeat();
 				try { this.partyOperations?.touchHost(); this.agents.flushLocal(); }
 				catch { console.error("Party service presence could not be saved."); }
 			}, 20_000);
@@ -312,7 +324,7 @@ export class DeskHost {
 			this.inputs?.close();
 			this.inputs = undefined;
 			this.account.close(); await this.search?.close();
-			this.home?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
+			this.home?.close(); await this.watches?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close();
 			await new Promise<void>(resolve => this.server.close(() => resolve()));
 			try { if (this.control) removeHostRecord(directory, this.control.record.instance); }
 			finally { this.hostLease.close(); }
@@ -351,7 +363,8 @@ export class DeskHost {
 			...(this.dictation?.available ? { dictation: true } : {}),
 			...(this.updates.cacheCompaction ? { cacheCompaction: this.updates.cacheCompaction } : {}),
 			...(this.settingsSync?.last ? { settingsSync: this.settingsSync.last } : {}),
-			...(this.teleport ? { teleport: { ...this.teleport.settings, copies: this.moves.keptCopies() } } : {}) };
+			...(this.teleport ? { teleport: { ...this.teleport.settings, copies: this.moves.keptCopies() } } : {}),
+			...(this.watches ? { watches: this.watches.list() } : {}) };
 	}
 
 	private refreshParties(): void {
@@ -487,7 +500,9 @@ export class DeskHost {
 			if (managed.worker || !view.file || view.moved || !isOpenSession(view)) continue;
 			const sleeping = view.state === "closed" && view.kept === true && !view.interrupted;
 			if (managed.resume) { this.resumeStopped(managed); continue; }
-			const due = view.wakes && view.wakes <= now ? view.wakes : view.watching && view.interrupted ? 0
+			// Desk runs the watches of conversations whose agents gave them to it, and reopens those itself (watches.ts).
+			const desk = this.watches?.has(view.agentId);
+			const due = !desk && view.wakes && view.wakes <= now ? view.wakes : !desk && view.watching && view.interrupted ? 0
 				: sleeping && view.asleep && hasNews(view.asleep) ? -1 : undefined;
 			const tried = this.wakeTried.get(view.key);
 			if (due === undefined || (tried?.wakes === due && tried.at > now - 15 * 60_000)) continue;
@@ -536,6 +551,77 @@ export class DeskHost {
 				console.error(`Could not close ${view.title ?? view.key} to sleep:`, error instanceof Error ? error.message : String(error));
 			});
 		}
+	}
+
+	/** What the watch service needs of the host: who is running, reopening conversations, and the other computers. */
+	private watchHost(directory: string): ConstructorParameters<typeof WatchService>[0] {
+		const conversation = (agent: string) => [...this.sessions.values()].filter(item => item.view.agentId === agent)
+			.sort((a, b) => Number(!!b.worker) - Number(!!a.worker) || Number(!b.view.moved) - Number(!a.view.moved) || b.view.created - a.view.created)[0];
+		let changed: ReturnType<typeof setTimeout> | undefined;
+		return {
+			agentDir: this.options.agentDir, sessionDir: this.options.sessionDir, deskDirectory: directory,
+			closing: () => this.closing,
+			live: agent => { const managed = conversation(agent); return !!managed?.worker && managed.view.state !== "failed"; },
+			wake: agent => this.wakeForWatch(conversation(agent), agent),
+			hints: agents => {
+				for (const agent of agents) {
+					const managed = conversation(agent);
+					// A running conversation's own view shows its watches.
+					if (!managed || managed.worker || !isOpenSession(managed.view)) continue;
+					const hints = this.watches?.hints(agent) ?? {};
+					const view = { ...managed.view, wakes: hints.wakes, watching: hints.watching, watchEvery: hints.watchEvery,
+						waiting: managed.view.kept ? hints.waiting : managed.view.waiting };
+					if (JSON.stringify([view.wakes, view.watching, view.watchEvery, view.waiting]) === JSON.stringify([managed.view.wakes, managed.view.watching, managed.view.watchEvery, managed.view.waiting])) continue;
+					managed.view = view;
+					this.events.emit({ type: "session", session: managed.view }); this.persistEvent(true);
+				}
+			},
+			member: (computer, agent) => !!this.parties?.store.member(agentId(computer, agent)),
+			computers: () => (this.account.network?.computers() ?? []).map(computer => ({ id: computer.id, name: computer.name ?? computer.id, online: computer.online,
+				watches: computer.operations.includes(WATCHES), ...(computer.platform ? { platform: computer.platform } : {}) })),
+			self: () => this.account.identity?.device.id,
+			label: (agent, computer) => {
+				if (computer) return this.parties?.store.member(agentId(computer, agent))?.label ?? agent.slice(0, 8);
+				const view = conversation(agent)?.view;
+				return view?.snapshot?.name ?? view?.name ?? view?.snapshot?.title ?? view?.title ?? this.parties?.store.member(agent)?.label ?? agent.slice(0, 8);
+			},
+			flush: () => this.account.network?.flush(),
+			changed: () => {
+				if (changed || this.closing) return;
+				changed = setTimeout(() => { changed = undefined; if (!this.closing) this.events.emit({ type: "state", state: this.state() }); }, 250);
+				changed.unref?.();
+			},
+		};
+	}
+
+	/**
+	 * Reopens a conversation for its watch's news, as wakeDue does for a time: one asleep by choice goes back to sleep
+	 * when done. One Desk doesn't list, from Pi in a terminal, opens here. Removed, moved or missing, it is gone.
+	 */
+	private wakeForWatch(managed: ManagedSession | undefined, agent: string): "waking" | "later" | "gone" {
+		if (this.closing || this.checkpoints?.held || this.restoringUpdate) return "later";
+		if (managed) {
+			const { view } = managed;
+			if (managed.worker) return "waking";
+			if (!view.file || view.moved || !isOpenSession(view)) return "gone";
+			const sleeping = view.state === "closed" && view.kept === true && !view.interrupted;
+			try {
+				const key = this.createSession(view.cwd, view.file, managed);
+				const reopened = this.sessions.get(key);
+				if (reopened && sleeping) reopened.sleepWhenIdle = true;
+			} catch (error) { console.error(`Could not reopen ${view.title ?? view.key} for its watch:`, error instanceof Error ? error.message : String(error)); }
+			return "waking";
+		}
+		const member = this.parties?.store.member(agent);
+		const file = this.parties?.store.sessionFile(agent)
+			?? (member ? SessionManager.findById(member.cwd, agent, configuredSessionDirectory(member.cwd, this.options.agentDir, this.options.sessionDir)) : undefined);
+		if (!file) return "gone";
+		try {
+			const key = this.createSession(member?.cwd ?? this.options.cwd, file);
+			const opened = this.sessions.get(key);
+			if (opened) opened.sleepWhenIdle = true;
+		} catch (error) { console.error("Could not open a conversation for its watch:", error instanceof Error ? error.message : String(error)); }
+		return "waking";
 	}
 
 	private reconnectWorker(managed: ManagedSession, instance: string): void {
@@ -863,6 +949,7 @@ export class DeskHost {
 		this.updates.close();
 		this.account.close();
 		try { await this.search?.close(); } catch (error) { errors.push(error); }
+		try { await this.watches?.close(); } catch (error) { errors.push(error); }
 		try { this.home?.close(); this.partyOperations?.stopHost(); this.partyOperations?.close(); this.parties?.close(); } catch (error) { errors.push(error); }
 		try { await this.saved?.close(); } catch (error) { errors.push(error); }
 		this.events.end();

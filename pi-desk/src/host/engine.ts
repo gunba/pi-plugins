@@ -1,5 +1,7 @@
 import { realpathSync } from "node:fs";
 import { createStructuredToolExtension, createStructuredSearchExtension } from "../../../pi-tools/index.ts";
+import { RUN_PROGRAM, type ProgramRun } from "../../../pi-tools/saved.ts";
+import { PROGRAM_LIMIT_MS } from "../../../pi-watch/common.ts";
 import { describeAgentTools, describeSessionTools } from "../../../pi-ui/tool-descriptions.ts";
 import { operatorAvailability } from "./operator.ts";
 import { randomUUID } from "node:crypto";
@@ -205,6 +207,8 @@ export class DeskEngine {
 
 	private async initialize(options: WorkerInit): Promise<SessionSnapshot> {
 		this.attachmentScope = options.attachmentScope;
+		// Extensions read this to leave a background process out of what conversations do (pi-agents doesn't register it).
+		if (options.background) process.env.PI_DESK_BACKGROUND = options.background;
 		if (options.agentDir) process.env.PI_CODING_AGENT_DIR = realpathSync(options.agentDir);
 		const agentDir = getAgentDir();
 		const operatorDirectory = options.deskDirectory ?? join(agentDir, "desk");
@@ -606,6 +610,35 @@ export class DeskEngine {
 		return value;
 	}
 
+	private programs = 0;
+	/**
+	 * Runs a watch's program for Desk (program-runner.ts) as pi-tools runs codemode, with this session's tools and
+	 * outside any turn; its result as text. Nested calls name the assistant message that issued them, which a session
+	 * that never ran a turn lacks, so one is put in its memory only.
+	 */
+	private runProgram(session: AgentSession, code: string): Promise<string> {
+		const runner = session.extensionRunner;
+		if (!runner || !this.events) throw new Error("This process can't run programs.");
+		if (!session.agent.state.messages.some(message => message.role === "assistant")) {
+			const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+			session.agent.state.messages = [...session.agent.state.messages, { role: "assistant", content: [{ type: "text", text: "Running a watch's program." }],
+				api: session.model?.api ?? "openai-responses", provider: session.model?.provider ?? "pi-desk", model: session.model?.id ?? "watch-program",
+				usage: { ...zero, totalTokens: 0, cost: { ...zero, total: 0 } }, stopReason: "stop", timestamp: Date.now() } as never];
+		}
+		const controller = new AbortController(), timer = setTimeout(() => controller.abort(), PROGRAM_LIMIT_MS);
+		const ctx = runner.createToolContext(`watch-program-${++this.programs}`, controller.signal);
+		return new Promise<string>(resolve => {
+			let claimed = false, answered = false;
+			const done = (text: string) => {
+				if (answered) return;
+				answered = true; clearTimeout(timer);
+				resolve(controller.signal.aborted ? `${text}\n(stopped after ${PROGRAM_LIMIT_MS / 1000} s)`.trim() : text);
+			};
+			this.events!.emit(RUN_PROGRAM, { ctx, code, signal: controller.signal, claim: () => { claimed = true; }, done } satisfies ProgramRun);
+			if (!claimed) done("(could not run: programs need pi-tools)");
+		});
+	}
+
 	async command(generation: string, command: WorkerCommand): Promise<unknown> {
 		if (generation !== this.presentation.generation) throw new StaleGeneration();
 		if (command.kind === "answer") { this.presentation.answer(command.id, command.answer); return; }
@@ -631,6 +664,7 @@ export class DeskEngine {
 		}
 		switch (command.kind) {
 			case "snapshot": return this.snapshot();
+			case "program": return { text: await this.runProgram(session, command.code) };
 			case "models": await this.refreshModels(); return this.snapshot();
 			case "native_read": return readNativeCommand(session, command.name, command.args);
 			case "learn": this.learning?.setEnabled(command.enabled); this.scheduleSnapshot(); return;

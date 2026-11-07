@@ -5,7 +5,8 @@ import { hostname } from "node:os";
 import { createBashToolDefinition, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, getAgentDir, truncateTail,
 	type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import type { Watches, WatchSpec } from "./index.ts";
+import { PROGRAM_LIMIT_MS } from "./common.ts";
+import type { WatchBackend, WatchSpec } from "./index.ts";
 
 const Parameters = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
@@ -57,7 +58,7 @@ function environment(ctx: ExtensionContext): NodeJS.ProcessEnv {
 	const env = { ...process.env }, key = Object.keys(env).find(name => name.toLowerCase() === "path") ?? "PATH", bin = join(getAgentDir(), "bin");
 	const delimiter = process.platform === "win32" ? ";" : ":";
 	if (!(env[key] ?? "").split(delimiter).includes(bin)) env[key] = [bin, env[key]].filter(Boolean).join(delimiter);
-	for (const name of ["PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"]) delete env[name];
+	for (const name of ["PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL", "PI_DESK_BACKGROUND"]) delete env[name];
 	env.PI_SESSION_ID = ctx.sessionManager.getSessionId();
 	const file = ctx.sessionManager.getSessionFile();
 	if (file) env.PI_SESSION_FILE = file;
@@ -71,7 +72,7 @@ function environment(ctx: ExtensionContext): NodeJS.ProcessEnv {
  * it ends and every `warn` seconds with the readings of its `progress` command. Nothing is stopped for taking long:
  * the agent decides, from its progress, whether to stop it.
  */
-export function registerBash(pi: ExtensionAPI, current: () => Watches | undefined, labels: Map<string, string>): void {
+export function registerBash(pi: ExtensionAPI, current: () => WatchBackend | undefined, labels: Map<string, string>, background = false): void {
 	const base = createBashToolDefinition(process.cwd());
 	// Steering reaches the agent only once its tool calls return.
 	pi.on("input", event => { if (event.streamingBehavior === "steer" && event.source !== "extension") for (const stop of waiting) stop(); });
@@ -89,7 +90,8 @@ export function registerBash(pi: ExtensionAPI, current: () => Watches | undefine
 			const watches = current();
 			if (!watches || watches.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("bash is not ready in this conversation.");
 			watches.useContext(ctx);
-			const shell = watches.shell(), started = Date.now(), wait = Math.min(params.wait ?? WAIT_S, WAIT_S) * 1000;
+			// In Desk's process for watches' programs, nothing can follow a command after its call: it has the program's time.
+			const shell = watches.shell(), started = Date.now(), wait = background ? PROGRAM_LIMIT_MS : Math.min(params.wait ?? WAIT_S, WAIT_S) * 1000;
 			const warn = params.warn ?? WARN_S, progress = params.progress?.trim() || undefined;
 			const spec: WatchSpec = { id: `b${randomUUID()}`, mode: "output", command: shell.prefix ? `${shell.prefix}\n${params.command}` : params.command,
 				cwd: ctx.cwd, created: started, computer: hostname(), ...(label ? { label } : {}),
@@ -114,6 +116,11 @@ export function registerBash(pi: ExtensionAPI, current: () => Watches | undefine
 				watches.stopRun(spec);
 				await Promise.race([ended, new Promise(resolve => setTimeout(resolve, 2_000))]);
 				throw new Error(`${tail(log).text}\n\nCommand aborted`.trim());
+			}
+			if (outcome !== "ended" && !existsSync(exit) && background) {
+				watches.stopRun(spec);
+				await Promise.race([ended, new Promise(resolve => setTimeout(resolve, 2_000))]);
+				throw new Error(`${tail(log).text}\n\nStopped after ${Math.round((Date.now() - started) / 1000)} s: a watch's program can't leave commands running.`.trim());
 			}
 			if (outcome !== "ended" && !existsSync(exit)) {
 				const adopted = watches.adopt({ ...spec, command: params.command });

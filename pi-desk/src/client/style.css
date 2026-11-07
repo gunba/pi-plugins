@@ -2364,6 +2364,8 @@ details[open] > summary:before {
 .settings-agent-limit > .setting-control > input { max-width:140px; }
 .settings-row-value { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; min-width:0; }
 .settings-row-value > .grow { flex:1; min-width:180px; }
+.settings-row-value > .grow > .settings-watch-title { display:block; overflow-wrap:anywhere; }
+.settings-row-value > .grow > .settings-watch-title + .muted { display:block; font-size:12px; overflow-wrap:anywhere; }
 .settings-row-value select { width:auto; max-width:100%; }
 .settings-row-value input[role="switch"] { margin:0; }
 .settings-subheading { margin:4px 0 -10px; font-size:12px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); }

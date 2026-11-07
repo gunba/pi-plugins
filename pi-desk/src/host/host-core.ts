@@ -54,6 +54,8 @@ export interface HostCore {
 	attachments(key: string): Attachments;
 	/** Re-read the agent directory the app shows, and tell browsers and the other computers when it changed. */
 	refreshParties(): void;
+	/** Ends an agent's watches, here and those it asked for elsewhere, without telling it: its conversation is gone from here (watches.ts). */
+	endWatches(agent: string | undefined, reason: string): void;
 }
 
 export const reply = (body: unknown, status = 200): ApiResponse => ({ body, status });

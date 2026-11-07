@@ -18,6 +18,7 @@ import { RelayConnector, type RelayStatus, type RemoteAccess } from "./relay-con
 import type { SettingsSync } from "./settings-sync.ts";
 import type { ConversationSearch } from "./conversation-search.ts";
 import type { Teleport } from "./teleport.ts";
+import type { WatchService } from "./watches.ts";
 
 /** How often a host checks the account service for a moved relay. */
 const ACCOUNT_FOLLOW_MS = 10 * 60_000;
@@ -28,6 +29,7 @@ interface AccountHost {
 	settingsSync(): SettingsSync | undefined;
 	teleport(): Teleport | undefined;
 	search?(): ConversationSearch | undefined;
+	watches?(): WatchService | undefined;
 	computer(): PartyComputer;
 	execute(computer: string, request: PartyOperation): Promise<OperationResult["result"]>;
 	/** An API request from a browser that reached this host through the relay or directly. */
@@ -135,7 +137,8 @@ export class AccountConnection {
 				if (this.core.closing || revision !== this.revision) return;
 				parties.networkChanged(); this.core.refreshParties();
 			}, { operations: this.host.operations(), execute: (computer, request) => this.host.execute(computer, request) }, this.host.computer(),
-				this.host.settingsSync(), this.host.teleport(), this.host.search?.(), () => homeWork([...this.core.sessions.values()].map(item => item.view)));
+				this.host.settingsSync(), this.host.teleport(), this.host.search?.(), () => homeWork([...this.core.sessions.values()].map(item => item.view)),
+				() => this.host.watches?.());
 			this.partyNetwork = network;
 			this.relayConnector = new RelayConnector({ account: identity, appOrigin: saved.appOrigin, proxy: this.core.options.proxy, direct: Number(new URL(this.core.origin).port),
 				request: (access, request) => this.host.request(access, request),

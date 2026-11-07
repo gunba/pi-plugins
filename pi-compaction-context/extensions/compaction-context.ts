@@ -36,7 +36,7 @@ export async function compactConversation(pi: ExtensionAPI, ctx: ExtensionContex
     result = { ...await summarizeFromCache(pi, ctx, model, sent!, after, instruction, thinking, event.signal), omittedResults: 0, omittedMessages: 0 };
   }
   const keptEntries = kept >= 0 ? projection.entries.slice(kept) : [];
-  const restored = restore(pi, ctx.cwd, event.branchEntries, keptEntries.flatMap(entry => entry.messages));
+  const restored = restore(pi, ctx.cwd, event.branchEntries, keptEntries.flatMap(entry => entry.messages), ctx.sessionManager.getSessionId());
   const history = pi.getAllTools().some(tool => tool.name === "conversation_search") ? historyNote(ctx.sessionManager.getSessionId()) : undefined;
   // Pi's file lists, with the files used up to the kept messages, which start later than Pi's cut.
   const read = new Set(event.preparation.fileOps.read), modified = new Set([...event.preparation.fileOps.edited, ...event.preparation.fileOps.written]);

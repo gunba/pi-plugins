@@ -27,6 +27,7 @@ import type { RemoteAccess } from "./relay-connector.ts";
 import { CatalogChanged, type SavedSessionIndex } from "./saved-sessions.ts";
 import { sessionRoute } from "./session-routes.ts";
 import type { Teleport } from "./teleport.ts";
+import type { WatchService } from "./watches.ts";
 import { ReceiptConflict, StaleGeneration, WorkerConnectionError } from "./worker-errors.ts";
 
 interface ApiHost {
@@ -39,6 +40,7 @@ interface ApiHost {
 	saved(): SavedSessionIndex;
 	teleport(): Teleport | undefined;
 	search?(): ConversationSearch | undefined;
+	watches?(): WatchService | undefined;
 	account: AccountConnection;
 	agents: AgentOperations;
 	moves: ConversationMoves;
@@ -147,6 +149,14 @@ export class HostApi {
 	private async computer(url: URL, request: ApiRequest, data: Record<string, unknown>): Promise<ApiResponse | undefined> {
 		const updates = this.host.updates, home = this.host.runtimeHome();
 		if (url.pathname === "/api/storage/retry" && request.method === "POST") { this.core.persist(true); return reply({ saved: true }); }
+		if (url.pathname === "/api/watches" && request.method === "GET") return reply(this.host.watches?.()?.list() ?? []);
+		const watch = /^\/api\/watches\/([a-f0-9-]{36})\/stop$/.exec(url.pathname);
+		if (watch && request.method === "POST") {
+			const watches = this.host.watches?.();
+			if (!watches) return reply({ error: "Desk isn't running watches on this computer." }, 503);
+			watches.stop(watch[1]!);
+			return reply({ stopping: true });
+		}
 		if (url.pathname === "/api/runtime/update-now" && request.method === "POST") {
 			if (this.host.logins()?.signingIn) throw Error("Finish or cancel the sign-in before updating.");
 			const version = string(data.version, 40);
