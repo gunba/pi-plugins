@@ -25,9 +25,12 @@ const RETRY_MS = 10 * 60_000, LONGEST_RETRY_MS = 24 * 3_600_000;
 const SIGN_IN_RETRY_MS = 5 * 60_000;
 /** A picture whose agent hasn't been in the sidebar for this long is deleted. */
 const KEPT_MS = 60 * 86_400_000;
-/** Deep colours that tell the pictures apart; a new picture takes the one fewest of this computer's agents have. */
-const COLOURS = ["crimson red", "burnt orange", "golden ochre", "olive green", "forest green", "teal", "turquoise", "royal blue",
-	"indigo", "violet", "plum", "magenta", "slate blue-grey", "rust brown"];
+/**
+ * Deep colours that tell the pictures apart, in order round the colour wheel; a new picture takes the one fewest of
+ * this computer's agents have, and of those unused, the one furthest round the wheel from those in use.
+ */
+const COLOURS = ["crimson red", "rust brown", "burnt orange", "golden ochre", "olive green", "forest green", "teal", "turquoise",
+	"slate blue-grey", "royal blue", "indigo", "violet", "plum", "magenta"];
 /** Folder names that say nothing about an agent's work. */
 const PLAIN_FOLDERS = /^(desktop|documents|downloads|projects|home|src|code)$/i;
 const AGENT = /^[a-f0-9-]{36}$/;
@@ -62,6 +65,8 @@ export class Pictures {
 	private soon?: ReturnType<typeof setTimeout>;
 	private readonly abort = new AbortController();
 	private closed = false;
+	/** The subject being chosen: one at a time, so each choice knows the one before it. */
+	private choosing: Promise<void> = Promise.resolve();
 
 	constructor(core: HostCore) {
 		this.core = core;
@@ -174,13 +179,17 @@ export class Pictures {
 			const view = managed.view, cwd = view.snapshot?.cwd ?? view.cwd, opening = openingRequest(view.snapshot?.file ?? view.file);
 			const folder = basename(cwd), about = { name, opening, folder: cwd !== homedir() && folder && !PLAIN_FOLDERS.test(folder) ? folder : undefined };
 			// Left to itself, the image model draws the same few things (a lighthouse) for unlike agents.
-			// Asked for a new picture, it shows something new.
-			const taken = [...this.subjects(agent), ...redraw && this.index[agent]?.subject ? [this.index[agent].subject] : []];
-			drawing.subject = await this.subject(runtime, about, taken).catch(error => {
-				if (this.abort.signal.aborted) throw error;
-				console.error(`Desk couldn't choose what to draw for ${JSON.stringify(name)}: ${error instanceof Error ? error.message : String(error)}`);
-				return undefined;
+			const chosen = this.choosing.then(async () => {
+				// Asked for a new picture, it shows something new.
+				const taken = [...this.subjects(agent), ...redraw && this.index[agent]?.subject ? [this.index[agent].subject] : []];
+				drawing.subject = await this.subject(runtime, about, taken).catch(error => {
+					if (this.abort.signal.aborted) throw error;
+					console.error(`Desk couldn't choose what to draw for ${JSON.stringify(name)}: ${error instanceof Error ? error.message : String(error)}`);
+					return undefined;
+				});
 			});
+			this.choosing = chosen.catch(() => {});
+			await chosen;
 			const result = await runtime.generateImages(model, { input: [{ type: "text", text: prompt(about, drawing.subject, colour) }] },
 				{ signal: this.abort.signal });
 			const image = result.output.find(block => block.type === "image");
@@ -252,7 +261,10 @@ export class Pictures {
 			...[...this.drawing].filter(([id]) => id !== agent).map(([, drawing]) => drawing.subject)].filter((subject): subject is string => !!subject);
 	}
 
-	/** The colour fewest of the listed agents' pictures have, other than the agent's own when it is drawn again. */
+	/**
+	 * The colour fewest of the listed agents' pictures have, other than the agent's own when it is drawn again; of
+	 * those, the one furthest round the wheel from the colours in use.
+	 */
 	private colour(agent: string): string {
 		const own = this.redraws.has(agent) ? this.index[agent]?.colour : undefined;
 		if (this.index[agent] && !own) return this.index[agent].colour;
@@ -262,7 +274,13 @@ export class Pictures {
 			...[...this.drawing.values()].map(drawing => drawing.colour)];
 		for (const colour of taken) if (counts.has(colour)) counts.set(colour, counts.get(colour)! + 1);
 		const fewest = Math.min(...counts.values()), choices = [...counts].filter(([, count]) => count === fewest).map(([colour]) => colour);
-		return choices[[...agent].reduce((hash, character) => (hash * 31 + character.charCodeAt(0)) >>> 0, 7) % choices.length]!;
+		const used = [...taken, ...own ? [own] : []].map(colour => COLOURS.indexOf(colour)).filter(index => index >= 0);
+		const gap = (colour: string) => Math.min(COLOURS.length, ...used.map(index => {
+			const apart = Math.abs(COLOURS.indexOf(colour) - index);
+			return Math.min(apart, COLOURS.length - apart);
+		}));
+		const widest = Math.max(...choices.map(gap)), spread = choices.filter(colour => gap(colour) === widest);
+		return spread[[...agent].reduce((hash, character) => (hash * 31 + character.charCodeAt(0)) >>> 0, 7) % spread.length]!;
 	}
 
 	private publishAll(): void {
