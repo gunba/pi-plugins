@@ -9,6 +9,7 @@ import type { BrowserAccount } from "./account.ts";
 import { activityLabel, sessionActivity, wakeLabel } from "./activity.ts";
 import { agentInventory } from "./agent-inventory.ts";
 import { AgentPane } from "./agent-pane.tsx";
+import { applyTextFont, textFont } from "./fonts.ts";
 import { useAttachments } from "./attachments.tsx";
 import type { Brief, BriefState } from "./brief.tsx";
 import { WorkFocus, WorkModal, WorkPane, messageLinks, workItems, type WorkItem } from "./change-view.tsx";
@@ -767,3 +768,4 @@ export function App({ account }: { account?: BrowserAccount }) {
 
 document.documentElement.dataset.theme =
   localStorage.getItem("pi-desk:theme") ?? "light";
+applyTextFont(textFont());

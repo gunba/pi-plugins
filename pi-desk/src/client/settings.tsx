@@ -17,6 +17,7 @@ import { ServiceAccounts } from "./service-accounts.tsx";
 import { PhoneNotifications } from "./phone-notifications.tsx";
 import type { UiAction, UiDetails } from "../../../pi-ui/index.ts";
 import { DetailsView } from "./details-view.tsx";
+import { chooseTextFont, TEXT_FONTS, textFont } from "./fonts.ts";
 import type { ViewSnapshot } from "../shared/protocol.ts";
 
 /** Desk's own pages, addressable with /settings <id>. Extension pages come from the conversation's views. */
@@ -82,6 +83,7 @@ export function SettingsContent({ section: requested, host, account, session, co
 	move?: () => void;
 }) {
 	const [theme, setTheme] = useState(document.documentElement.dataset.theme ?? "dark");
+	const [font, setFont] = useState(textFont);
 	const [error, setError] = useState("");
 	const run = (work: Promise<unknown>) => { setError(""); void work.catch(error => setError(String(error))); };
 	const ui = session?.ui;
@@ -108,6 +110,9 @@ export function SettingsContent({ section: requested, host, account, session, co
 					setTheme(event.target.value); document.documentElement.dataset.theme = event.target.value;
 					localStorage.setItem("pi-desk:theme", event.target.value);
 				}}><option value="dark">Dark</option><option value="light">Light</option></select></Row>
+				<Row label="Text font" hint={`${font.note} Applies to this device.`}><select value={font.id} aria-label="Text font"
+					onChange={event => setFont(chooseTextFont(event.target.value))}>
+					{TEXT_FONTS.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Row>
 				<Row label="Notifications" hint="While you're away (no use of Desk on any device for 15 minutes), during your working hours, agents' questions and finished work come here. On Android, yes/no and two-choice questions can be answered from the notification.">
 					<PhoneNotifications account={account} /></Row>
 				<Row label="Version"><span>App {RELEASE.version}{(computer?.release ?? (!host.computers ? host.release : undefined))

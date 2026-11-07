@@ -7,8 +7,6 @@ import type { BrowserAccount } from "./account.ts";
 import { deployment, type Deployment } from "./bootstrap.ts";
 import { ApiError, initialize, dispose, reportCrash } from "./connection.ts";
 import { startUpdateChecks } from "./app-update.ts";
-import "@fontsource-variable/libre-franklin";
-import "@fontsource-variable/libre-franklin/wght-italic.css";
 import "./style.css";
 
 function Workspace({ account }: { account?: BrowserAccount }) {

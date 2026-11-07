@@ -22,12 +22,12 @@ async function refresh(cache, request) {
       await cache.put(name, asset);
     }));
     await cache.put("/", page);
-    // Fonts are named by the page's stylesheets rather than the page. They are cached when first used, and kept with
-    // the stylesheets that name them.
+    // Fonts are named by the page's scripts and stylesheets rather than the page. They are cached when first used, and
+    // kept while the files that name them are.
     const kept = new Set(names);
-    for (const name of names.filter(name => name.endsWith(".css"))) {
-      const css = await (await cache.match(name))?.text() ?? "";
-      for (const match of css.matchAll(/url\(["']?(\/assets\/[^"')]+)/g)) kept.add(match[1]);
+    for (const name of names.filter(name => /\.(css|js)$/.test(name))) {
+      const text = await (await cache.match(name))?.text() ?? "";
+      for (const match of text.matchAll(/\/assets\/[\w.-]+\.woff2/g)) kept.add(match[0]);
     }
     for (const key of await cache.keys()) {
       const path = new URL(key.url).pathname;
