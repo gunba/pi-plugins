@@ -18,7 +18,7 @@ export class RemoteError extends Error {
 	status: number;
 	constructor(status: number, message: string) { super(message); this.status = status; }
 }
-interface Pending { resolve: (value: ApiResponse) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+interface Pending { request: ApiRequest; resolve: (value: ApiResponse) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
 
 /** Whether this browser may be on a computer of this platform, so worth trying its host's loopback port. */
 function samePlatform(platform: unknown): boolean {
@@ -37,6 +37,11 @@ const PAUSE_AFTER_MS = 4 * 60_000;
 const QUIET_MS = 5_000;
 /** A request waits as long as the computer keeps sending; it is abandoned after this long with nothing arriving. */
 const REQUEST_QUIET_MS = 60_000;
+/**
+ * After an open connection drops, the app stays usable this long while it reconnects: requests made meanwhile wait and
+ * go once it is back, rather than failing, as a busy computer can miss the relay's keep-alive for a while.
+ */
+const HOLD_MS = 2 * 60_000;
 
 export class RemoteClient {
 	private account: RemoteAccount;
@@ -96,6 +101,9 @@ export class RemoteClient {
 	private quietUntil = 0;
 	private quietTimer?: ReturnType<typeof setTimeout>;
 	private pauseTimer?: ReturnType<typeof setTimeout>;
+	/** An open connection dropped: until then requests wait for it to come back (HOLD_MS). */
+	private holdUntil = 0;
+	private holdTimer?: ReturnType<typeof setTimeout>;
 	/** Connections made; a new one means events were missed, so the app reloads what it shows. */
 	established = 0;
 	private shown?: string;
@@ -121,7 +129,7 @@ export class RemoteClient {
 		addEventListener("pageshow", this.onlineListener);
 		void this.connect();
 	}
-	get connected(): boolean { return this.online && this.valid() || this.looksConnected(); }
+	get connected(): boolean { return this.online && this.valid() || this.looksConnected() || this.holding(); }
 	/** Milliseconds for a message to reach the host and come back; undefined until measured or while disconnected. */
 	get latency(): number | undefined { return this.online && this.valid() ? this.rtt : undefined; }
 	/** Whether this browser reaches the host on its own computer rather than through the relay. */
@@ -143,8 +151,18 @@ export class RemoteClient {
 		return this.resumable && !this.failure && !this.closed
 			&& (this.phase === "paused" || (this.phase === "connecting" || this.phase === "reconnecting") && performance.now() < this.quietUntil);
 	}
+	/** Reconnecting after an open connection dropped a moment ago: requests wait for it, though the state says so. */
+	private holding(): boolean {
+		return !this.online && !this.failure && !this.closed && this.phase !== "paused" && performance.now() < this.holdUntil;
+	}
+	/** Starts holding as an open connection drops; one already holding keeps its deadline. */
+	private hold(): void {
+		if (!this.online || this.failure || this.closed) return;
+		this.holdUntil = performance.now() + HOLD_MS;
+		clearTimeout(this.holdTimer); this.holdTimer = setTimeout(() => this.notify(), HOLD_MS + 50);
+	}
 	private pause(message: string): void {
-		this.resumable = this.online || this.looksConnected();
+		this.resumable = this.online || this.looksConnected() || this.holding();
 		this.disconnect(message, "paused");
 	}
 	private resume(): void {
@@ -164,7 +182,7 @@ export class RemoteClient {
 	get diagnostics() { return { interruptions: this.interruptionCount, last: this.lastInterruption }; }
 	private setPhase(value: ConnectionState): void {
 		this.phase = value; this.online = value === "connected";
-		if (this.online) { this.lastError = undefined; this.established++; this.quietUntil = 0; this.resumable = false; }
+		if (this.online) { this.lastError = undefined; this.established++; this.quietUntil = 0; this.resumable = false; this.holdUntil = 0; clearTimeout(this.holdTimer); }
 		else { clearInterval(this.pingTimer); this.pingTimer = undefined; this.pingSent = undefined; this.rtt = undefined; this.pingable = false; }
 		this.notify();
 	}
@@ -298,6 +316,7 @@ export class RemoteClient {
 				this.setPhase("paused"); return;
 			}
 			const fallback = direct && !this.reached && !this.closed && !this.failure;
+			this.hold();
 			this.setPhase(fallback && !this.established ? "connecting" : "reconnecting");
 			this.rejectPending("Connection lost; delivery is uncertain. Check the conversation before sending it again.");
 			if (this.closed || this.failure) return;
@@ -391,11 +410,11 @@ export class RemoteClient {
 	}
 	request(request: ApiRequest): Promise<ApiResponse> {
 		if (this.failure) return Promise.reject(this.failure);
-		// Shown as connected while reconnecting after a pause: wait for the connection rather than fail.
-		if (!this.online && this.looksConnected() && this.phase !== "paused") return new Promise<void>((resolve, reject) => {
+		// Shown as connected while reconnecting after a pause or a drop: wait for the connection rather than fail.
+		if (!this.online && (this.looksConnected() && this.phase !== "paused" || this.holding())) return new Promise<void>((resolve, reject) => {
 			const waiter = () => {
 				if (this.online && this.valid()) { this.waiters.delete(waiter); resolve(); }
-				else if (!this.looksConnected()) { this.waiters.delete(waiter); reject(new RemoteError(503, "The computer is not connected or its authorization expired.")); }
+				else if (!this.looksConnected() && !this.holding()) { this.waiters.delete(waiter); reject(new RemoteError(503, "The computer is not connected or its authorization expired.")); }
 			};
 			this.waiters.add(waiter);
 		}).then(() => this.request(request));
@@ -413,7 +432,7 @@ export class RemoteClient {
 				if (quiet < REQUEST_QUIET_MS) { const pending = this.pending.get(id); if (pending) pending.timer = setTimeout(expire, REQUEST_QUIET_MS - quiet); return; }
 				this.pending.delete(id); this.queued.shift()?.(); reject(new RemoteError(504, "Request timed out; delivery is uncertain. Check the session before retrying."));
 			};
-			this.pending.set(id, { resolve, reject, timer: setTimeout(expire, REQUEST_QUIET_MS) });
+			this.pending.set(id, { request, resolve, reject, timer: setTimeout(expire, REQUEST_QUIET_MS) });
 			void this.channel!.send({ type: "request", id, request }).catch(() => socket?.close());
 		});
 	}
@@ -437,7 +456,13 @@ export class RemoteClient {
 		return () => { this.handlers.delete(events); this.connections.delete(connected); };
 	}
 	private rejectPending(message: string): void {
-		for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new RemoteError(503, message)); }
+		const holding = this.holding();
+		for (const pending of this.pending.values()) {
+			clearTimeout(pending.timer);
+			// While holding, a read is asked again once the connection is back. A change may have arrived, so it is not resent.
+			if (holding && pending.request.method === "GET") void this.request(pending.request).then(pending.resolve, pending.reject);
+			else pending.reject(new RemoteError(503, message));
+		}
 		this.pending.clear();
 		// Waiting requests try again: they fail now or wait for the connection, as new ones do.
 		for (const next of this.queued.splice(0)) next();
@@ -447,7 +472,8 @@ export class RemoteClient {
 		clearTimeout(this.timer); clearTimeout(this.deadline); clearInterval(this.refresh); clearInterval(this.expiry);
 		const socket = this.socket; this.socket = undefined;
 		socket?.close(); this.channel?.close(); this.channel = undefined; this.peer = undefined; this.own = undefined;
-		this.rejectPending(message); this.setPhase(phase);
+		if (phase === "reconnecting" || phase === "network-offline") this.hold();
+		this.setPhase(phase); this.rejectPending(message);
 	}
 	reconnect(reason?: string): void {
 		if (reason) this.interrupted(reason);
@@ -455,7 +481,7 @@ export class RemoteClient {
 		void this.connect();
 	}
 	close(): void {
-		this.closed = true; clearTimeout(this.pauseTimer); clearTimeout(this.quietTimer); clearInterval(this.pingTimer);
+		this.closed = true; clearTimeout(this.pauseTimer); clearTimeout(this.quietTimer); clearTimeout(this.holdTimer); clearInterval(this.pingTimer);
 		removeEventListener("online", this.onlineListener);
 		removeEventListener("offline", this.offlineListener);
 		document.removeEventListener("visibilitychange", this.visibilityListener);

@@ -37,6 +37,11 @@ export function hasNews(record: NonNullable<SessionView["asleep"]>): boolean {
 
 /** How long a conversation that may sleep stays open once idle, so its user can carry on if they are there. */
 export const SLEEP_AFTER_MS = 120_000;
+/**
+ * How long a conversation that only waits on watches Desk runs for it stays open once idle, before it sleeps until one
+ * has news: long enough not to close one its user is still talking to.
+ */
+export const WAITING_SLEEP_AFTER_MS = 15 * 60_000;
 
 /**
  * Whether a running conversation is at rest: idle, with nothing it waits on from the user (questions, messages not yet

@@ -129,9 +129,11 @@ export class RelayConnector {
 		});
 		this.socket = socket; this.admitted = false;
 		let authenticating = false, maintaining = false;
+		/** Why this end closed the connection, for the log. */
+		let ending: string | undefined;
 		const heartbeat = () => {
 			clearTimeout(this.heartbeat);
-			this.heartbeat = setTimeout(() => socket.terminate(), 50_000); this.heartbeat.unref();
+			this.heartbeat = setTimeout(() => { ending = "no keep-alive from the relay for 50 s"; socket.terminate(); }, 50_000); this.heartbeat.unref();
 		};
 		const maintain = () => {
 			if (maintaining || this.socket !== socket || !this.admitted) return;
@@ -162,7 +164,7 @@ export class RelayConnector {
 					if (this.options.party) socket.send(JSON.stringify({ type: "party-enable" }));
 					this.refresh = setInterval(maintain, 20_000); this.refresh.unref();
 					this.expiry = setInterval(() => {
-						if (performance.now() >= this.hostLeaseUntil) { socket.terminate(); return; }
+						if (performance.now() >= this.hostLeaseUntil) { ending = "the account authorization expired"; socket.terminate(); return; }
 						for (const peer of this.peers.values()) if (peer.channel && !this.valid(peer)) this.drop(peer.id, true, 1013);
 					}, 1000); this.expiry.unref();
 					maintain(); return;
@@ -195,8 +197,9 @@ export class RelayConnector {
 		socket.on("error", () => {
 			if (this.socket === socket && !this.stopped) this.update("offline", "Relay connection failed. Check the account workspace, proxy and network policy.");
 		});
-		socket.on("close", () => {
+		socket.on("close", (code, reason) => {
 			if (this.socket !== socket) return;
+			if (this.admitted && !this.stopped) console.error(`Relay connection closed: ${ending ?? `code ${code}${reason.length ? ` (${reason.toString().slice(0, 200)})` : ""}`}. Reconnecting.`);
 			this.socket = undefined; this.admitted = false; this.computers = [];
 			clearTimeout(this.heartbeat); clearInterval(this.refresh); clearInterval(this.expiry);
 			for (const id of this.peers.keys()) this.drop(id, false, 1013);

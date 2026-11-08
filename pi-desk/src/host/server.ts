@@ -32,7 +32,7 @@ import type { UpdateCheckpoint } from "../shared/checkpoint.ts";
 import { Attachments } from "./attachments.ts";
 import { assertRuntimeHost, selectedRuntime } from "../../manage/installation.ts";
 import { isOpenSession } from "../shared/workspace.ts";
-import { SLEEP_AFTER_MS, asleep, atRest, hasNews, waiting } from "./sleep.ts";
+import { SLEEP_AFTER_MS, WAITING_SLEEP_AFTER_MS, asleep, atRest, hasNews, waiting } from "./sleep.ts";
 import { Folders } from "./folders.ts";
 import { Parties } from "./parties.ts";
 import { Dictation } from "./dictation.ts";
@@ -95,6 +95,8 @@ export class DeskHost {
 	private startupWaits = new Set<() => void>();
 	private hostLease?: SessionLease;
 	private heartbeat?: ReturnType<typeof setInterval>;
+	/** Checks every second that the event loop ran on time. */
+	private stalls?: ReturnType<typeof setInterval>;
 	private closing = false;
 	private closeJob?: Promise<void>;
 	private preserveWorkers = false;
@@ -289,6 +291,13 @@ export class DeskHost {
 			if (!address || typeof address === "string") throw new Error("Cannot determine server address.");
 			this.origin = `http://127.0.0.1:${address.port}`;
 			this.control = new HostControl(this.origin);
+			// A stall long enough to miss the relay's keep-alive drops every browser's connection; the log says when.
+			let ticked = performance.now();
+			this.stalls = setInterval(() => {
+				const now = performance.now(), late = now - ticked - 1000; ticked = now;
+				if (late >= 5000) console.error(`Desk did not respond for ${Math.round(late / 1000)} s: the computer was busy or asleep.`);
+			}, 1000);
+			this.stalls.unref();
 			this.heartbeat = setInterval(() => {
 				this.events.heartbeat();
 				this.updates.refresh(); this.refreshParties(); void this.updates.maintain(); void this.retireLogins(); this.wakeDue(); this.sleepIdle(); this.watches?.heartbeat();
@@ -321,7 +330,7 @@ export class DeskHost {
 			});
 			return { origin: this.origin, pairingUrl: `${this.origin}/#pair=${this.access.invite()}` };
 		} catch (error) {
-			clearInterval(this.heartbeat); this.presence?.close(); this.notices.close();
+			clearInterval(this.heartbeat); clearInterval(this.stalls); this.presence?.close(); this.notices.close();
 			this.updates.close();
 			await this.saved?.close();
 			this.checkpoints?.dispose(); await this.checkpoints?.settled();
@@ -538,8 +547,9 @@ export class DeskHost {
 	}
 
 	/**
-	 * Closes, kept, a conversation that may sleep once it has been at rest for SLEEP_AFTER_MS: one Desk reopened for a
-	 * watch while it slept, or one whose agent asked to close (UiView.close).
+	 * Closes, kept, a conversation that may sleep once it has been at rest a while. After SLEEP_AFTER_MS: one Desk reopened
+	 * for a watch while it slept, or one whose agent asked to close (UiView.close). After WAITING_SLEEP_AFTER_MS: one
+	 * waiting on watches or times Desk runs for it, which reopen it with their news, so it holds no process meanwhile.
 	 */
 	private sleepIdle(): void {
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate) return;
@@ -547,9 +557,11 @@ export class DeskHost {
 		for (const managed of this.sessions.values()) {
 			const { view, worker } = managed;
 			const asked = managed.sleepWhenIdle || view.ui?.views.some(item => item.close);
-			if (!worker || !asked || !atRest(view, this.inputs?.pending(view.key).length ?? 0)) { managed.idleSince = undefined; continue; }
+			// Home stays open for the conversation on its page.
+			const waits = !view.home && !!(view.watching || view.wakes) && !!this.watches?.has(view.agentId);
+			if (!worker || !(asked || waits) || !atRest(view, this.inputs?.pending(view.key).length ?? 0)) { managed.idleSince = undefined; continue; }
 			managed.idleSince ??= now;
-			if (now - managed.idleSince < SLEEP_AFTER_MS) continue;
+			if (now - managed.idleSince < (asked ? SLEEP_AFTER_MS : WAITING_SLEEP_AFTER_MS)) continue;
 			managed.idleSince = undefined; managed.sleepWhenIdle = undefined; managed.keepOnClose = true;
 			void worker.submitControl({ kind: "close", keep: true }, worker.generation, randomUUID()).catch(error => {
 				managed.keepOnClose = undefined;
@@ -950,7 +962,7 @@ export class DeskHost {
 		const errors: unknown[] = [];
 		try { await this.logins?.close(); } catch (error) { errors.push(error); }
 		try { this.persist(true); } catch (error) { errors.push(error); }
-		clearInterval(this.heartbeat); this.packageUpdates?.close(); this.presence?.close(); this.notices.close();
+		clearInterval(this.heartbeat); clearInterval(this.stalls); this.packageUpdates?.close(); this.presence?.close(); this.notices.close();
 		this.updates.close();
 		this.account.close();
 		try { await this.search?.close(); } catch (error) { errors.push(error); }

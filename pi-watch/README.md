@@ -31,6 +31,9 @@ from Desk (`desk.ts`); the watch, its runner and its events live in Desk's store
 - An event waits in the store until the agent's Pi process has put it in the conversation. A conversation that isn't
   running when one arrives is reopened for it, from its file if Desk didn't list it; one asleep by choice closes
   again once it is at rest. One that can't be reopened is tried again every 15 minutes.
+- An open conversation that waits on its watches, with nothing else under way, sleeps once it has been at rest for 15
+  minutes: closed with no process, kept in the sidebar under Waiting, and reopened when a watch has news. Home stays
+  open.
 - Desk judges `wake_when` with the classifier signed in on the computer running the watch.
 - Program watches run in a background Pi process Desk keeps for each folder with program watches, with that folder's
   tools and settings. No one sees it, so a question or approval asked during a run is refused at once, and the run

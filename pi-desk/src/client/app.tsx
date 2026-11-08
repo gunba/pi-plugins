@@ -576,6 +576,8 @@ export function App({ account }: { account?: BrowserAccount }) {
               : "Connecting to your computers…"}
           </div>
         )}
+        {connected && currentComputer && currentComputer.connection !== "connected" && <div className="connection-banner" role="status">
+          {currentComputer.name}: {connectionLabel(currentComputer)}. What you do now waits for the connection, for up to two minutes.</div>}
         <ViewPreviews views={(ui?.views ?? []).filter(view => !view.scope && (phone || view.id !== "plan"))} open={id => { setFocusedView(id); setPanel("view"); }} />
         {phone && (totalAgents > 0 || agentHistory) && <button type="button" className={`agent-activity-bar${panel === "agents" ? " selected" : ""}`}
           aria-expanded={panel === "agents"} onClick={() => setPanel(panel === "agents" ? undefined : "agents")}>

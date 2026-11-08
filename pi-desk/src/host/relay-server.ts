@@ -65,7 +65,8 @@ export class RelayServer {
 		} else { response.writeHead(404); response.end(); }
 	});
 	private timer?: ReturnType<typeof setInterval>;
-	private alive = new WeakSet<WebSocket>();
+	/** Keep-alive pings each socket has left unanswered in a row. */
+	private missed = new WeakMap<WebSocket, number>();
 	private count = 0;
 	private verifier: CredentialVerifier;
 	origin: string;
@@ -103,15 +104,17 @@ export class RelayServer {
 				room.socket.close(4001, "Host authorization expired");
 			}
 			for (const socket of this.sockets.clients) {
-				if (!this.alive.has(socket)) { socket.terminate(); continue; }
-				this.alive.delete(socket); socket.ping();
+				// A computer busy for a moment misses one; two in a row, 40 to 60 seconds without an answer, means it is gone.
+				const missed = this.missed.get(socket) ?? 0;
+				if (missed >= 2) { socket.terminate(); continue; }
+				this.missed.set(socket, missed + 1); socket.ping();
 			}
 		}, 20_000);
 		this.timer.unref();
 	}
 	private track(socket: WebSocket): void {
-		this.count++; this.alive.add(socket);
-		socket.on("pong", () => this.alive.add(socket));
+		this.count++; this.missed.set(socket, 0);
+		socket.on("pong", () => this.missed.set(socket, 0));
 		socket.on("error", () => socket.terminate());
 		socket.once("close", () => this.count--);
 	}

@@ -84,7 +84,7 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 			core.attachments(key).check(input!.command.attachments ?? []);
 			if (input!.command.behavior === "now" && !managed.worker.runtime?.sendNow) throw new Error("This worker does not support Send now. Restart this conversation when idle to enable it.");
 			const accepted = core.inputs.admit(key, input!);
-			// The user is here: a conversation Desk woke for a watch stays open.
+			// The user is here: a conversation Desk woke for a watch doesn't go back to sleep as soon as it is done.
 			managed.sleepWhenIdle = undefined;
 			core.inputEvent(managed);
 			core.drainInputs(managed);

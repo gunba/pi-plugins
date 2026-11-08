@@ -33,8 +33,8 @@ test("tab suspension is not a PC outage; visible interruptions reconnect without
 	const saved = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 	for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, value });
 	let client, connector;
-	const admitted = deferred(), release = deferred(), available = deferred();
-	let commands = 0;
+	const admitted = deferred(), release = deferred(), available = deferred(), reading = deferred(), slowRead = deferred();
+	let commands = 0, reads = 0;
 	t.after(async () => {
 		release.resolve(); client?.close(); connector?.close(); await relay.close();
 		for (const [key, descriptor] of saved) {
@@ -46,7 +46,10 @@ test("tab suspension is not a PC outage; visible interruptions reconnect without
 	connector = new RelayConnector({
 		appOrigin: "https://app.example", account: host,
 		status: value => { if (value.state === "online") available.resolve(); },
-		request: async () => { commands++; admitted.resolve(); await release.promise; return { status: 200, body: { accepted: true } }; },
+		request: async (_device, request) => {
+			if (request.path === "/api/read") { if (++reads === 1) { reading.resolve(); await slowRead.promise; } return { status: 200, body: { reads } }; }
+			commands++; admitted.resolve(); await release.promise; return { status: 200, body: { accepted: true } };
+		},
 		watch: () => () => {},
 	});
 	connector.start(); await available.promise;
@@ -76,24 +79,45 @@ test("tab suspension is not a PC outage; visible interruptions reconnect without
 	assert.equal(commands, 2, "reconnecting never replays an earlier request");
 
 	client.backoff = 0;
+	const read = client.request({ method: "GET", path: "/api/read" });
+	await reading.promise;
 	const interrupted = state(client, "reconnecting");
 	client.socket.terminate();
 	await interrupted;
 	assert.equal(connectionLabel({ connection: client.state, presence }), "Reconnecting");
 	assert.equal(client.diagnostics.interruptions, 1);
 	assert.equal(client.diagnostics.last.code, 1006);
+	// A dropped connection leaves the app usable while it reconnects: what is asked meanwhile goes once it is back.
+	assert.equal(client.connected, true);
+	const held = client.request({ method: "POST", path: "/api/example", body: { text: "Held" } });
 	await state(client, "connected");
-	assert.equal(commands, 2);
+	assert.equal((await held).status, 200);
+	assert.deepEqual((await read).body, { reads: 2 }, "a read in flight when the connection dropped is asked again");
+	slowRead.resolve();
+	assert.equal(commands, 3, "a change is sent once");
 
 	navigator.onLine = false; window.dispatchEvent(new Event("offline"));
 	assert.equal(client.state, "network-offline");
-	assert.equal(client.connected, false);
+	assert.equal(client.connected, true);
+	const offline = client.request({ method: "POST", path: "/api/example", body: { text: "Offline" } });
 	navigator.onLine = true; window.dispatchEvent(new Event("online"));
 	await state(client, "connected");
+	assert.equal((await offline).status, 200);
+	assert.equal(commands, 4);
+
+	// Two minutes without the connection: the app says so, and what waited fails without being sent.
+	navigator.onLine = false; window.dispatchEvent(new Event("offline"));
+	const stranded = client.request({ method: "POST", path: "/api/example", body: { text: "Stranded" } });
+	client.holdUntil = performance.now() - 1; client.notify();
+	assert.equal(client.connected, false);
+	await assert.rejects(stranded, /not connected/);
+	navigator.onLine = true; window.dispatchEvent(new Event("online"));
+	await state(client, "connected");
+	assert.equal(commands, 4);
 	client.leaseUntil = performance.now() - 1;
 	assert.equal(client.connected, false, "reported PC presence cannot override an expired membership lease");
 	await assert.rejects(client.request({ method: "POST", path: "/api/example" }), /authorization expired/);
-	assert.equal(commands, 2);
+	assert.equal(commands, 4);
 
 	browser.lease = async () => ({ allowed: [], expires: Math.floor(Date.now() / 1000) + 60 });
 	client.reconnect();
