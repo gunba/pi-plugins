@@ -26,6 +26,8 @@ const paths: Record<string, ReactNode> = {
 	sliders: <><path d="M4 7h4m4 0h8M4 17h8m4 0h4" /><circle cx="10" cy="7" r="2" /><circle cx="14" cy="17" r="2" /></>,
 	"panel-right": <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /><path d="M17.5 8h1M17.5 11h1" /></>,
 	layers: <><path d="m12 3 10 5-10 5L2 8Zm-9 10 9 5 9-5M3 18l9 4 9-4" /></>,
+	// Lucide "house" (ISC licence).
+	home: <><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" /><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></>,
 	context: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M8 5v14m5-8h4m-4 4h4" /></>,
 	globe: <><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><path d="M3 12h18" /></>,
 	account: <><circle cx="12" cy="8" r="4" /><path d="M4 21v-2a8 8 0 0 1 16 0v2" /></>,

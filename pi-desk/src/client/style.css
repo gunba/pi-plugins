@@ -307,19 +307,11 @@ details[open] > summary:before {
   border-radius: 17px;
   display: grid;
   place-items: center;
-  background: var(--accent);
-  color: #fff;
+  border: 1px solid var(--border);
+  color: var(--muted);
   font:
     42px Georgia,
     serif;
-  box-shadow: 0 5px 18px #6556cc22;
-}
-.brand-mark.small {
-  width: 30px;
-  height: 30px;
-  font-size: 26px;
-  border-radius: 9px;
-  box-shadow: none;
 }
 .app {
   --workspace-pane: clamp(300px, 22vw, 420px);
@@ -338,22 +330,18 @@ details[open] > summary:before {
   flex-direction: column;
   gap: 6px;
 }
-.sidebar-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-.sidebar-actions > button { min-width:0; justify-content:center; padding:10px 8px; font-size:12px; background:var(--surface); font-weight:550; }
-.sidebar-actions .ui-icon { width:16px; height:16px; color:var(--accent); }
+/* Home, then New chat and Resume, in one row above the computers. */
+.sidebar-actions { display:grid; grid-template-columns:auto 1fr 1fr; gap:6px; }
+.sidebar-actions > button { min-width:0; justify-content:center; padding:8px; font-size:12px; background:var(--surface); font-weight:550; }
+.sidebar-actions .ui-icon { width:16px; height:16px; color:var(--muted); }
+.sidebar-actions > .home-button { position:relative; display:grid; place-items:center; width:36px; padding:0; border:1px solid var(--border); }
+.sidebar-actions > .home-button.selected { background:color-mix(in srgb, var(--accent) 19%, var(--sidebar)); border-color:transparent; }
+.sidebar-actions > .home-button.selected .ui-icon, .sidebar-actions > button:hover .ui-icon { color:var(--text); }
+/* Something new in Home that nobody has looked at. */
+.home-unread { position:absolute; top:5px; right:5px; width:7px; height:7px; border-radius:50%; background:var(--accent); }
 /* The opaque background lets Chrome composite this scroller at any display scale, so the animated status rings, which
    get layers of their own, scroll in step with the computer headings and rows. */
 .sidebar-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; margin:2px -6px 0; padding:0 6px; background:var(--sidebar); }
-.brand {
-  display: flex;
-  gap: 9px;
-  align-items: center;
-  padding: 0 5px 6px;
-}
-.brand strong {
-  font-size: 17px;
-  letter-spacing: -0.5px;
-}
 .new-chat {
   display: flex;
   align-items: center;
@@ -377,16 +365,7 @@ details[open] > summary:before {
   font-size: 12px;
   width: 100%;
 }
-.nav-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--muted);
-  padding: 8px 8px 0;
-  display: flex;
-  justify-content: space-between;
-}
 .session-list { margin:0; }
-.sidebar-scroll .nav-label { padding:12px 8px 6px; }
 .session-list > section + section { margin-top: 10px; }
 .computer-heading { display:flex; align-items:center; gap:8px; padding:6px 10px; }
 .sidebar-update { margin:0 10px 6px; padding:4px 8px; font-size:13px; color:var(--accent); background:var(--accent-soft); border:0; }
@@ -638,6 +617,10 @@ details[open] > summary:before {
   background:linear-gradient(90deg, var(--bg) 0%, color-mix(in srgb, var(--bg) 85%, transparent) 45%, color-mix(in srgb, var(--bg) 30%, transparent) 100%); }
 :root:not([data-theme="dark"]) .topbar-picture::after {
   background:linear-gradient(90deg, var(--bg) 0%, color-mix(in srgb, var(--bg) 90%, transparent) 50%, color-mix(in srgb, var(--bg) 55%, transparent) 100%); }
+/* Over the banner, the buttons and the activity have a backing of their own, so they stay readable. */
+.topbar:has(> .topbar-picture) .top-actions :is(.header-chip, .icon-button, .conversation-activity) { background:color-mix(in srgb, var(--bg) 85%, transparent); }
+.topbar:has(> .topbar-picture) .top-actions :is(.header-chip, .icon-button):is(:hover, .selected) { background:var(--hover); }
+.topbar:has(> .topbar-picture) .conversation-activity { height:30px; padding:0 10px; border-radius:8px; margin-right:0; }
 .settings-banner { flex:none; width:150px; height:50px; object-fit:cover; border-radius:6px; }
 .conversation-heading {
   min-width: 0;
@@ -679,7 +662,7 @@ details[open] > summary:before {
   padding: clamp(30px, 10vh, 115px) 0 35px;
 }
 .welcome-mark {
-  color: var(--accent);
+  color: var(--muted);
   font:
     68px Georgia,
     serif;
@@ -723,8 +706,7 @@ details[open] > summary:before {
 .assistant-avatar {
   width: 25px;
   height: 25px;
-  background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--muted);
   border-radius: 8px;
   display: grid;
   place-items: center;
@@ -1614,7 +1596,7 @@ details[open] > summary:before {
     height: 100dvh;
     max-height: 100dvh;
   }
-  .sidebar .brand { padding-right:40px; }
+  .sidebar .sidebar-actions { margin-right:40px; }
   .mobile-nav {
     display: block;
     margin-left: -5px;
@@ -2178,7 +2160,7 @@ details[open] > summary:before {
 .plan-header { position:relative; flex:1; min-width:0; }
 .plan-rolodex { position:relative; display:flex; align-items:center; gap:10px; width:100%; min-width:0; height:38px; padding:0 12px; border:1px solid var(--border); border-radius:9px; background:var(--surface); text-align:left; overflow:hidden; }
 .plan-rolodex:hover { border-color:var(--focus-border); background:var(--hover); }
-.plan-rolodex > .ui-icon { flex:none; width:16px; height:16px; color:var(--accent); }
+.plan-rolodex > .ui-icon { flex:none; width:16px; height:16px; color:var(--muted); }
 .plan-rolodex-count { flex:none; font-size:12px; font-variant-numeric:tabular-nums; color:var(--muted); }
 .plan-rolodex-window { position:relative; flex:1; min-width:0; height:20px; overflow:hidden; perspective:300px; }
 .plan-rolodex-card { position:absolute; inset:0; display:flex; align-items:center; gap:8px; min-width:0; transform-origin:50% 50% -10px; }
@@ -2188,9 +2170,7 @@ details[open] > summary:before {
 @keyframes rolodex-up { from { transform:rotateX(-80deg) translateY(55%); opacity:0; } to { transform:none; opacity:1; } }
 @keyframes rolodex-down { from { transform:rotateX(80deg) translateY(-55%); opacity:0; } to { transform:none; opacity:1; } }
 @media (prefers-reduced-motion: reduce) { .plan-rolodex-card.flip-up, .plan-rolodex-card.flip-down { animation:none; } }
-.plan-rolodex-status { flex:none; padding:1px 6px; border-radius:5px; font-size:10.5px; font-weight:600; letter-spacing:.3px; text-transform:uppercase; color:var(--muted); background:var(--hover); }
-.plan-rolodex-status.in-progress { color:var(--accent); background:var(--accent-soft); }
-.plan-rolodex-status.completed { color:#45bf86; background:#45bf8622; }
+.plan-rolodex-status { flex:none; font-size:12px; color:var(--muted); }
 .plan-rolodex .party-chevron { flex:none; transform:rotate(90deg); color:var(--muted); }
 .plan-rolodex .party-chevron.expanded { transform:rotate(-90deg); }
 .plan-rolodex-progress { position:absolute; left:0; bottom:0; height:2px; background:var(--accent); opacity:.7; transition:width .4s ease; }

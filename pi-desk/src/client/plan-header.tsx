@@ -36,7 +36,8 @@ export function PlanHeader({ view, invoke, disabled, title }: {
 		document.addEventListener("pointerdown", away); document.addEventListener("keydown", escape);
 		return () => { document.removeEventListener("pointerdown", away); document.removeEventListener("keydown", escape); };
 	}, [open]);
-	const status = !step ? "" : step.status === "completed" ? "Done" : step.status === "in progress" ? "Now" : shown < current ? "Skipped" : "Next";
+	// The step under way needs no label; one leafed to, or a finished plan's last, says where it stands.
+	const status = !step || step.status === "in progress" ? "" : step.status === "completed" ? "Done" : shown < current ? "Skipped" : "Next";
 	return <div className="plan-header" ref={root} onPointerLeave={() => setPeek(undefined)}>
 		<button type="button" className="plan-rolodex" aria-expanded={open} aria-label={`Plan: ${data.summary ?? ""}. Step ${shown + 1} of ${items.length}${step ? `: ${step.title}` : ""}`}
 			title={data.summary} onClick={() => setOpen(value => !value)}

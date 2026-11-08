@@ -17,17 +17,27 @@ import { asksInBackground, unseen } from "../shared/attention.ts";
 import { Navigation } from "./surfaces.tsx";
 import { conversationTitle, folderName, type Computer, type WorkspaceState } from "./workspace.ts";
 
-/** Renames a conversation in place in the sidebar: Enter saves, Escape or leaving the field cancels. */
 /**
- * Conversations at work or waiting for the user first; then those only waiting for a watch or timer to wake them, open
- * and then asleep (closed, kept to be woken); then the rest that are closed. All but the first fold away.
+ * Where a conversation is listed: 0 at work or waiting for the user; 1 only waiting for a watch or timer to wake it, open
+ * or asleep (closed, kept to be woken); 2 closed. Those waiting and those closed fold away, each under its own heading.
  */
 const restRank = (item: SessionView) => {
-  if (item.state === "closed" || item.state === "failed") return item.kept && (item.wakes || item.watching) ? 2 : 3;
+  if (item.state === "closed" || item.state === "failed") return item.kept && (item.wakes || item.watching) ? 1 : 2;
   const waits = backgroundWork(item)?.kind;
   return waits === "wake" || waits === "watch" ? 1 : 0;
 };
 
+/** Computers whose section, or one of its folded groups, has been toggled; kept per browser under `key`. */
+function useComputerSet(key: string): [Set<string>, (id: string) => void] {
+  const [ids, setIds] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem(key) ?? "[]")); } catch { return new Set(); } });
+  const toggle = (id: string) => setIds(previous => {
+    const next = new Set(previous); if (!next.delete(id)) next.add(id);
+    localStorage.setItem(key, JSON.stringify([...next])); return next;
+  });
+  return [ids, toggle];
+}
+
+/** Renames a conversation in place in the sidebar: Enter saves, Escape or leaving the field cancels. */
 function SidebarRename({ title, rename, close }: { title: string; rename: (name: string) => Promise<unknown>; close: () => void }) {
   const [draft, setDraft] = useState(title), [saving, setSaving] = useState(false), [error, setError] = useState("");
   const save = async () => {
@@ -73,20 +83,12 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
       .filter(copy => copy.computer === computer.id && !copy.moved && !seen.has(copy.session) && !!seen.add(copy.session))
       .sort((a, b) => Number(!!b.open) - Number(!!a.open) || b.updated - a.updated);
   };
-  // Sections folded away, kept per browser; and off computers whose closed conversations are listed too.
-  const [folded, setFolded] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem("pi-desk-folded-computers") ?? "[]")); } catch { return new Set(); } });
-  const toggleFolded = (id: string) => setFolded(previous => {
-    const next = new Set(previous); if (!next.delete(id)) next.add(id);
-    localStorage.setItem("pi-desk-folded-computers", JSON.stringify([...next])); return next;
-  });
+  // Sections folded away; and off computers whose closed conversations are listed too.
+  const [folded, toggleFolded] = useComputerSet("pi-desk-folded-computers");
   const [closedShown, setClosedShown] = useState<Set<string>>(() => new Set());
-  // Conversations waiting for a watch or timer, and closed ones, are folded under one heading per computer unless
-  // shown; kept per browser.
-  const [restingShown, setRestingShown] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem("pi-desk-resting-shown") ?? "[]")); } catch { return new Set(); } });
-  const toggleResting = (id: string) => setRestingShown(previous => {
-    const next = new Set(previous); if (!next.delete(id)) next.add(id);
-    localStorage.setItem("pi-desk-resting-shown", JSON.stringify([...next])); return next;
-  });
+  // Conversations waiting for a watch or timer, and closed ones, each fold under a heading per computer unless shown.
+  const [waitingShown, toggleWaiting] = useComputerSet("pi-desk-resting-shown");
+  const [closedRowsShown, toggleClosedRows] = useComputerSet("pi-desk-closed-shown");
   const computers = host.computers ?? [{ id: undefined, name: host.name, platform: host.platform, connected, updates: host.updates, storageError: host.storageError,
     connection: connected ? "connected" as const : "reconnecting" as const, parties: host.parties, release: host.release }];
   /** A conversation's row in its computer's list. */
@@ -128,11 +130,12 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
   };
 
   return <Navigation open={open} close={close}>
-    <div className="brand">
-      <span className="brand-mark small">π</span>
-      <strong>Pi Desk</strong>
-    </div>
     <div className="sidebar-actions">
+      <button className={`icon-button home-button${homeSelected ? " selected" : ""}`} aria-label="Home" title="Home"
+        aria-current={homeSelected ? "page" : undefined} onClick={() => select("home")}>
+        <Icon name="home" />
+        {host.sessions.some(item => item.home && unseen(item)) && <span className="home-unread" title="New in Home" />}
+      </button>
       <button className="new-chat" aria-label="New conversation" title="New conversation (Ctrl+T)" onClick={() => newConversation()}>
         <Icon name="plus" /> New chat
       </button>
@@ -141,15 +144,6 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
       </button>
     </div>
     <div className="sidebar-scroll">
-    <nav className="home-navigation" aria-label="Home">
-      <button className={`session-item${homeSelected ? " selected" : ""}`} aria-current={homeSelected ? "page" : undefined} onClick={() => select("home")}>
-        <span className="home-navigation-icon"><Icon name="layers" /></span><span><strong>Home</strong></span>
-        {host.sessions.some(item => item.home && unseen(item)) && <span className="home-unread">New</span>}
-      </button>
-    </nav>
-    <div className="nav-label">
-      Computers <span>{computers.length}</span>
-    </div>
     <nav className="session-list" aria-label="Computers">
       {computers.map(computer => <section key={computer.id ?? "local"} aria-label={computer.name}>
       <div className="computer-heading">
@@ -178,17 +172,25 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
       {computer.connection === "upgrade" && <div className="sidebar-hint upgrade-hint"><p>Update this computer and the app. Native conversations are retained.</p>
         <button onClick={() => location.reload()}>Reload app</button></div>}
       {(() => {
+        // Within each group, open ones first.
         const rows = host.sessions.filter(item => !item.home && item.computer === computer.id)
-          .sort((a, b) => restRank(a) - restRank(b) || Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created);
-        const resting = rows.filter(item => restRank(item) > 0), id = computer.id ?? "local", shown = restingShown.has(id);
-        // Folded away, a conversation still shows while it is open here or has something new.
-        const visible = shown ? resting : resting.filter(item => item.key === selected || unseen(item));
+          .sort((a, b) => restRank(a) - restRank(b) || Number(a.state === "closed") - Number(b.state === "closed")
+            || Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created);
+        const id = computer.id ?? "local";
+        /** A folded group's heading and rows. Folded away, a conversation still shows while it is open here or has something new. */
+        const group = (rank: number, shown: boolean, toggle: () => void, label: string, what: string) => {
+          const items = rows.filter(item => restRank(item) === rank);
+          if (!items.length) return null;
+          return <>
+            <button type="button" className="resting-toggle" aria-expanded={shown} title={`${shown ? "Hide" : "Show"} ${what}`} onClick={toggle}>
+              <Icon name="chevron" /><span>{label}</span><span className="computer-count">{items.length}</span></button>
+            {(shown ? items : items.filter(item => item.key === selected || unseen(item))).map(item => sessionRow(item, computer))}
+          </>;
+        };
         return <>
           {rows.filter(item => restRank(item) === 0).map(item => sessionRow(item, computer))}
-          {resting.length > 0 && <button type="button" className="resting-toggle" aria-expanded={shown}
-            title={shown ? "Hide conversations waiting for a watch or timer, and closed ones" : "Show conversations waiting for a watch or timer, and closed ones"}
-            onClick={() => toggleResting(id)}><Icon name="chevron" /><span>Waiting or closed</span><span className="computer-count">{resting.length}</span></button>}
-          {visible.map(item => sessionRow(item, computer))}
+          {group(1, waitingShown.has(id), () => toggleWaiting(id), "Waiting", "conversations a watch or timer will wake")}
+          {group(2, closedRowsShown.has(id), () => toggleClosedRows(id), "Closed", "closed conversations")}
         </>;
       })()}
       {computer.connection !== "upgrade" && !host.sessions.some(item => item.computer === computer.id) &&
