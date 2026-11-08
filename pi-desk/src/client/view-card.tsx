@@ -2,6 +2,7 @@ import type { UiDetails } from "../../../pi-ui/index.ts";
 import type { ChatMessage, HistoryPage, ViewSnapshot, WorkerCommand } from "../shared/protocol.ts";
 import { Configuration } from "./configuration.tsx";
 import { DetailsView } from "./details-view.tsx";
+import { HandbookView } from "./handbook-view.tsx";
 import { MessageView as Message } from "./message-view.tsx";
 import { PlanView } from "./plan-view.tsx";
 import { transcriptKey } from "./state.ts";
@@ -22,7 +23,9 @@ export function ViewCard({ view, session, generation, connected, closing, epoch,
     {view.kind === "configuration" ? <Configuration key={`${session}:${generation}:${view.id}`} view={view} disabled={!!view.working || !connected || closing}
       invoke={(action, value) => run({ kind: "action", view: view.id, revision: view.revision, action: action.id, value })} />
     : view.id === "plan" && view.kind === "details" ? <PlanView view={view} showHeading={false} disabled={!connected || closing}
-      invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} /> : <>
+      invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} />
+    : view.kind === "handbook" ? <HandbookView view={view} disabled={!connected || closing}
+      invoke={(action, value) => run({ kind: "action", view: view.id, revision: view.revision, action: action.id, ...(value === undefined ? {} : { value }) })} /> : <>
     <div className="panel-section-heading">
     <WorkspaceActions view={view} disabled={!!view.working || !connected}
       invoke={action => run({ kind: "action", view: view.id, revision: view.revision, action: action.id })} />

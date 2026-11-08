@@ -50,6 +50,8 @@ const paths: Record<string, ReactNode> = {
 	"send-now": <path d="m13 2-9 12h7l-1 8 10-13h-7l1-7Z" />,
 	expand: <path d="M14 3h7v7m0-7-8 8M10 21H3v-7m0 7 8-8" />,
 	plan: <><rect x="4" y="3" width="16" height="18" rx="2" /><path d="m7 8 1 1 2-2m3 1h4m-10 7 1 1 2-2m3 1h4" /></>,
+	// Lucide "book-open" (ISC licence).
+	book: <><path d="M12 7v14" /><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z" /></>,
 	pause: <path d="M8 5v14m8-14v14" />,
 	play: <path d="m8 4 12 8-12 8Z" />,
 	steer: <><path d="M5 20V9a4 4 0 0 1 4-4h10m-4-4 4 4-4 4" /><path d="M5 14h9a4 4 0 0 1 4 4v2" /></>,
@@ -62,7 +64,7 @@ export function Icon({ name, className = "" }: { name: string; className?: strin
 const sections: Record<string, string> = {
 	general: "settings", conversation: "chat", accounts: "account", computers: "computer", context: "context", tools: "tools", activity: "activity", availability: "clock", dictation: "mic", efficiency: "usage",
 	"desk-mcp": "plug", "pi-usage": "usage", "codex-wire": "code", config: "sliders",
-	"context-window": "context", "desk-browser": "globe", "web-search": "globe", plan: "plan", "pi-party": "chat", messages: "chat", subagents: "layers",
+	"context-window": "context", "desk-browser": "globe", "web-search": "globe", plan: "plan", handbook: "book", "pi-party": "chat", messages: "chat", subagents: "layers",
 };
 export function SectionIcon({ id }: { id: string }) { return <Icon name={sections[id] ?? "settings"} />; }
 

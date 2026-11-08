@@ -1,0 +1,19 @@
+{
+	"name": "pi-handbook",
+	"version": "0.1.0",
+	"description": "A conversation's purpose, the user's lasting instructions in their words, and what it has learned, kept across compactions.",
+	"private": true,
+	"type": "module",
+	"pi": {
+		"extensions": [
+			"./extensions/handbook.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": ">=0.87.1",
+		"@earendil-works/pi-coding-agent": ">=0.87.1",
+		"@earendil-works/pi-tui": ">=0.87.1",
+		"typebox": "*"
+	},
+	"license": "MIT"
+}

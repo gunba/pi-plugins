@@ -44,6 +44,7 @@
       "./pi-context-window/index.ts",
       "./pi-agents/index.ts",
       "./pi-plan/extensions/plan.ts",
+      "./pi-handbook/extensions/handbook.ts",
       "./pi-watch/index.ts",
       "./pi-show/extensions/show.ts",
       "./pi-agents/subagents/subagents.ts",
