@@ -73,6 +73,26 @@ test("a backed-up relay peer disconnects without reporting that its account acce
 	assert.equal(await disconnection, 1013);
 });
 
+test("streamed text joins the piece waiting to be sent instead of disconnecting a slow display", { timeout: 15_000 }, async t => {
+	// A busy computer streaming replies fell more than 128 events behind and disconnected the browser (1013).
+	const pieces = Array.from({ length: 600 }, (_, index) => `${index} `), expected = pieces.join("");
+	const packets = [];
+	let text = "", done;
+	const finished = new Promise(resolve => { done = resolve; });
+	const peer = await relayPeer(t, packet => {
+		if (packet.type !== "event") return;
+		packets.push(packet); text += packet.event.message.text;
+		if (text.length >= expected.length) done();
+		void peer.send({ type: "events_ack", sequence: packet.sequence });
+	});
+	pieces.forEach((piece, index) => peer.publish({ type: "worker", key: "sample", message: {
+		type: "delta", generation: "g", id: "live:1", revision: index + 1, index: 0, kind: "text", text: piece } }));
+	await Promise.race([finished, peer.disconnection.then(code => { throw new Error(`Streaming closed the connection: ${code}`); })]);
+	assert.equal(text, expected);
+	assert.equal(packets.at(-1).event.message.revision, 600);
+	assert.ok(packets.length < 128, `waiting pieces are joined (${packets.length} sent)`);
+});
+
 test("replaceable session snapshots coalesce instead of disconnecting a slow display", { timeout: 15_000 }, async t => {
 	const received = [];
 	let delivered, blocked, finished;

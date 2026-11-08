@@ -280,7 +280,10 @@ export function subscribe(events: (batch: WorkspaceEvent[]) => void, connection:
 	const receive = (event: WorkspaceEvent, accepted?: () => void) => {
 		const bytes = JSON.stringify(event).length * 2;
 		if (event.type === "state" && pending.at(-1)?.type === "state") { size -= weights.pop()!; pending.pop(); }
-		if (pending.length >= 128 || pending.length > 0 && size + bytes > 8 * 1024 * 1024) {
+		// Each computer sends at most 128 events or 8 MB before this browser acknowledges them (host EventWindow), so
+		// that much from every computer at once is no sign of trouble.
+		const computers = mode === "account" ? Math.max(1, remotes.size) : 1;
+		if (pending.length >= 128 * computers || pending.length > 0 && size + bytes > 8 * 1024 * 1024 * computers) {
 			clear();
 			if (mode === "account") { for (const remote of remotes.values()) remote.client.reconnect("Display update buffer filled; refreshing the connection"); }
 			else { source?.close(); source = undefined; openLocal(); }

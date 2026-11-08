@@ -369,7 +369,7 @@ export class RelayConnector {
 			// snapshots of a conversation may be merged before then, which changes alone could not be.
 			peer.delivery = new EventDelivery(peer.events, (sequence, event) =>
 				peer.channel!.send({ type: "event", sequence, event: forBrowser(peer, event) } satisfies RemotePayload),
-				() => this.drop(peer.id, true, 1013));
+				reason => { console.error(`A browser fell behind and was disconnected to catch up: ${reason}.`); this.drop(peer.id, true, 1013); });
 			peer.unwatch = this.options.watch(event => {
 				if (!this.valid(peer)) { this.drop(peer.id, true, 1013); return; }
 				peer.delivery!.push(event);
