@@ -132,6 +132,25 @@ test("complete records open steps; definition fields apply with any action; crea
 	await h.emit("session_shutdown");
 });
 
+test("an update whose action is refused saves none of its fields", async () => {
+	// complete with the final steps, sent for a plan already complete, failed with "plan is already complete" yet saved
+	// the steps, so the model was told nothing had changed when it had.
+	const h = createExtensionHarness({ persistSentMessages: false }); await h.start();
+	const done = [{ content: "Build", status: "completed" }, { content: "Release", status: "completed" }];
+	await create(h, { auto_continue: false, steps: [{ content: "Build", status: "in_progress" }, { content: "Release", status: "pending" }] });
+	await update(h, { action: "complete" });
+	let before = await read(h);
+	await assert.rejects(update(h, { action: "complete", steps: done }), /plan is already complete/);
+	assert.deepEqual(await read(h), before);
+	await create(h, { auto_continue: false, steps: [{ content: "Build", status: "in_progress" }] });
+	await update(h, { action: "pause" });
+	before = await read(h);
+	await assert.rejects(update(h, { action: "pause", objective: "Ship it" }), /only an active plan can be paused/);
+	await assert.rejects(update(h, { action: "resume", steps: done, blocked_reason: "Waiting" }), /only valid with action blocked/);
+	assert.deepEqual(await read(h), before);
+	await h.emit("session_shutdown");
+});
+
 test("an edit that changes nothing, or a resume of a running plan, returns the plan without a new revision", async () => {
 	// In a week of sessions, 6 update_plan calls failed as empty edits (models looking at the plan) and 8 as resumes.
 	const h = createExtensionHarness({ persistSentMessages: false }); await h.start();

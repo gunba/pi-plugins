@@ -196,10 +196,7 @@ class PlanController {
 			throw new Error(`The plan changed since you last saw it, so nothing was applied. It is now:\n${planText(current)}\n`
 				+ "Send the update again if it still applies.");
 		}
-		// A revision this call makes is the model's own, even when a later part of the call fails (complete with steps
-		// applies the steps first), so it has not changed behind the model's back.
-		try { return this.control(params, ref(current)); }
-		finally { const after = this.current(); if (seenKey(after) !== seenKey(current)) this.modelSeen = seenKey(after); }
+		return this.control(params, ref(current));
 	}
 	/** The plan a tool returns to the model, which has now seen it. */
 	private shown(plan: PlanView | undefined) {
@@ -207,38 +204,23 @@ class PlanController {
 		return result(plan);
 	}
 	private control(params: UpdateParams, planRef: PlanRef): PlanView | undefined {
-		const before = this.store.get()?.steps ?? [], replacements = definition(params, before);
-		const kept = replacements.steps && new Set(replacements.steps.map(step => step.content.trim()));
-		const dropped = kept ? before.filter(step => step.status !== "completed" && !kept.has(step.content.trim())).map(step => step.content) : [];
-		// Definition fields sent with another action (complete with the final steps, say) are applied first, in one call.
-		if (params.action !== "edit" && Object.keys(replacements).length) {
-			const edited = this.store.edit(planRef, replacements);
-			this.dropped = dropped;
-			planRef = { id: edited.id, revision: edited.revision };
-		}
-		if (params.action !== "blocked" && params.blocked_reason !== undefined) throw new Error("blocked_reason is only valid with action blocked.");
-		// An edit that changes nothing is how models look at the plan (there is no read tool): it returns the plan.
-		if (params.action === "edit" && !Object.keys(replacements).length) return this.store.get();
-		if (params.action === "edit") {
-			const edited = this.store.edit(planRef, replacements);
-			this.dropped = dropped;
-			return edited;
-		}
-		if (params.action === "pause") return this.store.pause(planRef);
-		if (params.action === "resume") {
-			const current = this.store.get();
-			// Resuming a plan that is already running changes nothing.
-			if (current?.phase === "active" && (!current.autoContinue || current.activation === "armed")) return current;
-			return this.store.resume(planRef);
-		}
 		const current = this.store.get();
 		if (!current) throw new Error("No current plan.");
+		const replacements = definition(params, current.steps);
+		const kept = replacements.steps && new Set(replacements.steps.map(step => step.content.trim()));
+		const dropped = kept ? current.steps.filter(step => step.status !== "completed" && !kept.has(step.content.trim())).map(step => step.content) : [];
+		if (params.action !== "blocked" && params.blocked_reason !== undefined) throw new Error("blocked_reason is only valid with action blocked.");
 		const automaticRound = this.attempt?.admitted && this.attempt.planId === current.id && this.attempt.round === current.roundsStarted;
 		if (params.action === "blocked" && automaticRound && current.roundsStarted < DEFAULT_BLOCKED_AFTER_ROUNDS)
 			throw new Error(`Blocked requires at least ${DEFAULT_BLOCKED_AFTER_ROUNDS} consecutive automatic rounds.`);
-		const next = params.action === "complete" ? this.store.complete(planRef)
-			: this.store.block(planRef, { code: "model-reported", message: params.blocked_reason! });
-		if (automaticRound) this.wrapup = renderPlanWrapup(next, params.blocked_reason);
+		// Definition fields sent with another action (complete with the final steps, say) are applied first, in one call,
+		// and not at all if the action is refused. An edit that changes nothing is how models look at the plan (there is no
+		// read tool), and resuming a plan that is already running changes nothing: both return the plan.
+		const next = this.store.update(planRef, replacements, params.action === "edit" ? undefined
+			: params.action === "blocked" ? { operation: "block", reason: { code: "model-reported", message: params.blocked_reason! } }
+			: { operation: params.action });
+		if (Object.keys(replacements).length) this.dropped = dropped;
+		if (automaticRound && (params.action === "complete" || params.action === "blocked")) this.wrapup = renderPlanWrapup(next!, params.blocked_reason);
 		return next;
 	}
 	register(): void {

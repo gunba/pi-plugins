@@ -12,6 +12,8 @@ export class PlanStateError extends Error {
 	constructor(message: string) { super(message); this.name = "PlanStateError"; }
 }
 interface PlanStoreOptions { defaultMaxRounds?: number; now?: () => number; newId?: () => string }
+/** A change of phase that update_plan sends, alone or with new definition fields. */
+export type PlanTransition = { operation: "pause" | "resume" | "complete" } | { operation: "block"; reason: PlanBlockReason };
 
 /** One selected-branch projection and one writer, using native custom entries. */
 export class PlanStore {
@@ -66,6 +68,29 @@ export class PlanStore {
 	}
 	edit(ref: PlanRef, request: EditPlanRequest): PlanView {
 		this.assertHealthy(); return this.commit(planEdit(this.state, ref, request, this.now(), this.activation));
+	}
+	/**
+	 * Edits the plan with the fields request sets, then makes the transition on the edited plan, one revision each. Both
+	 * are planned before either is saved, so a call whose transition fails (completing a plan that is already complete,
+	 * say) changes nothing. Resuming a plan that is already running, like a call with no fields and no transition, makes
+	 * no revision. Returns the plan as it then is.
+	 */
+	update(ref: PlanRef, request: EditPlanRequest, transition?: PlanTransition): PlanView | undefined {
+		this.assertHealthy();
+		const state = clonePlanFoldState(this.state), planned: PlannedPlanChange[] = [];
+		let activation = this.activation, at = ref;
+		const plan = (change: PlannedPlanChange) => {
+			applyPlanChange(state, decodePlanChange(change.change));
+			planned.push(change); activation = change.activation; at = { ...state.lastRef! };
+		};
+		if (Object.values(request).some(value => value !== undefined)) plan(planEdit(state, at, request, this.now(), activation));
+		const edited = state.plan, running = edited?.phase === "active" && (!edited.autoContinue || activation === "armed");
+		if (transition?.operation === "pause") plan(planPause(state, at, this.now()));
+		else if (transition?.operation === "resume" && !running) plan(planResume(state, at, this.now(), activation));
+		else if (transition?.operation === "complete") plan(planComplete(state, at, this.now()));
+		else if (transition?.operation === "block") plan(planBlock(state, at, transition.reason, this.now()));
+		for (const change of planned) this.commitChange(change);
+		return this.get();
 	}
 	pause(ref: PlanRef): PlanView { this.assertHealthy(); return this.commit(planPause(this.state, ref, this.now())); }
 	resume(ref: PlanRef): PlanView { this.assertHealthy(); return this.commit(planResume(this.state, ref, this.now(), this.activation)); }

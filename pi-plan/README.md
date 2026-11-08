@@ -22,10 +22,11 @@ Model tools:
 - `update_plan` takes an `action` and changes the current plan. Edit changes only
   supplied fields; `steps` replaces the complete list. Other actions are pause,
   resume, complete and blocked; objective or steps sent with one of these are
-  applied first, in the same call. An update that would replace the objective or steps
-  is refused once, with the current plan, when the plan changed since the model last
-  saw it (in Desk, say), so it can't overwrite a change it hasn't seen. An update that
-  leaves out unfinished steps says so at the end of the next result, naming them, since a
+  applied first, in the same call, and not at all if the action is refused. An
+  update that would replace the objective or steps is refused once, with the
+  current plan, when the plan changed since the model last saw it (in Desk, say),
+  so it can't overwrite a change it hasn't seen. An update that leaves out
+  unfinished steps says so at the end of the next result, naming them, since a
   model that sends only its new steps would otherwise lose the rest unnoticed.
 
 Both return the plan. Other plugins read it by emitting `pi-plan/read-v1` on the
