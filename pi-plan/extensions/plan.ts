@@ -37,10 +37,8 @@ function lastShownPlan(branch: readonly SessionEntry[]): string {
 	}
 	return "";
 }
-const result = (plan?: PlanView) => {
-	const value = { plan: plan ?? null };
-	return { content: [{ type: "text" as const, text: planText(plan) }], details: value, structuredContent: JSON.parse(JSON.stringify(value)) };
-};
+/** Programs get the text the model reads, as for a direct call; the plan record stays in details. */
+const result = (plan?: PlanView) => ({ content: [{ type: "text" as const, text: planText(plan) }], details: { plan: plan ?? null } });
 /**
  * The plan as the model reads it: what it can act on, without identifiers, timestamps or settings left at their
  * defaults. Desk and the seen-plan check use the result's details.

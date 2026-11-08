@@ -21,9 +21,11 @@ const result = await tools.conversation_search({
 ```
 
 Use `conversation_read` with a result's `reference` and the returned `server`.
-References identify native evidence, not arbitrary file paths. Results include
-computer, native session and entry IDs, speaker, time when known, project, and
-position in the redacted entry. Retained identical copies can preserve a reference
+References identify native evidence, not arbitrary file paths. The model, and
+programs, read each passage under a line with its short reference, conversation,
+folder, speaker and time; the response's computer, session and entry IDs and the
+index's counts stay out of their context, except a line about the index when it
+is incomplete. Retained identical copies can preserve a reference
 when a file or conversation moves. A removed reference fails rather than opening
 an unrelated file.
 

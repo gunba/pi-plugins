@@ -171,7 +171,7 @@ test("agent_resume reopens a closed conversation without sending it anything", a
 	assert.equal(request.session, closed);
 	host.settle("local", { id: request.id, result: { session: closed, state: "resumed", key: "01a14825-0000-7000-8000-000000000004" } });
 	t.mock.timers.tick(1_000);
-	assert.deepEqual(JSON.parse((await call).content[0].text), { agent: closed, reopened: "yes" });
+	assert.deepEqual(JSON.parse((await call).content[0].text), { agent: closed, handle: closed, reopened: "yes" });
 	const listed = JSON.parse((await a.call("agent_list", { offline: true })).content[0].text);
 	assert.equal(JSON.stringify(listed).includes("unread"), false, "nothing was sent to it");
 	} finally { host.close(); }
@@ -226,7 +226,7 @@ test("agent_send accepts and delivers large messages without a schema or runtime
 	await a.call("agent_send", args);
 	t.mock.timers.tick(10_000);
 	assert.equal(b.sent.length, 1);
-	assert.equal(b.sent[0].message.content, `Message · first (first)\n\n${text}`);
+	assert.equal(b.sent[0].message.content, `Message from first\n\n${text}`);
 	assert.equal(b.sent[0].options.triggerTurn, false);
 	await b.emit("context", { messages: b.branch.map(x => x.message) });
 	t.mock.timers.tick(10_000);

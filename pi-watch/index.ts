@@ -157,8 +157,6 @@ export class Watches implements WatchBackend {
 		else console.error(`pi-watch: ${error instanceof Error ? error.message : String(error)}`);
 	}
 
-	data() { return this.engine.specs().map(spec => ({ ...spec })); }
-
 	/** Program watches run with the context of a call the agent made in this process; a restart leaves them waiting. */
 	useContext(ctx: ExtensionToolContext): void { this.toolContext = ctx; }
 
@@ -374,9 +372,9 @@ export default function watch(pi: ExtensionAPI): void {
 					+ "queue a wake. To wait for a page, have chrome_devtools_evaluate await it in the page (awaitPromise: true), "
 					+ "e.g. new Promise(r => setTimeout(r, 4000)); to wait longer, end your turn with a watch.");
 			watches.useContext(ctx);
+			// Programs get the sentence too; it lists the watches still active when one stops.
 			const text = await watches.call(params, ctx, label);
-			return { content: [{ type: "text", text }], details: {},
-				structuredContent: JSON.parse(JSON.stringify({ text, watches: watches.data() })) };
+			return { content: [{ type: "text", text }], details: {} };
 		},
 	});
 }

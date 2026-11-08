@@ -1,5 +1,6 @@
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { hostname } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { agentId, nativeId, networkMembers, remoteMember, remoteMessage, NETWORK_LIMIT, MAX_NETWORK_PACKET, uuid,
@@ -8,6 +9,34 @@ import { agentId, nativeId, networkMembers, remoteMember, remoteMessage, NETWORK
 export const LEASE_MS = 45_000;
 /** How long, and how many of, a computer's closed conversations it lists to the others. */
 const CLOSED_LISTED_MS = 30 * 86_400_000, CLOSED_LISTED = 200;
+/** A name compared as agents type it: case and runs of spaces don't matter. */
+export const nameKey = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
+
+/** The conversation whose process runs a helper agent: its history is in a folder named for that conversation (subagent-runtime.ts). */
+export function helperRoot(file: string): string | undefined {
+	try { return decodeURIComponent(basename(dirname(file))); } catch { return undefined; }
+}
+/**
+ * How agents name each other: an agent's name, or when another agent has the same name, its name and computer
+ * ("Home on pi-desk-sydney"), or when one on the same computer has it too, its name and the end of its ID
+ * ("Untitled conversation [3fab96c2]"). The end of an ID is random; the start is a time that agents started together share.
+ * PartyStore.peer finds an agent by its handle.
+ */
+export function agentHandles(agents: readonly Pick<Member, "session" | "label" | "computer">[], computerName: (computer: string | undefined) => string): Map<string, string> {
+	const byName = new Map<string, Pick<Member, "session" | "label" | "computer">[]>();
+	for (const agent of agents) {
+		const key = nameKey(agent.label);
+		byName.set(key, [...byName.get(key) ?? [], agent]);
+	}
+	const handles = new Map<string, string>();
+	for (const agent of agents) {
+		const same = byName.get(nameKey(agent.label))!, label = agent.label.trim() || "Untitled conversation";
+		const here = same.filter(other => (other.computer ?? undefined) === (agent.computer ?? undefined));
+		handles.set(agent.session, same.length === 1 ? label : here.length === 1 ? `${label} on ${computerName(agent.computer ?? undefined)}`
+			: `${label} [${nativeId(agent.session).slice(-8)}]`);
+	}
+	return handles;
+}
 /** Messages are direct; an epoch change (new registration) withdraws undelivered ones. */
 export const CURRENT_MESSAGE_SQL = `m.room='' AND sender.agent_epoch=m.sender_epoch AND recipient.agent_epoch=m.recipient_epoch`;
 export interface Member {
@@ -461,6 +490,12 @@ export class PartyStore {
 	sessionFile(session: string): string | undefined {
 		return (this.db.prepare("SELECT file FROM session_files WHERE session=?").get(session) as { file: string } | undefined)?.file;
 	}
+	/** The helper agents a conversation's process runs: the subagent runtime keeps their histories in a folder named for it. */
+	helpers(root: string): string[] {
+		const rows = this.db.prepare("SELECT m.session, f.file FROM members m JOIN session_files f ON f.session=m.session WHERE m.kind='child'")
+			.all() as { session: string; file: string }[];
+		return rows.filter(row => helperRoot(row.file) === root).map(row => row.session);
+	}
 	profile(session: string, owner: string, description: string): void {
 		this.owned(session, owner);
 		this.db.prepare("UPDATE members SET description=? WHERE session=? AND owner=?").run(description, session, owner);
@@ -500,21 +535,58 @@ export class PartyStore {
 		).get(...scopeArgs, cursor.created, cursor.id);
 		return { messages: rows, hasOlder: !!first && exists(first, "<"), hasNewer: !!last && exists(last, ">") };
 	}
-	/** The other agent an ID, or the start of one, names. */
+	/** The other agent a handle (agentHandles), a name, or an ID or the start of one names. */
 	peer(session: string, target: string): Member {
 		return this.resolve(target, this.db.prepare("SELECT * FROM party_agents WHERE session<>?").all(session) as unknown as Member[]);
 	}
+	/** Each agent's handle (agentHandles), by session, among every agent this computer knows. */
+	handles(): Map<string, string> {
+		return agentHandles(this.db.prepare("SELECT session,label,computer FROM party_agents").all() as unknown as Member[], computer => this.computerName(computer));
+	}
+	/** A computer's name as agents see it: this one's host name, another's name, or the start of its ID if it has none. */
+	computerName(computer: string | null | undefined): string {
+		if (!computer || computer === "local") return hostname();
+		const row = this.db.prepare("SELECT name FROM network_computers WHERE computer=?").get(computer) as { name: string | null } | undefined;
+		return row?.name ?? computer.slice(0, 8);
+	}
 	private resolve(target: string, peers: Member[]): Member {
-		if (!target.trim()) throw Error("Choose an agent ID from agent_list.");
-		const exact = peers.find(peer => peer.session === target);
+		const value = target.trim().replace(/\s+/g, " ");
+		if (!value) throw Error("Choose an agent from agent_list.");
+		const exact = peers.find(peer => peer.session === value);
 		if (exact) return exact;
-		const matches = peers.filter(peer => peer.session.startsWith(target));
-		if (matches.length > 1) throw Error(`More than one agent ID starts with ${target}. Choose one from agent_list.`);
+		const one = (matches: Member[], which: string): Member | undefined => {
+			if (matches.length < 2) return matches[0];
+			const handles = agentHandles(peers, computer => this.computerName(computer));
+			throw Error(`More than one agent ${which}: ${matches.map(peer => handles.get(peer.session)).join("; ")}. Use one of these.`);
+		};
+		const named = (name: string) => peers.filter(peer => nameKey(peer.label) === nameKey(name));
+		// "Name [1a2b3c4d]": the end of its ID tells apart conversations with the same name on one computer.
+		const tagged = /^(.*?) ?\[([0-9a-f]{6,12})\]$/i.exec(value);
+		if (tagged) {
+			const matches = peers.filter(peer => nativeId(peer.session).toLowerCase().endsWith(tagged[2]!.toLowerCase())
+				&& (!tagged[1] || nameKey(peer.label) === nameKey(tagged[1])));
+			const found = one(matches, `has an ID ending in ${tagged[2]}`);
+			if (found) return found;
+		}
+		const found = one(named(value), `is named "${value}"`);
+		if (found) return found;
+		// "Name on computer", when agents on different computers share a name.
+		const on = value.toLowerCase().lastIndexOf(" on ");
+		if (on > 0) {
+			let computer: string | undefined;
+			try { computer = this.resolveComputer(value.slice(on + 4), hostname()); } catch { /* Not a computer: the whole value is a name. */ }
+			if (computer) {
+				const local = computer === "local";
+				const match = one(named(value.slice(0, on)).filter(peer => local ? !peer.computer : peer.computer === computer), `is named "${value}"`);
+				if (match) return match;
+			}
+		}
+		const prefixed = one(peers.filter(peer => peer.session.startsWith(value)), `has an ID starting ${value}`);
+		if (prefixed) return prefixed;
 		// Other computers list only their open conversations, so a closed one there is unknown here.
-		if (!matches.length) throw Error(target.includes("@")
-			? `${target} is not open on its computer. A conversation on another computer can be messaged only while it is open there.`
-			: `No agent has the ID ${target}. Choose an agent ID from agent_list.`);
-		return matches[0];
+		throw Error(value.includes("@")
+			? `${value} is not open on its computer. A conversation on another computer can be messaged only while it is open there.`
+			: `No agent is named "${value}". agent_list shows the agents there are; a closed one on another computer can be messaged only while it is open there.`);
 	}
 	send(session: string, owner: string, target: string, text: string, wake: boolean, files: MessageFile[] = []): PartyMessage {
 		if (!text.trim()) throw Error("Messages must contain non-whitespace text.");

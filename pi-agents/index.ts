@@ -78,7 +78,8 @@ export default function party(pi: ExtensionAPI): void {
 		if (!database().computerOnline(computer)) return "Its computer is offline.";
 		return database().computerSupports(computer, "resume") ? undefined : "Its computer runs an older Desk that cannot reopen conversations.";
 	};
-	const publicAgent = (peer: Member) => {
+	/** An agent as the agent tools show it; handles are worked out among every agent known (PartyStore.handles). */
+	const publicAgent = (peer: Member, handles = database().handles()) => {
 		const state = peer.heartbeat <= Date.now() - LEASE_MS ? "offline" : peer.state;
 		const resumable = state === "offline" && !resumeBlocker(peer);
 		// A managed child's parent owns its turns; messages arrive during the next one and never start it.
@@ -86,7 +87,7 @@ export default function party(pi: ExtensionAPI): void {
 			: resumable ? { delivery: "reopen on wake", wakeable: true, deliveryReason: "Closed. agent_send with wake reopens it and it starts on your message; with wake=false the message waits until it is next opened. agent_resume reopens it without a message." }
 			: partyDelivery(peer, !!peer.delivery && state !== "offline", state);
 		return {
-			id: peer.session, computer: peer.computer ?? null, label: peer.label, description: peer.description, cwd: peer.cwd,
+			id: peer.session, handle: handles.get(peer.session) ?? peer.label, computer: peer.computer ?? null, label: peer.label, description: peer.description, cwd: peer.cwd,
 			kind: peer.kind, self: peer.session === session, state, ...delivery, ...(state === "offline" ? { resumable } : {}),
 		};
 	};
@@ -136,7 +137,7 @@ export default function party(pi: ExtensionAPI): void {
 			syncFlight();
 			// Messages that asked to wake it while it was closed start a turn now, as they would have had it been idle.
 			const queued = store.pending(session, owner).filter(message => !inFlight.has(message.id));
-			const pending = queued.slice(0, 8);
+			const pending = queued.slice(0, 8), handles = pending.length ? store.handles() : undefined;
 			// Managed child starts are accounted by their owning driver.
 			const wake = !starting && !child && ctx.isIdle() && pending.some(message => message.wake === 1);
 			for (let index = 0; index < pending.length; index++) {
@@ -145,7 +146,8 @@ export default function party(pi: ExtensionAPI): void {
 				try {
 					pi.sendMessage({
 						customType: PARTY_MESSAGE, display: true,
-						content: `Message · ${safeWorkText(message.sender_label)} (${message.sender})\n\n${message.text}${receivedFiles(message)}`,
+						// The sender's handle is what agent_send takes to reply.
+						content: `Message from ${safeWorkText(handles?.get(message.sender) ?? message.sender_label)}\n\n${message.text}${receivedFiles(message)}`,
 						details: { messageId: message.id, sender: message.sender, kind: message.kind },
 					}, {
 						// Pi has not claimed the low-level run in before_agent_start.
@@ -316,8 +318,8 @@ export default function party(pi: ExtensionAPI): void {
 				return { self: publicAgent(self), pending: database().pending(session, owner).length, armed };
 			},
 			discover: (query, offline, offset) => {
-				const found = database().discover(query, offline, offset);
-				return { agents: found.agents.map(publicAgent), nextOffset: found.nextOffset };
+				const found = database().discover(query, offline, offset), handles = database().handles();
+				return { agents: found.agents.map(agent => publicAgent(agent, handles)), nextOffset: found.nextOffset };
 			},
 			history: query => database().history(session, owner, query),
 			profile: description => { database().profile(session, owner, description); signal(); publish(); },
@@ -388,7 +390,9 @@ export default function party(pi: ExtensionAPI): void {
 				...(request.model ? { model: request.model } : {}), ...(request.reasoning ? { reasoning: request.reasoning } : {}) });
 			const response = await operations().wait(queued.id, abort), created = response.result!.session;
 			const ignored = (request.model || request.reasoning) && !response.result!.model && !response.result!.reasoning;
-			return { ...response, agent: computer && computer !== "local" ? agentId(computer, created) : created,
+			const agent = computer && computer !== "local" ? agentId(computer, created) : created;
+			// It may not have registered yet; until it does, its name is the one asked for.
+			return { ...response, agent, handle: database().handles().get(agent) ?? request.name.slice(0, 120),
 				...(ignored ? { warning: "That computer's Desk is too old to choose a model or reasoning level. The agent started on its defaults; update Desk there to choose them." } : {}) };
 		},
 		async send(request, signal, context) {
@@ -407,20 +411,23 @@ export default function party(pi: ExtensionAPI): void {
 				...(files.length ? { files: files.map(file => ({ name: file.name, bytes: file.size })) } : {}) }] };
 		},
 		list(request) {
-			const found = database().discover(request.query, request.offline, request.offset);
+			const found = database().discover(request.query, request.offline, request.offset), handles = database().handles();
 			rememberAgentLabels(found.agents);
-			return { agents: found.agents.map(publicAgent), nextOffset: found.nextOffset ?? null,
+			return { agents: found.agents.map(agent => publicAgent(agent, handles)), nextOffset: found.nextOffset ?? null,
 				computers: [{ id: "local", name: hostname(), platform: process.platform, state: operations().hostOnline() ? "connected" : "offline" }, ...database().computers()] };
 		},
 		async resume(request, abort) {
-			const peer = database().peer(session, request.agent);
-			if (peer.heartbeat > Date.now() - LEASE_MS || peer.state === "restarting") return { agent: peer.session, reopened: "already open" };
+			const peer = database().peer(session, request.agent), handle = database().handles().get(peer.session) ?? peer.label;
+			if (peer.heartbeat > Date.now() - LEASE_MS || peer.state === "restarting") return { agent: peer.session, handle, reopened: "already open" };
 			const outcome = await reopen(peer, abort);
-			if (outcome.reopened === "no") throw Error(`${peer.label} could not be reopened: ${outcome.reason}`);
-			return { agent: peer.session, reopened: outcome.reopened, ...(outcome.reopened === "starting" ? { note: "Desk is still opening it." } : {}) };
+			if (outcome.reopened === "no") throw Error(`${handle} could not be reopened: ${outcome.reason}`);
+			return { agent: peer.session, handle, reopened: outcome.reopened, ...(outcome.reopened === "starting" ? { note: "Desk is still opening it." } : {}) };
 		},
 		async close(request, abort) {
-			const at = request.agent.lastIndexOf("@"), computer = at > 0 ? request.agent.slice(at + 1) : "local", target = at > 0 ? request.agent.slice(0, at) : request.agent;
+			// A name or handle names an agent this computer knows; an ID may name one it doesn't, such as one closed elsewhere.
+			let id = request.agent;
+			try { id = database().peer(session, request.agent).session; } catch (error) { if (!/^[0-9a-f-]{8,}(@[0-9a-f-]{36})?$/i.test(request.agent)) throw error; }
+			const at = id.lastIndexOf("@"), computer = at > 0 ? id.slice(at + 1) : "local", target = at > 0 ? id.slice(0, at) : id;
 			if (computer !== "local" && !database().computerSupports(computer, "close")) throw Error("That agent's computer is offline, or its Desk is too old to close agents; it updates itself.");
 			const queued = operations().queue(database(), session, owner, { kind: "close", computer, session: target, ...(request.note ? { note: request.note } : {}),
 				...(request.keep !== undefined ? { keep: request.keep } : {}) });

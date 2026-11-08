@@ -64,7 +64,6 @@ export interface WatchBackend {
 	restore(): void;
 	close(shutdown?: boolean): void;
 	call(input: Params, ctx: ExtensionContext, label?: string): Promise<string>;
-	data(): WatchSpec[];
 	useContext(ctx: ExtensionToolContext): void;
 	keepOpen(): void;
 	shell(): Shell;

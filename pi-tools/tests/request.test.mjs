@@ -208,6 +208,7 @@ test("nested questions use the native RPC UI and return the selected response", 
 });
 
 test("plan, shown-file and watch operations retain their data and separate cards", async t => {
+  // Programs get the plan's and the watch's text, as the model does; the records stay in the results' details.
   const h = await harness(t, pi => { plan(pi); show(pi); watch(pi); });
   const result = await h.run(`
     const created = await tools.create_plan({objective: "Prepare note", steps:[{content:"Write note",status:"pending"}]});
@@ -215,9 +216,10 @@ test("plan, shown-file and watch operations retain their data and separate cards
     const shown = await tools.show({title:"Note",items:[{file:"note.md"}]});
     const complete = await tools.update_plan({action:"complete",steps:[{content:"Write note",status:"completed"}]});
     const started = await tools.watch({until:"2099-01-01T09:00:00Z"});
-    const stopped = await tools.watch({stop:started.watches[0].id});
-    return {objective:created.plan.objective,phase:complete.plan.phase,title:shown.title,watches:stopped.watches.length};`);
-  assert.deepEqual(data(result), { objective:"Prepare note",phase:"complete",title:"Note",watches:0 });
+    const stopped = await tools.watch({stop:/^Watching as (w\\d+)/.exec(started)[1]});
+    return {created,complete,title:shown.title,stopped};`);
+  assert.deepEqual(data(result), { created:"Plan (active): Prepare note\n[ ] Write note", complete:"Plan (complete): Prepare note\n[x] Write note",
+    title:"Note", stopped:"Stopped w1. No active watches." });
   assert.equal(activeWatches(h.session.sessionManager.getSessionId()), 0);
   const nested = h.events.filter(e => e.type === "tool_execution_end" && e.parentToolCallId);
   assert.deepEqual(nested.map(e => e.toolName), ["create_plan","write","show","update_plan","watch","watch"]);
@@ -308,9 +310,9 @@ test("a watch starts after pruning released another branch's watch entries", asy
   const folder = join(h.root, "watch", h.session.sessionManager.getSessionId());
   await mkdir(folder, { recursive: true }); await writeFile(join(folder, "w7.log"), "");
   const result = await h.run(`
-    const started = await tools.watch({until:"2099-01-01T09:00:00Z"});
-    await tools.watch({stop:started.watches[0].id});
-    return {id: started.watches[0].id};`);
+    const id = /^Watching as (w\\d+)/.exec(await tools.watch({until:"2099-01-01T09:00:00Z"}))[1];
+    await tools.watch({stop:id});
+    return {id};`);
   assert.deepEqual(data(result), { id: "w8" });
 });
 
@@ -340,7 +342,7 @@ test("a conversation keeps more than eight time watches", async t => {
   const h = await harness(t, watch);
   const result = await h.run(`
     const ids = [];
-    for (let day = 1; day <= 10; day++) ids.push((await tools.watch({until: "2099-01-" + String(day).padStart(2, "0") + "T09:00:00Z"})).watches.at(-1).id);
+    for (let day = 1; day <= 10; day++) ids.push(/^Watching as (w\\d+)/.exec(await tools.watch({until: "2099-01-" + String(day).padStart(2, "0") + "T09:00:00Z"}))[1]);
     for (const id of ids) await tools.watch({stop: id});
     return {ids};`);
   assert.deepEqual(data(result), { ids: ["w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10"] });

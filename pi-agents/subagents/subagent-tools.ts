@@ -26,7 +26,7 @@ const startParameters = Type.Object({
 	name: Type.String({ minLength: 1 }),
 	primary: Type.Optional(Type.Boolean({ description: "true: its own Desk conversation, on any computer; needs Jordan's approval and doesn't report back. Default: a helper that reports back." })),
 	context: Type.Optional(Type.String({ description: "copy, fresh, or (secondary) a number of recent turns. Default: copy for secondary, fresh for primary." })),
-	computer: Type.Optional(Type.String({ description: "Primary: name or ID." })),
+	computer: Type.Optional(Type.String({ description: "Primary: computer name." })),
 	cwd: Type.Optional(Type.String({ maxLength: 4096, description: "Primary: folder; required on another computer." })),
 	model: Type.Optional(Type.String({ minLength: 1, maxLength: 300, description: "provider/id. Default: yours, or the computer's for primary." })),
 	reasoning: Type.Optional(Type.Enum(LEVELS, { type: "string" })),
@@ -34,7 +34,7 @@ const startParameters = Type.Object({
 }, { additionalProperties: false });
 
 const sendParameters = Type.Object({
-	to: Type.String({ minLength: 1, description: "ID, or a secondary agent's path." }),
+	to: Type.String({ minLength: 1, description: "Name as agent_list shows it, or a secondary agent's path." }),
 	message: Type.String({ minLength: 1 }),
 	wake: Type.Optional(Type.Boolean({ description: "false: it reads it on its next turn, instead of now." })),
 	files: Type.Optional(Type.Array(Type.String(), { maxItems: MAX_MESSAGE_FILES, description: "Primary: files copied to its computer." })),
@@ -47,11 +47,11 @@ const listParameters = Type.Object({
 }, { additionalProperties: false });
 
 const resumeParameters = Type.Object({
-	agent: Type.String({ minLength: 1, description: "A primary agent's ID." }),
+	agent: Type.String({ minLength: 1, description: "A primary agent's name as agent_list shows it." }),
 }, { additionalProperties: false });
 
 const stopParameters = Type.Object({
-	agent: Type.String({ minLength: 1, description: "ID, or a secondary agent's path." }),
+	agent: Type.String({ minLength: 1, description: "Name as agent_list shows it, or a secondary agent's path." }),
 	note: Type.Optional(Type.String({ description: "Primary: why." })),
 	keep: Type.Optional(Type.Boolean({ description: "Primary: true keeps it in the sidebar with its watches going on, to wake it; false removes it and ends them. Omitted: kept when it has watches." })),
 }, { additionalProperties: false });
@@ -92,23 +92,27 @@ export function taskName(name: string): string {
 
 type ToolJson = NonNullable<Awaited<ReturnType<ToolDefinition["execute"]>>["structuredContent"]>;
 
-/** The model reads `text`, a line or a short list; interfaces read the structured value. */
-function response<T extends ToolJson>(value: T, text = JSON.stringify(value)) {
-	return { content: [{ type: "text" as const, text }], details: value, structuredContent: value };
+/**
+ * The model reads `text`, a line or a short list, and so do programs unless `data` is given; interfaces read the
+ * whole record in details. Programs used to get the record, and agents printed it whole.
+ */
+function response<T extends ToolJson>(value: T, text = JSON.stringify(value), data?: ToolJson) {
+	return { content: [{ type: "text" as const, text }], details: value, ...(data === undefined ? {} : { structuredContent: data }) };
 }
 
-type Receipt = { to?: string; wakeRequested?: boolean; note?: string; files?: unknown[]; recipient?: { label?: string } };
+type Receipt = { to?: string; wakeRequested?: boolean; note?: string; files?: unknown[]; recipient?: { label?: string; handle?: string } };
 /** One line per message sent: who it went to, and when it is read if not now. */
 export function sentText(value: { queued?: Receipt[] }): string {
-	return (value.queued ?? []).map(item => `Sent to ${item.recipient?.label ?? item.to}${item.files?.length ? ` with ${item.files.length} files` : ""}.`
+	return (value.queued ?? []).map(item => `Sent to ${item.recipient?.handle ?? item.recipient?.label ?? item.to}${item.files?.length ? ` with ${item.files.length} files` : ""}.`
 		+ (item.note ? ` ${item.note}` : item.wakeRequested === false ? " It reads it on its next turn." : "")).join("\n") || "Nothing was sent.";
 }
 
-type Listed = { id: string; label: string; state: string; computer: string | null; cwd: string; description?: string; kind: string; self?: boolean;
+type Listed = { id: string; handle?: string; label: string; state: string; computer: string | null; cwd: string; description?: string; kind: string; self?: boolean;
 	delivery?: string; wakeable?: boolean; resumable?: boolean };
 /**
- * Agents as lines: a secondary agent by its path and status; a primary one by its ID (needed to message it), name,
- * state, computer and folder, and the start of its description. Delivery details appear only when they are unusual.
+ * Agents as lines: a secondary agent by its path and status; a primary one by its handle (what agent_send takes),
+ * state, computer unless the handle names it, folder and the start of its description. Computers by name, as
+ * agent_start takes them.
  */
 export function listText(value: { secondary: { agent_name: string; agent_status: string }[];
 	primary?: { agents: Listed[]; nextOffset: number | null; computers: { id: string; name?: string; state: string }[] } }): string {
@@ -121,10 +125,12 @@ export function listText(value: { secondary: { agent_name: string; agent_status:
 		lines.push(agents.length ? "Primary agents:" : "No other primary agents found.", ...agents.map(agent => {
 			const state = agent.state === "offline" ? agent.resumable ? "closed, reopens on wake" : "closed" : agent.state;
 			const description = agent.description ? ` — ${agent.description.length > 140 ? `${agent.description.slice(0, 139)}…` : agent.description}` : "";
-			return `${agent.id} · ${agent.label}${agent.kind === "child" ? " (child)" : ""} · ${state} · ${names.get(agent.computer ?? "local") ?? agent.computer} · ${agent.cwd}${description}`;
+			const handle = agent.handle ?? agent.id, computer = names.get(agent.computer ?? "local") ?? agent.computer;
+			const where = handle.endsWith(` on ${computer}`) ? agent.cwd : `${computer}, ${agent.cwd}`;
+			return `${handle}${agent.kind === "child" ? " (child)" : ""} · ${state} · ${where}${description}`;
 		}));
 		if (value.primary.nextOffset !== null) lines.push(`More: offset ${value.primary.nextOffset}.`);
-		lines.push(`Computers: ${value.primary.computers.map(computer => `${computer.name ?? computer.id} (${computer.id === "local" ? "this one" : computer.id}, ${computer.state})`).join("; ")}`);
+		lines.push(`Computers: ${value.primary.computers.map(computer => `${computer.name ?? computer.id}${computer.id === "local" ? " (this one)" : ""}${computer.state === "connected" ? "" : ` (${computer.state})`}`).join(", ")}`);
 	}
 	return lines.join("\n") || "No agents.";
 }
@@ -164,10 +170,13 @@ export function createSubagentToolDefinitions(
 					if (!agents) throw Error("Only a conversation in Pi Desk or Pi's terminal can start primary agents; a secondary agent can't.");
 					const started = await agents.start({ name: params.name, task: params.task, copy: params.context === "copy", computer: params.computer,
 						cwd: params.cwd, model: params.model, reasoning: params.reasoning }, toolCallId, signal, ctx) as ToolJson & { declined?: true; note?: string; agent?: string;
-						result?: { model?: string; reasoning?: string }; warning?: string };
+						handle?: string; result?: { model?: string; reasoning?: string }; warning?: string };
+					// Nothing started (Jordan said no): the program gets the answer as it came.
+					if (started.declined || started.agent === undefined) return response(started, started.note ?? JSON.stringify(started), started);
 					const setup = [started.result?.model, started.result?.reasoning].filter(Boolean).join(", ");
-					return response(started, started.declined ? started.note!
-						: `Started ${params.name}: agent ${started.agent}${setup ? ` (${setup})` : ""}.${started.warning ? ` ${started.warning}` : ""}`);
+					const handle = started.handle ?? params.name, on = params.computer && !handle.includes(" on ") ? ` on ${params.computer}` : "";
+					return response(started, `Started ${handle}${on}${setup ? ` (${setup})` : ""}.${started.warning ? ` ${started.warning}` : ""}`,
+						{ agent: handle, id: started.agent!, ...(started.warning ? { warning: started.warning } : {}) });
 				}
 				if (params.computer !== undefined || params.cwd !== undefined)
 					throw Error("computer and cwd are for primary agents; a secondary agent works here, in this conversation's folder.");
@@ -191,7 +200,7 @@ export function createSubagentToolDefinitions(
 				if (result.kind !== "continuable") throw Error("Agent creation did not return a durable identity");
 				const path = owner.agentPath(result.subagentId);
 				// The ID too: tools such as the arenas find an agent's session file by it.
-				return response({ agent: path, id: result.subagentId, kind: "secondary" }, `Started ${path} (session ${result.subagentId}).`);
+				return response({ agent: path, id: result.subagentId, kind: "secondary" }, `Started ${path}.`, { agent: path, id: result.subagentId });
 			},
 		}),
 		defineTool({
@@ -241,7 +250,8 @@ export function createSubagentToolDefinitions(
 				const agents = primaries(ctx);
 				if (!agents) throw Error("Reopening conversations needs Desk.");
 				const value = await agents.resume({ agent: params.agent }, signal);
-				return response(value as ToolJson, value.reopened === "already open" ? `${params.agent} is already open.` : `Reopened ${params.agent}.`);
+				const name = typeof value.handle === "string" ? value.handle : params.agent;
+				return response(value as ToolJson, value.reopened === "already open" ? `${name} is already open.` : `Reopened ${name}.`);
 			},
 		}),
 		defineTool({

@@ -176,8 +176,6 @@ export class DeskClient implements WatchBackend {
 
 	private rows(): WatchRow[] { return this.closed ? [] : this.store.agentWatches(this.sessionId); }
 
-	data(): WatchSpec[] { return this.rows().map(row => ({ ...row.spec, id: row.name })); }
-
 	/** Programs run in Desk, with the tools of their folder, not with this conversation's calls. */
 	useContext(_ctx: ExtensionToolContext): void {}
 

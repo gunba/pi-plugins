@@ -127,7 +127,7 @@ test("registered root tools resolve the replacement runtime after branch navigat
 			() => {},
 			harness.ctx,
 		);
-		assert.deepEqual(result.structuredContent.secondary, [{ agent_name: "/root", agent_id: harness.manager.getSessionId(), agent_status: "idle" }]);
+		assert.deepEqual(result.details.secondary, [{ agent_name: "/root", agent_id: harness.manager.getSessionId(), agent_status: "idle" }]);
 	} finally {
 		for (const handler of harness.handlers.get("session_shutdown") ?? [])
 			await handler({}, harness.ctx);

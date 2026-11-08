@@ -7,15 +7,14 @@ import { RUN_PROGRAM, visibleSaved, type ProgramRun, type SavedTool } from "./sa
 
 const ERROR = Type.Object({ error: Type.String() });
 const OBJECT = Type.Record(Type.String(), Type.Unknown());
+/** Operations whose data isn't their text; the agent, plan, watch and conversation-search tools give programs their text. */
 const OUTPUTS: Record<string, TSchema> = {
-  agent_start: OBJECT, agent_send: OBJECT, agent_list: OBJECT, agent_stop: OBJECT, agent_resume: OBJECT, agent_move: OBJECT,
-  create_plan: Type.Object({ plan: Type.Union([OBJECT, Type.Null()]) }),
-  update_plan: Type.Object({ plan: Type.Union([OBJECT, Type.Null()]) }),
+  agent_start: Type.Union([Type.Object({ agent: Type.String(), id: Type.String(), warning: Type.Optional(Type.String()) }),
+    Type.Object({ declined: Type.Literal(true), note: Type.String() })]), agent_move: OBJECT,
   ask_user: Type.Object({ response: Type.Unknown(), cancelled: Type.Boolean() }),
-  show: OBJECT, watch: Type.Object({ text: Type.String(), watches: Type.Array(OBJECT) }),
+  show: OBJECT,
   web_search: Type.Object({ pages: Type.Array(OBJECT), failures: Type.Array(OBJECT) }),
   web_fetch: Type.Object({ pages: Type.Array(OBJECT), failures: Type.Array(OBJECT) }),
-  conversation_search: OBJECT, conversation_read: OBJECT,
   tool_search: Type.Object({ loaded: Type.Array(Type.String()) }),
 };
 

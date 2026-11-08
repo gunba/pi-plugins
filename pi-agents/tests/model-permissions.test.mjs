@@ -180,7 +180,7 @@ test("tool definitions pass model and effort to the same runtime gate for root a
 			assert.equal(received.at(-1).runInBackground, true);
 			assert.equal(received.at(-1).context, context === "fresh" ? "fresh" : "fork");
 			assert.equal(received.at(-1).forkTurns, context === "2" ? 2 : undefined);
-			assert.deepEqual(result.structuredContent, { agent: "/root/test", id: "child", kind: "secondary" });
+			assert.deepEqual(result.structuredContent, { agent: "/root/test", id: "child" });
 		}
 	}
 });

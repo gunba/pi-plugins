@@ -53,15 +53,16 @@ budget's 40-line/3,000-byte excerpts remain in use.
 - `read`, `edit`, `write`, and MCP resources retain their native data shapes. `bash` (Desk's, from
   pi-watch) keeps Pi's shape; a command still running after its `wait` gives `exit_code: null` and
   `running`, its watch's ID, and runs on in the background. Calls in `Promise.all` run at once.
-- Agent operations expose their existing response objects, rather than their compact
-  display strings. When Jordan declines a primary agent, `agent_start` gives
-  `{declined: true, note}`, the note saying he declined.
-- Plans expose `{plan}`.
+- The agent, plan, `watch` and memory operations give programs the text the model
+  reads when it calls them directly; their full records are only for Desk's screens.
+  `agent_start` gives `{agent, id}`: the name or path to message it by, and the ID
+  tools such as the arenas find its session file by. When Jordan declines a primary
+  agent, it gives `{declined: true, note}`, the note saying he declined.
 - `ask_user` exposes its response, cancellation state and question details.
 - `show` exposes its existing shown-file description.
-- `watch` exposes `{text, watches}`, including watch IDs needed to stop them.
-- Web operations expose `{pages, failures}`; memory operations expose the existing
-  search response. Scripts can select fields before any result reaches the model.
+- A started watch's text begins `Watching as w3`; `watch({stop: "w3"})` stops it.
+- Web operations expose `{pages, failures}`. Scripts can select fields before any
+  result reaches the model.
 - `tool_search` returns `{loaded}` and still uses native search and activation.
 
 Chrome and MCP-server operations retain their original schemas, result shapes and

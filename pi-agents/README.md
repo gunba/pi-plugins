@@ -12,13 +12,16 @@ Lets a conversation start and talk to other agents.
 | Tool | Purpose |
 |---|---|
 | `agent_start` | Start an agent with a task. Secondary by default, with `context` `copy` (the conversation so far), `fresh`, or a number of recent turns. `wake: "all"` holds an idle parent's wake until the last such agent finishes. `primary: true` starts a conversation instead, with an optional `computer`, `cwd`, `model` and `reasoning`. |
-| `agent_send` | Message an agent by ID, or a secondary agent by path. `wake` (default) starts an idle agent on the message, and reopens a closed primary one; `files` sends copies to a primary agent's computer. |
+| `agent_send` | Message a primary agent by name, or a secondary agent by path. `wake` (default) starts an idle agent on the message, and reopens a closed primary one; `files` sends copies to a primary agent's computer. |
 | `agent_list` | This conversation's secondary agents, and primary agents and computers: `query` finds them by name, folder or description, `offline` adds closed ones. |
 | `agent_resume` | Reopen a closed conversation on any computer without sending it anything. |
 | `agent_stop` | Interrupt a secondary agent's turn (it keeps its work), or close a primary agent this conversation started. `keep: true` closes it as Desk's "Close until needed" does: it stays in the sidebar and its watches go on, reopening it. `keep: false` removes it from the sidebar and ends its watches. Omitted, it is kept when it has watches. |
 | `agent_move` | Move this conversation to another computer when the user asks: it continues there from its note, with its history. Loaded with `tool_search`. |
 
-Remote IDs look like `session-id@computer-id`. Listings never include transcripts.
+Agents name each other as `agent_list` shows them: by name, by name and computer (`Home on pi-desk-sydney`) when
+another computer has an agent of that name, or by name and the end of its ID (`Untitled conversation [3fab96c2]`) when
+the same computer does. Messages say who sent them the same way, so a reply goes to that name. An ID still works.
+Listings never include transcripts.
 
 ## Messages
 
