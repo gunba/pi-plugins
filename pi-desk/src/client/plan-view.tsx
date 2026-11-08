@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef, useState } from "react";
 import type { UiAction, UiDetails } from "../../../pi-ui/index.ts";
 import type { ViewSnapshot } from "../shared/protocol.ts";
 import { Icon } from "./icons.tsx";
@@ -12,6 +13,17 @@ function planParts(view: ViewSnapshot) {
 		?? actions.find(action => action.id === "create");
 	const add = actions.find(action => action.id === "add");
 	return { data, actions, field, automatic, primary, add };
+}
+
+/** The agent's notes for a step, under its title: three lines, and the rest on request. */
+function StepNotes({ text }: { text: string }) {
+	const [open, setOpen] = useState(false), [long, setLong] = useState(false);
+	const shown = useRef<HTMLParagraphElement>(null);
+	useLayoutEffect(() => { const notes = shown.current; if (notes && !open) setLong(notes.scrollHeight > notes.clientHeight + 1); }, [text, open]);
+	return <div className="step-notes">
+		<p ref={shown} className={open ? undefined : "clamped"}>{text}</p>
+		{long && <button type="button" className="step-notes-toggle" aria-expanded={open} onClick={() => setOpen(value => !value)}>{open ? "Less" : "More"}</button>}
+	</div>;
 }
 
 /** Pause/resume and the rest of the plan's actions, for a heading row rather than beside the objective. */
@@ -50,7 +62,7 @@ export function PlanView({ view, invoke, disabled, showHeading = true }: {
 					title={`Change status · ${item.status}`} onClick={() => invoke(status)}><span className="step-marker">{mark}</span></button>
 					: <span className="step-status" aria-label={item.status}><span className="step-marker">{mark}</span></span>}
 				<div className="step-content"><span>{item.title}</span>{item.status === "in progress" && <small>In progress</small>}
-					{item.body && <details className="step-detail"><summary>Notes</summary><p>{item.body}</p></details>}</div>
+					{item.body && <StepNotes text={item.body} />}</div>
 				<ActionMenu actions={item.actions?.filter(action => action !== status) ?? []} invoke={invoke}
 					disabled={locked} label={`Actions for step ${index + 1}`} />
 			</li>;
