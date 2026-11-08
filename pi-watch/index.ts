@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -8,8 +7,8 @@ import { getPresentation, type Presentation } from "../pi-ui/index.ts";
 import { callDescription } from "../pi-ui/tool-descriptions.ts";
 import { registerBash } from "./bash.ts";
 import { RUN_PROGRAM, type ProgramRun } from "../pi-tools/saved.ts";
-import { alive, briefWatch, clockTime, describeWatch, elapsed, interval, judged, judgement, launchRunner, message, parseTime, pickClassifier,
-	PROGRAM_LIMIT_MS, progressLine, SHORT_WAIT_MS, shellFor, stopTree, sweep, watchEvent, when, type Shell, type WatchEvent, type WatchSpec } from "./common.ts";
+import { briefWatch, clockTime, describeWatch, elapsed, interval, judged, judgement, launchRunner, message, parseTime, pickClassifier,
+	PROGRAM_LIMIT_MS, progressLine, runnerFolder, SHORT_WAIT_MS, shellFor, stopCommand, sweep, watchEvent, when, type Shell, type WatchEvent, type WatchSpec } from "./common.ts";
 import { WatchEngine } from "./engine.ts";
 import { DeskClient } from "./desk.ts";
 import { WATCH_DB, WatchStore } from "./store.ts";
@@ -68,11 +67,12 @@ export class Watches implements WatchBackend {
 		this.folder = join(getAgentDir(), "watch", this.sessionId);
 		this.engine = new WatchEngine({
 			place: spec => ({ folder: this.folder, file: spec.id }),
+			runners: runnerFolder(getAgentDir()),
 			shell: () => this.shell(),
 			absent: "the conversation",
 			progress: (spec, progress) => {
 				if (progress.offset !== undefined) this.pi.appendEntry(WATCH_ENTRY, { op: "seen", id: spec.id, offset: progress.offset } satisfies WatchRecord);
-				if (progress.pid !== undefined) this.pi.appendEntry(WATCH_ENTRY, { op: "runner", id: spec.id, pid: progress.pid } satisfies WatchRecord);
+				if (progress.pid !== undefined) this.pi.appendEntry(WATCH_ENTRY, { op: "runner", id: spec.id, pid: progress.pid, ...(progress.run ? { run: progress.run } : {}) } satisfies WatchRecord);
 			},
 			send: (spec, text, status, output) => this.send(spec, text, status, output),
 			ended: (spec, reason, wake) => {
@@ -113,7 +113,7 @@ export class Watches implements WatchBackend {
 			const record = entry.data as WatchRecord;
 			if (record.op === "start") specs.set(record.watch.id, { ...record.watch });
 			else if (record.op === "end") { specs.delete(record.id); seen.delete(record.id); }
-			else if (record.op === "runner") { const spec = specs.get(record.id); if (spec) spec.pid = record.pid; }
+			else if (record.op === "runner") { const spec = specs.get(record.id); if (spec) { spec.pid = record.pid; spec.run = record.run; } }
 			// Older change watches recorded an output hash here rather than an offset; those are skipped.
 			else if (record.op === "seen" && typeof record.offset === "number") seen.set(record.id, record.offset);
 		}
@@ -208,7 +208,7 @@ export class Watches implements WatchBackend {
 			mkdirSync(this.folder, { recursive: true });
 			spec.change = join(this.folder, `${spec.id}.change`);
 			rmSync(spec.change, { force: true });
-		} else if (spec.mode !== "time") this.launch(spec);
+		} else if (spec.mode !== "time") await this.launch(spec);
 		this.pi.appendEntry(WATCH_ENTRY, { op: "start", watch: spec } satisfies WatchRecord);
 		this.engine.arm(spec);
 		this.publish();
@@ -243,7 +243,7 @@ export class Watches implements WatchBackend {
 
 	shell(): Shell { return shellFor(this.ctx.cwd, getAgentDir(), this.ctx.isProjectTrusted()); }
 
-	launch(spec: WatchSpec, folder = this.folder, env?: NodeJS.ProcessEnv): ChildProcess { return launchRunner(spec, folder, this.shell(), env); }
+	launch(spec: WatchSpec, folder = this.folder, env?: NodeJS.ProcessEnv): Promise<void> { return launchRunner(spec, folder, this.shell(), { runners: runnerFolder(getAgentDir()), env }); }
 
 	adopt(spec: WatchSpec): WatchSpec {
 		spec.id = this.nextId();
@@ -280,7 +280,7 @@ export class Watches implements WatchBackend {
 
 	private stop(id: string): void { this.engine.end(id, "Jordan stopped it", { kill: true }); }
 
-	stopRun(spec: WatchSpec): void { if (spec.pid && alive(spec.pid)) stopTree(spec.pid); }
+	stopRun(spec: WatchSpec): void { stopCommand(spec); }
 
 	private publish(): void {
 		if (this.closed) return;

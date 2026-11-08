@@ -1,12 +1,11 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, statSync, watch as watchFolder, type FSWatcher } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { getPresentation } from "../pi-ui/index.ts";
-import { alive, briefWatch, clockTime, describeWatch, elapsed, interval, launchRunner, message, pickClassifier, progressLine, shellFor, stopTree, watchEvent,
+import { briefWatch, clockTime, describeWatch, elapsed, interval, launchRunner, message, pickClassifier, progressLine, runnerFolder, shellFor, stopCommand, watchEvent,
 	UNTOLD, when, type Shell, type WatchSpec } from "./common.ts";
 import { WATCH_SIGNAL, type KnownComputer, type WatchRow, type WatchStore } from "./store.ts";
 import { announceWatches, plannedWatch, RETRY_MS, startedText, WATCH_ENTRY, WATCH_MESSAGE, type Params, type WatchBackend, type WatchRecord } from "./tool.ts";
@@ -92,7 +91,7 @@ export class DeskClient implements WatchBackend {
 			const record = entry.data as WatchRecord;
 			if (record.op === "start") specs.set(record.watch.id, { ...record.watch });
 			else if (record.op === "end") { specs.delete(record.id); seen.delete(record.id); }
-			else if (record.op === "runner") { const spec = specs.get(record.id); if (spec) spec.pid = record.pid; }
+			else if (record.op === "runner") { const spec = specs.get(record.id); if (spec) { spec.pid = record.pid; spec.run = record.run; } }
 			else if (record.op === "seen" && typeof record.offset === "number") seen.set(record.id, record.offset);
 		}
 		let moved = false;
@@ -187,9 +186,9 @@ export class DeskClient implements WatchBackend {
 
 	shell(): Shell { return shellFor(this.ctx.cwd, getAgentDir(), this.ctx.isProjectTrusted()); }
 
-	launch(spec: WatchSpec, folder: string, env?: NodeJS.ProcessEnv): ChildProcess { return launchRunner(spec, folder, this.shell(), env); }
+	launch(spec: WatchSpec, folder: string, env?: NodeJS.ProcessEnv): Promise<void> { return launchRunner(spec, folder, this.shell(), { runners: runnerFolder(getAgentDir()), env }); }
 
-	stopRun(spec: WatchSpec): void { if (spec.pid && alive(spec.pid)) stopTree(spec.pid); }
+	stopRun(spec: WatchSpec): void { stopCommand(spec); }
 
 	/** A bash command still running after its call's wait: Desk follows its runner from now on. */
 	adopt(spec: WatchSpec): WatchSpec {

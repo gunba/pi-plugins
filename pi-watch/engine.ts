@@ -3,14 +3,15 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, renameSync, wr
 import { basename, dirname } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { alive, CATCH_UP_BYTES, CLOCK_MS, elapsed, errorText, EVENT_CHARS, isStale, LATE_MS, lastLine, launchRunner, message, PROGRESS_MS,
-	progressLine, READINGS, RECENT_LINES, RUN_CHARS, SETTLE_MS, sizeOf, stopTree, TAIL_MS, when, type Shell, type WatchSpec } from "./common.ts";
+	progressLine, READINGS, RECENT_LINES, RUN_CHARS, SETTLE_MS, sizeOf, stopCommand, TAIL_MS, when, type Shell, type WatchSpec } from "./common.ts";
 
 /** How far a watch has got, kept by its owner so it carries on from there after a restart. */
 export interface Progress {
 	/** An "output" watch's log judged up to this byte; a "change" watch's last change judged, by number. */
 	offset?: number;
-	/** A change watch's runner, started again. */
+	/** A change watch's command, started again: the process running it, and its job there (WatchSpec.run). */
 	pid?: number;
+	run?: string;
 	/** When a program watch last ran. */
 	last?: number;
 }
@@ -19,6 +20,8 @@ export interface Progress {
 export interface WatchOwner {
 	/** Where a watch whose runner has no files yet keeps them, and their name; files a watch has say where they are. */
 	place(spec: WatchSpec): { folder: string; file: string };
+	/** The runner process's folder, where commands are given to it (common.ts runnerFolder). */
+	readonly runners: string;
 	shell(cwd: string): Shell;
 	/** The environment a runner started again gives its command; its own process's when absent. */
 	environment?(): NodeJS.ProcessEnv;
@@ -62,8 +65,9 @@ interface Active {
 	readings: { at: number; value: string }[];
 	/** A program watch's next run. */
 	run?: NodeJS.Timeout;
-	/** When a "change" watch's runner was last started again. */
+	/** When a "change" watch's command was last started again, and whether it is being started now. */
 	relaunched?: number;
+	launching?: boolean;
 }
 
 /** A program watch without a context to run in tries again this often. */
@@ -145,9 +149,9 @@ export class WatchEngine {
 		return true;
 	}
 
-	/** Stops the runners of re-run commands, which only report to their watch (the owner is going for good). */
+	/** Stops re-run commands, which only report to their watch (the owner is going for good). */
 	stopRunners(): void {
-		for (const { spec } of this.active.values()) if (spec.mode === "change" && spec.pid && alive(spec.pid)) stopTree(spec.pid);
+		for (const { spec } of this.active.values()) if (spec.mode === "change" && spec.command !== undefined) stopCommand(spec);
 	}
 
 	private finishWith(active: Active, reason: string, options: { kill: boolean; output?: string; tell?: boolean }): void {
@@ -155,7 +159,7 @@ export class WatchEngine {
 		if (this.closed || this.active.get(keyOf(spec)) !== active) return;
 		this.active.delete(keyOf(spec));
 		this.disarm(active);
-		if (options.kill && spec.pid && alive(spec.pid)) stopTree(spec.pid);
+		if (options.kill) stopCommand(spec);
 		this.owner.ended(spec, reason, options.tell === false ? undefined : spec.mode === "time"
 			? { text: `Watch ${spec.id}: ${reason}.`, status: reason }
 			: { text: message(spec, `ended: ${reason}.`, options.output), status: `ended: ${reason}`, output: options.output });
@@ -334,7 +338,7 @@ export class WatchEngine {
 				}).finally(() => { judging = false; });
 				return;
 			}
-			if (spec.program !== undefined) return;
+			if (spec.program !== undefined || active.launching) return;
 			let status: { stopped?: string; error?: string } | undefined;
 			try { status = JSON.parse(readFileSync(spec.exit!, "utf8")); } catch { /* still running, or gone without a word */ }
 			if (status && status.stopped !== "stopped") {
@@ -352,9 +356,13 @@ export class WatchEngine {
 	private relaunch(active: Active): void {
 		const { spec } = active;
 		const { folder, file } = spec.change ? { folder: dirname(spec.change), file: basename(spec.change, ".change") } : this.owner.place(spec);
-		launchRunner(spec, folder, this.owner.shell(spec.cwd), this.owner.environment?.(), file);
-		active.relaunched = Date.now();
-		this.owner.progress(spec, { pid: spec.pid! });
+		active.launching = true;
+		void launchRunner(spec, folder, this.owner.shell(spec.cwd), { runners: this.owner.runners, env: this.owner.environment?.(), file }).then(() => {
+			// Ended while it started: nothing will read it.
+			if (this.active.get(keyOf(spec)) !== active) { stopCommand(spec); return; }
+			active.relaunched = Date.now();
+			this.owner.progress(spec, { pid: spec.pid!, run: spec.run });
+		}, error => this.finishWith(active, `its command could not start again: ${errorText(error)}`, { kill: false })).finally(() => { active.launching = false; });
 	}
 
 	/**

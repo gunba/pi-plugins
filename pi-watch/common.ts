@@ -1,7 +1,9 @@
 import type { ClassifierContext, ClassifierResult } from "@earendil-works/pi-ai";
 import { getShellConfig, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,6 +28,14 @@ export const RECENT_LINES = 20;
 export const CATCH_UP_BYTES = 16_384;
 export const KEEP_FILES_MS = 8 * 86_400_000;
 export const RUNNER = join(dirname(fileURLToPath(import.meta.url)), "runner.mjs");
+/**
+ * The folder of the process that runs an agent folder's commands (runner.mjs): its lock and its jobs. The name changes
+ * with the jobs' format, so a runner process never takes jobs it can't read.
+ */
+export const RUNNER_FOLDER = "runner-1";
+export const runnerFolder = (agentDir: string) => join(agentDir, "watch", RUNNER_FOLDER);
+/** How long a command waits for the runner process to take it before it runs under a runner of its own. */
+export const TAKE_MS = 10_000;
 /** A background bash command's progress command runs this often, and may take this long. */
 export const PROGRESS_MS = 60_000, PROGRESS_LIMIT_MS = 15_000;
 /** A program watch's run may take this long. */
@@ -63,9 +73,11 @@ export interface WatchSpec {
 	remote?: boolean;
 	/** What the watch is for, in the words of the description the agent gave its call; shown to the user. */
 	label?: string;
-	/** The runner of a command watch, with its files: an "output" watch's log, a "change" watch's numbered latest
-	 * change, and the exit status of either. */
+	/** The process running a command watch's command: the agent folder's runner process, or a runner of its own. */
 	pid?: number;
+	/** Its job in the runner process, as a path without its extension: `${run}.stop` stops it. None for a runner of its own. */
+	run?: string;
+	/** The command's files: an "output" watch's log, a "change" watch's numbered latest change, and the exit status of either. */
 	log?: string;
 	change?: string;
 	exit?: string;
@@ -211,26 +223,95 @@ export function lastLine(shell: Shell, command: string, cwd: string): Promise<st
 	});
 }
 
+export interface LaunchOptions {
+	/** The runner process's folder: runnerFolder(agent folder). */
+	runners: string;
+	/** The command's environment; the caller's own when absent. */
+	env?: NodeJS.ProcessEnv;
+	/** The name of its files in `folder`: the watch's id when absent. */
+	file?: string;
+	/** How long to wait for the runner process to take it (TAKE_MS). */
+	takeMs?: number;
+}
+
 /**
- * Starts a command watch's runner in `folder`, naming its files after `file` (the watch's id by default). A change
- * watch's runner started again keeps its numbered changes. A bash call's command runs the same way, from its own folder
- * and with the bash tool's environment, until it ends or outlives the call's wait and becomes a watch.
+ * Starts a command watch's command in `folder`: the agent folder's runner process runs it, and is started if it isn't
+ * running. When that process doesn't take it in time, it runs under a runner of its own. A change watch started again
+ * keeps its numbered changes. A bash call's command runs the same way, from its own folder and with the bash tool's
+ * environment, until it ends or outlives the call's wait and becomes a watch. Sets the spec's files, `pid` and `run`.
  */
-export function launchRunner(spec: WatchSpec, folder: string, shell: Shell, env?: NodeJS.ProcessEnv, file = spec.id): ChildProcess {
+export async function launchRunner(spec: WatchSpec, folder: string, shell: Shell, options: LaunchOptions): Promise<void> {
+	const file = options.file ?? spec.id;
 	mkdirSync(folder, { recursive: true });
-	const config = join(folder, `${file}.json`), again = spec.pid !== undefined;
+	const again = spec.pid !== undefined;
 	spec.exit = join(folder, `${file}.exit`);
 	if (spec.mode === "change") spec.change = join(folder, `${file}.change`);
 	else { spec.log = join(folder, `${file}.log`); writeFileSync(spec.log, ""); }
 	rmSync(spec.exit, { force: true });
 	if (spec.change && !again) rmSync(spec.change, { force: true });
-	writeFileSync(config, JSON.stringify({ shell: shell.shell, args: shell.args, transport: shell.commandTransport ?? "argv",
-		command: spec.command, cwd: spec.cwd, log: spec.log, change: spec.change, every: spec.every, exit: spec.exit, expires: spec.expires }));
-	const runner = spawn(process.execPath, [RUNNER, config], { cwd: spec.cwd, detached: true, stdio: "ignore", windowsHide: true, ...(env ? { env } : {}) });
-	runner.unref();
-	if (!runner.pid) throw new Error("The command could not be started.");
-	spec.pid = runner.pid;
-	return runner;
+	const job = { shell: shell.shell, args: shell.args, transport: shell.commandTransport ?? "argv",
+		command: spec.command, cwd: spec.cwd, log: spec.log, change: spec.change, every: spec.every, exit: spec.exit, expires: spec.expires };
+	const jobs = join(options.runners, "jobs"), run = join(jobs, randomUUID()), wait = options.takeMs ?? TAKE_MS;
+	mkdirSync(jobs, { recursive: true, mode: 0o700 });
+	// The environment can hold secrets: the file is the user's alone, and the runner deletes it as it takes it.
+	writeFileSync(`${run}.tmp`, JSON.stringify({ ...job, env: options.env ?? process.env }), { mode: 0o600 });
+	renameSync(`${run}.tmp`, `${run}.json`);
+	// The job is written before the runner process is looked for: one leaving after its last look leaves its successor to take it.
+	startRunner(options.runners);
+	let pid = await taken(run, wait);
+	if (pid === undefined) {
+		let back = true;
+		try { renameSync(`${run}.json`, `${run}.back`); } catch { back = false; }
+		if (back) {
+			rmSync(`${run}.back`, { force: true });
+			const config = join(folder, `${file}.json`);
+			writeFileSync(config, JSON.stringify(job));
+			const runner = spawn(process.execPath, [RUNNER, config], { cwd: spec.cwd, detached: true, stdio: "ignore", windowsHide: true, ...(options.env ? { env: options.env } : {}) });
+			runner.once("error", () => {});
+			runner.unref();
+			if (!runner.pid) throw new Error("The command could not be started.");
+			spec.pid = runner.pid;
+			delete spec.run;
+			return;
+		}
+		// Taken as the wait ran out: its answer follows.
+		pid = await taken(run, wait);
+		if (pid === undefined) throw new Error("The runner process took the command but didn't say it started it.");
+	}
+	spec.pid = pid;
+	spec.run = run;
+}
+
+/** Starts the runner process for `folder` unless one is running; of several started at once, one stays. */
+function startRunner(folder: string): void {
+	try {
+		const runner = JSON.parse(readFileSync(join(folder, "service.json"), "utf8")) as { pid?: number; closing?: boolean };
+		if (runner.pid && !runner.closing && alive(runner.pid)) return;
+	} catch { /* none has run here, or the last one left */ }
+	// Its working folder is the home folder: on Windows, a process's working folder can't be removed while it runs.
+	const child = spawn(process.execPath, [RUNNER, "--service", folder], { cwd: homedir(), detached: true, stdio: "ignore", windowsHide: true });
+	child.once("error", () => {});
+	child.unref();
+}
+
+/** The runner process's answer to a job: the process ID it runs it in, or undefined after `ms`. */
+async function taken(run: string, ms: number): Promise<number | undefined> {
+	const until = Date.now() + ms;
+	for (let pause = 2; ; pause = Math.min(pause * 2, 50)) {
+		try {
+			const { pid } = JSON.parse(readFileSync(`${run}.taken`, "utf8")) as { pid: number };
+			rmSync(`${run}.taken`, { force: true });
+			return pid;
+		} catch { /* not taken yet */ }
+		if (Date.now() >= until) return undefined;
+		await new Promise(resolve => setTimeout(resolve, pause));
+	}
+}
+
+/** Stops a command watch's command: its job in the runner process, or a runner of its own with its process tree. */
+export function stopCommand(spec: WatchSpec): void {
+	if (spec.run) { try { writeFileSync(`${spec.run}.stop`, ""); } catch { /* the runner process's folder is gone, and the command with it */ } return; }
+	if (spec.pid && alive(spec.pid)) stopTree(spec.pid);
 }
 
 export function message(spec: WatchSpec, note: string, output?: string): string {
@@ -269,6 +350,8 @@ export function sweep(root: string, options: { inUse?: ReadonlySet<string>; desk
 		for (const name of readdirSync(root)) {
 			const path = join(root, name);
 			try {
+				// The runner process looks after its own folder.
+				if (name.startsWith("runner-")) continue;
 				if (name === DESK_FOLDER) {
 					if (options.desk) for (const file of readdirSync(path)) if (!inUse.has(join(path, file)) && old(join(path, file))) rmSync(join(path, file), { force: true });
 					continue;

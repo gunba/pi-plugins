@@ -23,7 +23,7 @@ wakes the agent anyway with a note; after three failures in a row the watch ends
 
 Where Desk runs, it runs the computer's watches, not the conversations they wake (`pi-desk/src/host/watches.ts`). A
 Pi process in Desk, or in a terminal on a computer whose Desk is running, asks Desk for a watch and gets its events
-from Desk (`desk.ts`); the watch, its runner and its events live in Desk's store,
+from Desk (`desk.ts`); the watch and its events live in Desk's store,
 `~/.pi/agent/party/watches.sqlite`. So:
 
 - A watch goes on while its conversation closes, restarts or updates, and while Desk itself restarts. A conversation
@@ -102,7 +102,7 @@ watch.
 
 ## bash
 
-pi-watch also provides Desk's `bash`, in place of Pi's. Its command runs under the same detached runner, so it can
+pi-watch also provides Desk's `bash`, in place of Pi's. Its command runs in the same detached runner process, so it can
 outlive the call, and several calls in one program run at once.
 
 | Parameter | Default | |
@@ -138,12 +138,15 @@ would only cut short a command that can run on.
   command, unless `keep`), or the agent or the user stops it; `hours` gives it an end if the agent wants one, and a background command
   still running then is stopped. A time can be any time ahead. Times are checked against the clock every minute, so a
   computer that slept still acts on time.
-- **Restarts.** Commands run under a small detached runner (`runner.mjs`): a background command once, writing its log
-  and exit status; a re-run command every `every` seconds, writing each changed output as a numbered change. On Linux
-  the runner raises its OOM score to 800, which its command inherits, so when memory runs out the kernel kills the
-  watched command before Pi. A background command keeps running when Desk restarts or updates a conversation, or when its Pi process stops. A re-run
-  command's runner stops with the process unless the conversation is going to sleep (below), and starts again with
-  the watch; one gone with a computer restart starts again too. Watches are recorded in the conversation, and are
+- **Restarts.** Commands, and every bash call's command, run in one detached runner process for the agent folder
+  (`runner.mjs`): a background command once, writing its log and exit status; a re-run command every `every` seconds,
+  writing each changed output as a numbered change. It takes them as files in `~/.pi/agent/watch/runner-1/jobs`, is
+  started by the first, and ends after a minute without any, so until then it runs the version of `runner.mjs` that
+  started it. A command it doesn't take within 10 seconds runs under a runner of its own. On Linux the runner raises
+  its OOM score to 800, which its commands inherit, so when memory runs out the kernel kills the watched commands
+  before Pi. A background command keeps running when Desk restarts or updates a conversation, or when its Pi process
+  stops. A re-run command stops with the process unless the conversation is going to sleep (below), and starts again
+  with the watch; one gone with a computer restart starts again too. Watches are recorded in the conversation, and are
   picked up again when it next starts: missed output and changes are read from the runner's files, and a time that has
   passed wakes the agent at once, saying when it was due. Output judged, waking the agent or not, is recorded as seen.
 - **Sleeping in Desk** (watches a conversation runs itself, in older versions). A conversation with watches can sleep: closed with no process, kept in the sidebar, its
@@ -153,7 +156,7 @@ would only cut short a command that can run on.
   re-run command's change file), at most every 15 minutes, and after a computer restart. The reopened conversation
   judges the news with `wake_when` and wakes the agent or not; two minutes after it is at rest, Desk closes it again.
   A message from the user keeps it open, and cancels an agent's `close`. Removing a sleeping conversation deletes its
-  runners' files, which ends a re-run command's runner. A command watch also marks the view as `watching`, so Desk
+  commands' files, which ends a re-run command. A command watch also marks the view as `watching`, so Desk
   starts the conversation again if its process was lost while it was open. The sidebar shows "Watching" or "Wakes Thu
   09:00"; the composer, an eye with the number of watches, which opens their list.
 - **Labels and wakes.** A watch takes its label from the description the agent gives its call (pi-ui's description

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, openSync, readFileSync, readSync, rmSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, existsSync, openSync, readFileSync, readSync, rmSync, statSync, watch } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { hostname } from "node:os";
 import { createBashToolDefinition, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, getAgentDir, truncateTail,
 	type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -53,6 +53,21 @@ function tail(log: string): { text: string; truncated: boolean } {
 	return { text: truncated ? `${result.content}\n\n[Showing the last ${formatSize(result.outputBytes)} of ${formatSize(size)}. Full output: ${log}]` : result.content, truncated };
 }
 
+/** Resolves once `file` exists: at once when its folder reports it, and otherwise at the next look. */
+function appeared(file: string): { done: Promise<void>; cancel(): void } {
+	let finish = () => {};
+	const done = new Promise<void>(resolve => { finish = resolve; });
+	const look = () => { if (existsSync(file)) finish(); };
+	const timer = setInterval(look, 100);
+	let watcher: ReturnType<typeof watch> | undefined;
+	try { watcher = watch(dirname(file), (_event, name) => { if (String(name) === basename(file)) look(); }); watcher.on("error", () => {}); }
+	catch { /* the timer still looks */ }
+	const cancel = () => { clearInterval(timer); watcher?.close(); };
+	void done.then(cancel);
+	look();
+	return { done, cancel };
+}
+
 /** Pi's environment for bash commands: its bin folder first on PATH, and the session's identity. */
 function environment(ctx: ExtensionContext): NodeJS.ProcessEnv {
 	const env = { ...process.env }, key = Object.keys(env).find(name => name.toLowerCase() === "path") ?? "PATH", bin = join(getAgentDir(), "bin");
@@ -67,7 +82,7 @@ function environment(ctx: ExtensionContext): NodeJS.ProcessEnv {
 }
 
 /**
- * Desk's bash: the command runs detached, under pi-watch's runner, so it can outlive the call. The call returns when
+ * Desk's bash: the command runs detached, in pi-watch's runner process, so it can outlive the call. The call returns when
  * the command ends or after `wait` seconds; a command still running then goes on as a watch, which wakes the agent when
  * it ends and every `warn` seconds with the readings of its `progress` command. Nothing is stopped for taking long:
  * the agent decides, from its progress, whether to stop it.
@@ -96,10 +111,10 @@ export function registerBash(pi: ExtensionAPI, current: () => WatchBackend | und
 			const spec: WatchSpec = { id: `b${randomUUID()}`, mode: "output", command: shell.prefix ? `${shell.prefix}\n${params.command}` : params.command,
 				cwd: ctx.cwd, created: started, computer: hostname(), ...(label ? { label } : {}),
 				bash: { started, ...(warn ? { warn } : {}), ...(progress ? { progress } : {}) } };
-			const runner = watches.launch(spec, watches.bashFolder, environment(ctx));
+			await watches.launch(spec, watches.bashFolder, environment(ctx));
 			const log = spec.log!, exit = spec.exit!;
-			// The runner exits once the command has ended and its status is in the exit file.
-			const ended = new Promise<void>(resolve => { runner.once("exit", () => resolve()); runner.once("error", () => resolve()); });
+			// The command has ended once its status is in the exit file.
+			const exited = appeared(exit), ended = exited.done;
 			let shown = -1;
 			const update = onUpdate && setInterval(() => {
 				const size = sizeOf(log);
@@ -114,14 +129,17 @@ export function registerBash(pi: ExtensionAPI, current: () => WatchBackend | und
 			]).finally(() => { clearTimeout(timer); if (update) clearInterval(update); if (onAbort) signal?.removeEventListener("abort", onAbort); waiting.delete(steered!); });
 			if (outcome === "aborted") {
 				watches.stopRun(spec);
-				await Promise.race([ended, new Promise(resolve => setTimeout(resolve, 2_000))]);
+				await Promise.race([ended, new Promise(resolve => setTimeout(resolve, 2_500))]);
+				exited.cancel();
 				throw new Error(`${tail(log).text}\n\nCommand aborted`.trim());
 			}
 			if (outcome !== "ended" && !existsSync(exit) && background) {
 				watches.stopRun(spec);
-				await Promise.race([ended, new Promise(resolve => setTimeout(resolve, 2_000))]);
+				await Promise.race([ended, new Promise(resolve => setTimeout(resolve, 2_500))]);
+				exited.cancel();
 				throw new Error(`${tail(log).text}\n\nStopped after ${Math.round((Date.now() - started) / 1000)} s: a watch's program can't leave commands running.`.trim());
 			}
+			exited.cancel();
 			if (outcome !== "ended" && !existsSync(exit)) {
 				const adopted = watches.adopt({ ...spec, command: params.command });
 				const so = tail(log);

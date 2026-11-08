@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, statSync, watch as watchFolder, type FSW
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { alive, describeWatch, DESK_FOLDER, errorText, interval, judged, judgement, launchRunner, MAX_COMMANDS, message, pickClassifier, shellFor, stopTree, subject,
+import { describeWatch, DESK_FOLDER, errorText, interval, judged, judgement, launchRunner, MAX_COMMANDS, message, pickClassifier, runnerFolder, shellFor, stopCommand, subject,
 	sweep, watchEvent, type WatchEvent, type WatchSpec } from "../../../pi-watch/common.ts";
 import { WatchEngine } from "../../../pi-watch/engine.ts";
 import { WATCH_SIGNAL, WatchStore, type EventRow, type KnownComputer, type WatchRow } from "../../../pi-watch/store.ts";
@@ -102,6 +102,8 @@ export class WatchService {
 	private readonly programs: ProgramRunner;
 	/** The watches the engine follows, by id. Their specs are the engine's, which it updates (a runner started again). */
 	private readonly armed = new Map<string, WatchRow>();
+	/** New command watches whose commands are being given to the runner process, by id. */
+	private readonly launching = new Set<string>();
 	private readonly wakeTried = new Map<string, number>();
 	/** Requests from other computers being worked on, by watch id; a repeat waits for the first's answer. */
 	private readonly handling = new Set<string>();
@@ -120,6 +122,7 @@ export class WatchService {
 		this.programs = new ProgramRunner({ agentDir: host.agentDir, sessionDir: host.sessionDir, deskDirectory: host.deskDirectory });
 		this.engine = new WatchEngine({
 			place: spec => ({ folder: this.folder, file: spec.key! }),
+			runners: runnerFolder(host.agentDir),
 			shell: cwd => shellFor(cwd, host.agentDir, false),
 			environment: () => this.environment(),
 			absent: "Desk",
@@ -230,23 +233,44 @@ export class WatchService {
 		sweep(join(this.host.agentDir, "watch"), { inUse, desk: true });
 	}
 
-	/** Follows a watch: a new one starts here (a runner for a command, a change file for a program); one Desk followed before goes on. */
+	/** Follows a watch: a new one starts here (its command in the runner process, a change file for a program); one Desk followed before goes on. */
 	private arm(row: WatchRow): void {
 		const spec: WatchSpec = { ...row.spec, id: row.name, key: row.id };
 		const fresh = row.state === "new" && !spec.pid && !spec.log && !spec.change;
+		if (fresh && spec.program === undefined && spec.mode !== "time") {
+			// Scans meanwhile leave it to this start.
+			if (this.launching.has(row.id)) return;
+			this.launching.add(row.id);
+			void launchRunner(spec, this.folder, shellFor(spec.cwd, this.host.agentDir, false), { runners: runnerFolder(this.host.agentDir), env: this.environment(), file: row.id })
+				.then(() => {
+					// Stopped while it started, or Desk is closing, after which it starts again from the store.
+					if (this.closed || this.store.get(row.id)?.state !== "new") stopCommand(spec);
+					else this.follow(row, spec, fresh);
+				}, error => this.notStarted(row, spec, fresh, error))
+				.finally(() => this.launching.delete(row.id));
+			return;
+		}
 		try {
 			if (fresh && spec.program !== undefined) {
 				mkdirSync(this.folder, { recursive: true });
 				spec.change = join(this.folder, `${row.id}.change`);
 				rmSync(spec.change, { force: true });
-			} else if (fresh && spec.mode !== "time") launchRunner(spec, this.folder, shellFor(spec.cwd, this.host.agentDir, false), this.environment(), row.id);
+			}
 		} catch (error) {
-			const reason = `it could not start: ${errorText(error)}`;
-			this.store.setState(row.id, "ended", reason);
-			// The agent asking waits for this (desk.ts); one handed over from its conversation is told.
-			if (!fresh) this.emit(row, message(spec, `ended: ${reason}.`), { ended: reason });
+			this.notStarted(row, spec, fresh, error);
 			return;
 		}
+		this.follow(row, spec, fresh);
+	}
+
+	private notStarted(row: WatchRow, spec: WatchSpec, fresh: boolean, error: unknown): void {
+		const reason = `it could not start: ${errorText(error)}`;
+		this.store.setState(row.id, "ended", reason);
+		// The agent asking waits for this (desk.ts); one handed over from its conversation is told.
+		if (!fresh) this.emit(row, message(spec, `ended: ${reason}.`), { ended: reason });
+	}
+
+	private follow(row: WatchRow, spec: WatchSpec, fresh: boolean): void {
 		if (row.state === "new") {
 			this.store.setSpec(row.id, spec);
 			this.store.setState(row.id, "running", undefined, ["new"]);
@@ -263,7 +287,7 @@ export class WatchService {
 		if (this.engine.end(row.id, reason, { kill: true, tell })) return;
 		this.armed.delete(row.id);
 		this.store.setState(row.id, "ended", reason);
-		if (row.spec.pid && alive(row.spec.pid)) stopTree(row.spec.pid);
+		stopCommand(row.spec);
 		const spec = { ...row.spec, id: row.name };
 		this.emit(row, tell ? spec.mode === "time" ? `Watch ${row.name}: ${reason}.` : message(spec, `ended: ${reason}.`) : "", { ended: reason });
 	}
@@ -387,7 +411,7 @@ export class WatchService {
 			if (row.runs) { if (row.state !== "ended") this.store.setState(row.id, "stopping", reason); continue; }
 			if (!this.engine.end(row.id, reason, { kill: true, tell: false })) {
 				this.store.setState(row.id, "ended", reason);
-				if (row.spec.pid && alive(row.spec.pid)) stopTree(row.spec.pid);
+				stopCommand(row.spec);
 			}
 		}
 		this.store.signal();

@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import type { ChildProcess } from "node:child_process";
 import { hostname } from "node:os";
 import { interval, MAX_COMMANDS, MAX_TIMES, parseTime, when, type Shell, type WatchSpec } from "./common.ts";
 
@@ -19,8 +18,8 @@ export const RETRY_MS = 2_000;
 export type WatchRecord =
 	| { op: "start"; watch: WatchSpec }
 	| { op: "seen"; id: string; offset: number }
-	/** A change watch's runner started again, after the computer restarted. */
-	| { op: "runner"; id: string; pid: number }
+	/** A change watch's command started again, after the computer restarted: its process, and its job there (WatchSpec.run). */
+	| { op: "runner"; id: string; pid: number; run?: string }
 	| { op: "end"; id: string; reason: string }
 	/** A watch Desk runs (desk.ts), so the conversation keeps its name taken; computer: the one whose Desk keeps it. */
 	| { op: "desk"; id: string; watch: string; computer?: string }
@@ -67,8 +66,8 @@ export interface WatchBackend {
 	useContext(ctx: ExtensionToolContext): void;
 	keepOpen(): void;
 	shell(): Shell;
-	/** Starts a bash call's command under a runner, in `folder`. */
-	launch(spec: WatchSpec, folder: string, env?: NodeJS.ProcessEnv): ChildProcess;
+	/** Starts a bash call's command, with its files in `folder`; resolves once a runner has it. */
+	launch(spec: WatchSpec, folder: string, env?: NodeJS.ProcessEnv): Promise<void>;
 	/** A bash command that outlived its call's wait goes on as a watch; its name is set. */
 	adopt(spec: WatchSpec): WatchSpec;
 	/** Stops a bash call's command before it became a watch. */
