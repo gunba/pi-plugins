@@ -4,7 +4,7 @@ import { openingMessage, sessionTitle } from "../src/shared/session-title.ts";
 import { providerIdentity } from "../src/host/provider-identity.ts";
 import { LiveNotices, deskStatus, dismissDeskStatus, reportDeskError, subscribeDeskStatus } from "../src/client/desk-status.ts";
 import { clearSubmission, createSubmission, readSubmission, submissionDecision, submitWithReceipt } from "../src/client/input-submission.ts";
-import { activityLabel, sessionActivity, sidebarGroup } from "../src/client/activity.ts";
+import { activityLabel, rowStatus, sessionActivity, sidebarGroup } from "../src/client/activity.ts";
 
 test("startup sends preserve normal steering and explicitly queued delivery", () => {
 	for (const state of ["starting", "ready"]) for (const delivery of ["steer", "followUp"]) {
@@ -31,6 +31,21 @@ test("a conversation with a question stays among the active ones while it also w
 	assert.equal(sidebarGroup({ ...idle, ui: { views: [], interactions: [{ ...question, settings: true }] } }), 1, "a settings form is not a question");
 	assert.equal(sidebarGroup({ state: "closed", kept: true, watching: true }), 1);
 	assert.equal(sidebarGroup({ state: "closed", kept: true }), 2);
+});
+
+test("a sidebar row shows a question with the question dot, whatever else the conversation waits on", () => {
+	// A question asked without waiting kept the green ring of a conversation waiting on its wake, so it went unnoticed.
+	const question = { id: "q", form: { kind: "question", title: "Which disks?", background: true } };
+	const waking = { state: "ready", snapshot: { activity: "idle" }, wakes: Date.now() + 3_600_000 };
+	const asked = rowStatus({ ...waking, ui: { views: [], interactions: [question] } }, false);
+	assert.deepEqual([asked.dot, asked.questions], ["waiting", 1]);
+	assert.match(asked.label, /^Wakes /, "what it waits on still shows");
+	assert.equal(rowStatus({ ...waking, ui: { views: [], interactions: [] } }, false).dot, "background");
+	assert.equal(rowStatus({ ...waking, ui: { views: [], interactions: [question, { ...question, id: "r" }] } }, false).questions, 2);
+	const working = rowStatus({ state: "ready", snapshot: { activity: "running" }, ui: { views: [], interactions: [question] } }, false);
+	assert.deepEqual([working.dot, working.label], ["waiting", "Working"]);
+	assert.deepEqual([rowStatus({ state: "ready", snapshot: { activity: "idle" } }, true).dot, rowStatus({ state: "ready", snapshot: { activity: "idle" } }, true).label],
+		["finished", "Finished"]);
 });
 
 test("lost input acknowledgements are reconciled before a resend warning", async () => {

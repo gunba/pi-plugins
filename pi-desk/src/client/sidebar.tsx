@@ -1,7 +1,7 @@
 import { localDateTime } from "./local-format.ts";
 import { useState } from "react";
 import { api } from "./connection.ts";
-import { activityLabel, backgroundWork, sessionActivity, sidebarGroup } from "./activity.ts";
+import { rowStatus, sidebarGroup } from "./activity.ts";
 import { useAppUpdate } from "./app-update.ts";
 import { CloseConversationButton } from "./close-conversation.tsx";
 import { connectionLabel, connectionTone, isOffline } from "./connection-state.ts";
@@ -13,7 +13,7 @@ import { OsIcon } from "./os-icon.tsx";
 import { Banner } from "./picture.tsx";
 
 import type { SessionView } from "../shared/protocol.ts";
-import { asksInBackground, unseen } from "../shared/attention.ts";
+import { unseen } from "../shared/attention.ts";
 import { Navigation } from "./surfaces.tsx";
 import { conversationTitle, folderName, type Computer, type WorkspaceState } from "./workspace.ts";
 
@@ -88,24 +88,19 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
       <SidebarRename title={conversationTitle(item)} close={() => setRenaming("")}
         rename={name => api(`/sessions/${item.key}/command`, { id: crypto.randomUUID(), generation: item.ui!.generation, command: { kind: "name", name } })} />
     </div>;
-    const background = backgroundWork(item), activity = sessionActivity(item);
-    // Finished since anyone looked: nothing will wake it, so it waits for the user (shared/attention.ts).
-    const fresh = unseen(item) && !background && ["idle", "ready", "sleeping", "error"].includes(activity);
-    const label = background?.label ?? (fresh && activity !== "error" ? "Finished" : activityLabel(activity));
+    const status = rowStatus(item, unseen(item));
     // Questions asked without waiting: the agent works on, so they show beside its activity rather than as it.
-    const asked = item.ui?.interactions.filter(question => asksInBackground(question.form)).length ?? 0;
+    const asked = status.questions === 1 ? "Question" : `${status.questions} questions`;
     // A conversation that isn't running shows the model it resumes with.
     const model = item.snapshot?.model ?? item.lastModel, thinking = item.snapshot ? item.snapshot.thinking : item.lastModel?.thinking;
-    // An idle conversation still waiting on something is not done: its dot and label say what it waits on.
-    const dot = background && (activity === "idle" || activity === "ready") ? "background" : fresh && activity !== "error" ? "finished" : activity;
     return <div className="session-row" key={item.key}>
-      <button className={`session-item ${selected === item.key ? "selected" : ""}${fresh ? " unseen" : ""}`} onClick={() => select(item.key)} onDoubleClick={() => { if (renamable) setRenaming(item.key); }}>
+      <button className={`session-item ${selected === item.key ? "selected" : ""}${status.finished ? " unseen" : ""}`} onClick={() => select(item.key)} onDoubleClick={() => { if (renamable) setRenaming(item.key); }}>
         <Banner session={item} className="session-picture" />
-        <span className={`status-dot ${dot}`} role="img" aria-label={label} title={label} />
+        <span className={`status-dot ${status.dot}`} role="img" aria-label={status.questions ? asked : status.label} title={status.questions ? asked : status.label} />
         <span><span className="session-label-line"><strong>{item.pinned ? "★ " : ""}{conversationTitle(item)}</strong></span>
-          <small className="session-metadata"><span className="session-activity" title={background?.title}>
-            {label}</span>{asked > 0 && <><span aria-hidden="true">·</span><span className="session-question" title="The agent asked you something and carries on meanwhile">
-            {asked === 1 ? "Question" : `${asked} questions`}</span></>}<span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
+          <small className="session-metadata"><span className="session-activity" title={status.title}>
+            {status.label}</span>{status.questions > 0 && <><span aria-hidden="true">·</span><span className="session-question" title="The agent asked you something and carries on meanwhile">
+            {asked}</span></>}<span aria-hidden="true">·</span><span className="session-folder" title={item.cwd}>{folderName(item.cwd)}</span>
             <span className="session-marks"><VersionTag session={item} computer={computer} />
             {model && <span className="session-model" title={`${model.name}${thinking && thinking !== "off" ? ` · ${thinking} reasoning` : ""}${item.workerRuntime ? ` · Desk ${item.workerRuntime.version}` : ""}${item.snapshot ? "" : " · resumes with these"}`}>
               <ProviderIcon id={model.provider} title={model.name} />

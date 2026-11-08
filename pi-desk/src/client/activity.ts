@@ -69,6 +69,23 @@ export function backgroundWork(session: Parameters<typeof sessionActivity>[0] & 
 }
 
 /**
+ * What a sidebar row shows of a conversation: its dot, its status, and how many questions it asked without waiting.
+ * A question gives the dot its question mark, whatever else the conversation waits on: a wake's or a watch's green ring
+ * said there was nothing to do. `unseen`: it has news no one has looked at (shared/attention.ts); `finished` then says
+ * it is done, with nothing to wake it.
+ */
+export function rowStatus(session: Parameters<typeof backgroundWork>[0], unseen: boolean):
+	{ dot: string; label: string; title?: string; questions: number; finished: boolean } {
+	const background = backgroundWork(session), activity = sessionActivity(session);
+	const finished = unseen && !background && ["idle", "ready", "sleeping", "error"].includes(activity);
+	const label = background?.label ?? (finished && activity !== "error" ? "Finished" : activityLabel(activity));
+	const questions = session.ui?.interactions.filter(item => asksInBackground(item.form)).length ?? 0;
+	// An idle conversation still waiting on something is not done: its dot and label say what it waits on.
+	const dot = questions ? "waiting" : background && (activity === "idle" || activity === "ready") ? "background" : finished && activity !== "error" ? "finished" : activity;
+	return { dot, label, ...(background ? { title: background.title } : {}), questions, finished };
+}
+
+/**
  * Where the sidebar lists a conversation: 0 at work or waiting for the user; 1 only waiting for a watch or timer to wake
  * it, open or asleep (closed, kept to be woken); 2 closed. Those waiting and those closed fold away, each under its own
  * heading.
