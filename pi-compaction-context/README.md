@@ -17,8 +17,10 @@ Writes compaction summaries the way Claude Code does, and briefs from the prompt
     Claude Code keeps nothing; a session too short for Pi to compact cannot be compacted manually either.
   - After the summary come where to find the full history (`conversation_search`), the instruction to carry on without
     recapping, and what Claude Code puts back: the current contents of the five files most recently read, edited or
-    written (up to about 5,000 tokens each, otherwise a note to read them again), the skills loaded (`SKILL.md`, up to
-    5,000 tokens each and 25,000 in all), the plan unless it is complete, and the watches still running.
+    written (up to about 5,000 tokens each, otherwise a note to read them again), the skills loaded since the previous
+    compaction (`SKILL.md`, up to 5,000 tokens each and 25,000 in all), the plan unless it is complete, and the watches
+    still running. A skill not read again since the previous compaction is left out: in a conversation that runs for
+    months, every skill it ever read would otherwise come back after every compaction.
   - A failed summary (an error, a reply cut off at the output limit, or no summary) is retried with Pi's retry
     settings when the failure is transient, then cancels the compaction and holds automatic compaction as
     `pi-context-window` does. Pi's own summary is never used. Codex conversations use Codex Wire's own compaction.

@@ -63,12 +63,17 @@ export interface Restored { text: string; files: string[]; skills: string[]; pla
 
 /**
  * Sections to follow the summary. Files and skills come from the newest calls first and are read again now; those in
- * the kept messages are already in context. The plan is current; the watches are those still running: as pi-watch
- * lists them for the session when it runs in this process (Desk runs them outside it), else as the branch records them.
+ * the kept messages are already in context. Skills come only from calls since the previous compaction (including the
+ * messages it kept, which stayed in context): that compaction put back the ones read before it, and a skill not read
+ * again since is no longer part of the work. Otherwise a conversation that runs for months carries every skill it ever
+ * read, up to the cap, in every request; the system prompt still lists them all. The plan is current; the watches are
+ * those still running: as pi-watch lists them for the session when it runs in this process (Desk runs them outside it),
+ * else as the branch records them.
  */
 export function restore(pi: ExtensionAPI, cwd: string, branch: readonly Entry[], kept: readonly AgentMessage[], sessionId?: string): Restored {
 	const seen = new Set(kept.flatMap(message => fileCalls(message).map(call => absolute(call.path, cwd))));
 	const files: string[] = [], skills: string[] = [];
+	const since = previousSegment(branch);
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index]!;
 		if (entry.type !== "message") continue;
@@ -76,7 +81,7 @@ export function restore(pi: ExtensionAPI, cwd: string, branch: readonly Entry[],
 			const path = absolute(call.path, cwd);
 			if (seen.has(path)) continue;
 			seen.add(path);
-			if (basename(path) === "SKILL.md") skills.push(path);
+			if (basename(path) === "SKILL.md") { if (index >= since) skills.push(path); }
 			else if (!INSTRUCTIONS.has(basename(path)) && files.length < FILES) files.push(path);
 		}
 	}
@@ -106,6 +111,20 @@ export function restore(pi: ExtensionAPI, cwd: string, branch: readonly Entry[],
 	const watches = (sessionId ? watchList(sessionId) : undefined) ?? recordedWatches(branch);
 	if (watches.length) sections.push(`## Watches still running\nEach reports back on its own:\n${watches.map(item => `- ${item}`).join("\n")}`);
 	return { text: sections.join("\n\n"), files: restoredFiles, skills: restoredSkills, plan, watches: watches.length };
+}
+
+/**
+ * The index of the first branch entry in context since the previous compaction: the first message it kept, or the
+ * compaction itself when the kept message is not on the branch; 0 when there was none.
+ */
+function previousSegment(branch: readonly Entry[]): number {
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index]!;
+		if (entry.type !== "compaction") continue;
+		const kept = branch.findIndex(other => other.id === entry.firstKeptEntryId);
+		return kept >= 0 && kept < index ? kept : index;
+	}
+	return 0;
 }
 
 /** The watches a branch's records leave running, as pi-watch lists them ("w3: `make`"). */

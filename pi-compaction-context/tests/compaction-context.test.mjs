@@ -108,6 +108,33 @@ test('compaction is a Claude Code summary of the whole conversation, written fro
  assert.deepEqual(sent, []);
 });
 
+test('skills come back only when read since the previous compaction, counting the messages it kept', async t => {
+ // A conversation running for weeks put back every skill it had ever read, 25,000 tokens of them, after each compaction.
+ const cwd = mkdtempSync(join(tmpdir(), 'pi-compaction-'));
+ t.after(() => rmSync(cwd, { recursive: true, force: true }));
+ for (const name of ['old', 'kept', 'new']) {
+  mkdirSync(join(cwd, 'skills', name), { recursive: true });
+  writeFileSync(join(cwd, 'skills', name, 'SKILL.md'), `# ${name}\n`);
+ }
+ const branch = chain([
+  message('u1', { role: 'user', content: 'Start' }),
+  message('a1', { role: 'assistant', content: [call('t1', 'codemode', { code: '…' })], provider: 'anthropic', usage, stopReason: 'toolUse' }),
+  message('r1', result('t1', 'ok', [['read', 'skills/old/SKILL.md']])),
+  message('a2', { role: 'assistant', content: [call('t2', 'codemode', { code: '…' })], provider: 'anthropic', usage, stopReason: 'toolUse' }),
+  message('r2', result('t2', 'ok', [['read', 'skills/kept/SKILL.md']])),
+  { id: 'c1', type: 'compaction', summary: 'Earlier work', firstKeptEntryId: 'a2', tokensBefore: 400_000 },
+  message('u2', { role: 'user', content: 'Go on' }),
+  message('a3', { role: 'assistant', content: [call('t3', 'codemode', { code: '…' })], provider: 'anthropic', usage, stopReason: 'toolUse' }),
+  message('r3', result('t3', 'ok', [['read', 'skills/new/SKILL.md']])),
+  message('a4', { role: 'assistant', content: [{ type: 'text', text: 'Done' }], provider: 'anthropic', usage, stopReason: 'stop' }),
+ ]);
+ const { hooks } = harness();
+ const { ctx } = context(branch, reply('<summary>Summary</summary>'), cwd);
+ const { compaction } = await hooks.session_before_compact(event(branch), ctx);
+ assert.deepEqual(compaction.details.restored.skills, [join(cwd, 'skills', 'new', 'SKILL.md'), join(cwd, 'skills', 'kept', 'SKILL.md')]);
+ assert.doesNotMatch(compaction.summary, /### Skill: old/);
+});
+
 test('without a usable cached request the whole conversation is sent again, cut to fit after an overflow', async () => {
  const big = 'x'.repeat(4_000);
  const branch = chain([
