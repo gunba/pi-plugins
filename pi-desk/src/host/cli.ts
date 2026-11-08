@@ -128,6 +128,8 @@ async function main(): Promise<void> {
 		return;
 	}
 	if (command === "serve") {
+		// In the background the console is host.log, which has no other record of when anything happened.
+		if (values.background) (await import("./log-times.ts")).stampConsole();
 		inspectAppAssets();
 		if (VERSION !== RELEASE.engine) throw new Error(`Pi Desk ${RELEASE.version} requires SDK ${RELEASE.engine}, but found ${VERSION}. Reinstall this Desk release; the global Pi CLI is separate.`);
 		const { DeskHost } = await import("./server.ts");
