@@ -125,9 +125,12 @@ export class PartyStore {
 		try { writeFileSync(join(directory, ".gitignore"), "*\n", { flag: "wx", mode: 0o600 }); }
 		catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
 		this.db = new DatabaseSync(join(directory, "party.sqlite"));
+		// SQLite otherwise keeps the write-ahead log at the largest size it ever reached; files sent between agents had
+		// grown it to 150 MB.
 		this.db.exec(`
 			PRAGMA busy_timeout=5000;
 			PRAGMA journal_mode=WAL;
+			PRAGMA journal_size_limit=${8 * 1024 * 1024};
 			CREATE TABLE IF NOT EXISTS members (
 				session TEXT PRIMARY KEY, room TEXT NOT NULL, epoch TEXT NOT NULL,
 				label TEXT NOT NULL, owner TEXT NOT NULL, heartbeat INTEGER NOT NULL,
@@ -206,6 +209,18 @@ export class PartyStore {
 		});
 	}
 	close(): void { this.db.close(); }
+	/**
+	 * Gives the file system back the space of deleted rows once they are most of the file and at least `minFree` bytes:
+	 * messages and the files sent with them are deleted after a week, and SQLite keeps their space otherwise. Other
+	 * processes wait for it (busy_timeout); it took 80 ms for a 40 MB store. Returns whether it compacted the store.
+	 */
+	compact(minFree = 64 * 1024 * 1024): boolean {
+		const read = (name: string) => Number(Object.values(this.db.prepare(`PRAGMA ${name}`).get() as Record<string, number>)[0]);
+		const free = read("freelist_count"), pages = read("page_count");
+		if (free * read("page_size") < minFree || free * 2 < pages) return false;
+		this.db.exec("VACUUM");
+		return true;
+	}
 	localMembers(): Member[] {
 		return this.db.prepare("SELECT * FROM members WHERE heartbeat>? ORDER BY heartbeat DESC,session LIMIT ?")
 			.all(this.now() - LEASE_MS, NETWORK_LIMIT) as unknown as Member[];

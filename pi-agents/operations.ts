@@ -25,7 +25,7 @@ export class PartyOperations {
 	constructor(directory: string) {
 		this.directory = directory;
 		this.db = new DatabaseSync(join(directory, "party.sqlite"));
-		this.db.exec(`PRAGMA busy_timeout=5000;
+		this.db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_size_limit=${8 * 1024 * 1024};
 			CREATE TABLE IF NOT EXISTS party_operations (id TEXT PRIMARY KEY, computer TEXT NOT NULL,
 				request TEXT NOT NULL, status TEXT NOT NULL, response TEXT, created INTEGER NOT NULL);
 			CREATE TABLE IF NOT EXISTS party_incoming (computer TEXT NOT NULL, id TEXT NOT NULL,

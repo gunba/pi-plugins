@@ -10,6 +10,8 @@ export class Parties {
 	readonly store: PartyStore;
 	private watcher: FSWatcher;
 	private timer?: ReturnType<typeof setTimeout>;
+	/** Compacts the store a minute after Desk starts and every 6 hours (PartyStore.compact). */
+	private compaction: ReturnType<typeof setTimeout>[];
 	private directory: string;
 	private signature = "";
 	snapshot: PartyDirectory = { agents: [], groups: [] };
@@ -21,6 +23,12 @@ export class Parties {
 			clearTimeout(this.timer); this.timer = setTimeout(changed, 30);
 		});
 		this.watcher.on("error", () => this.watcher.close());
+		this.compaction = [setTimeout(() => this.compact(), 60_000), setInterval(() => this.compact(), 6 * 3_600_000)];
+		for (const timer of this.compaction) timer.unref();
+	}
+	private compact(): void {
+		try { if (this.store.compact()) console.log("Compacted the agent message store."); }
+		catch (error) { console.error(`The agent message store was not compacted: ${error instanceof Error ? error.message : String(error)}`); }
 	}
 	refresh(sessionIds: string[]): boolean {
 		const peers = new Map<string, Member>();
@@ -40,5 +48,5 @@ export class Parties {
 		this.signature = signature; this.snapshot = next; return true;
 	}
 	networkChanged(): void { writeFileSync(join(this.directory, "network-changed"), randomUUID(), { mode: 0o600 }); }
-	close(): void { clearTimeout(this.timer); this.watcher.close(); this.store.close(); }
+	close(): void { clearTimeout(this.timer); for (const timer of this.compaction) clearTimeout(timer); this.watcher.close(); this.store.close(); }
 }
