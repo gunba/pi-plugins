@@ -21,7 +21,7 @@ export const questionKey = (item: Pick<InteractionSnapshot, "id" | "form">): str
  * keeps for it (SessionView.questions) that are not answered yet.
  */
 export function openQuestions(view: Pick<SessionView, "ui" | "questions">): InteractionSnapshot[] {
-	return view.ui ? view.ui.interactions.filter(item => !item.settings) : (view.questions ?? []).filter(item => item.answer === undefined);
+	return view.ui ? (view.ui.interactions ?? []).filter(item => !item.settings) : (view.questions ?? []).filter(item => item.answer === undefined);
 }
 
 /** Agents a conversation started that are still working or have tasks queued; it wakes when they report. */

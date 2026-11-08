@@ -41,7 +41,7 @@ export function waiting(ui: SessionView["ui"]): SessionView["waiting"] {
 export function keptQuestions(kept: SessionView["questions"], ui: SessionView["ui"], ran: boolean): SessionView["questions"] {
 	if (!ui) return kept;
 	const answered = ran ? [] : (kept ?? []).filter(item => item.answer !== undefined);
-	const asked = ui.interactions.filter(item => deskKeeps(item) && !answered.some(other => other.form.key === (item.form as UiQuestion).key))
+	const asked = (ui.interactions ?? []).filter(item => deskKeeps(item) && !answered.some(other => other.form.key === (item.form as UiQuestion).key))
 		.map(item => ({ id: item.id, form: item.form as UiQuestion }));
 	return answered.length || asked.length ? [...answered, ...asked] : undefined;
 }

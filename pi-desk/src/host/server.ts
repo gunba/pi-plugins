@@ -688,7 +688,7 @@ export class DeskHost {
 		const answered = view.questions.filter(item => item.answer !== undefined);
 		if (answered.length !== view.questions.length) managed.view = { ...view, questions: answered.length ? answered : undefined };
 		for (const item of answered) {
-			const key = item.form.key!, asked = ui.interactions.find(other => other.form.kind === "question" && other.form.key === key);
+			const key = item.form.key!, asked = ui.interactions?.find(other => other.form.kind === "question" && other.form.key === key);
 			if (!asked || managed.answering?.has(key)) continue;
 			(managed.answering ??= new Set()).add(key);
 			void worker.command({ kind: "answer", id: asked.id, answer: item.answer ?? null }, ui.generation).then(() => {
