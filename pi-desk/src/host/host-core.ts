@@ -24,7 +24,9 @@ export interface ManagedSession { view: SessionView; worker?: SessionWorker; ini
 	/** The computer stopped while its agent was working: Desk reopens it and has the agent carry on, once (wakeDue). */
 	resume?: boolean;
 	/** The turn Desk continued after a stop has started running; it is over once the agent is idle again. */
-	resumeRunning?: boolean }
+	resumeRunning?: boolean;
+	/** The keys of kept questions whose answers are on their way to the agent (server.ts deliverAnswers). */
+	answering?: Set<string> }
 
 /** The host's conversations and the operations on them that its other parts use; DeskHost (server.ts) provides it. */
 export interface HostCore {
@@ -56,6 +58,8 @@ export interface HostCore {
 	refreshParties(): void;
 	/** Ends an agent's watches, here and those it asked for elsewhere, without telling it: its conversation is gone from here (watches.ts). */
 	endWatches(agent: string | undefined, reason: string): void;
+	/** Takes the answer to a question Desk keeps while the conversation has no process; false when `id` names none. */
+	answerKept(managed: ManagedSession, id: string, answer: unknown): boolean;
 }
 
 export const reply = (body: unknown, status = 200): ApiResponse => ({ body, status });

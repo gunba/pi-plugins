@@ -410,7 +410,8 @@ export class DeskPresentation implements Presentation {
 	}
 }
 
-function validateAnswer(form: UiInteraction, input: unknown): UiAnswer | null {
+/** The answer as the question allows it; throws when it doesn't fit, such as an option the question doesn't list. */
+export function validateAnswer(form: UiInteraction, input: unknown): UiAnswer | null {
 	if (input === null) return null;
 	if (!input || typeof input !== "object") throw new Error("Invalid answer.");
 	const answer = input as Record<string, unknown>;

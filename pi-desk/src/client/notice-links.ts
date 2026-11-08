@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./connection.ts";
 import type { SessionView } from "../shared/protocol.ts";
+import { openQuestions } from "../shared/attention.ts";
 import type { WorkspaceState } from "./workspace.ts";
 import type { UiAnswer } from "../../../pi-ui/index.ts";
 
-interface Notice { type: "notice"; session?: string; answer?: { interaction: string; answer: UiAnswer }; at: number }
+interface Notice { type: "notice"; session?: string; answer?: { interaction: string; key?: string; answer: UiAnswer }; at: number }
 /** How long a notification's click waits for its conversation to arrive after the app opens. */
 const WAIT_MS = 60_000;
 
 /**
  * A notification's click (public/sw.js) opens its conversation, or the task list, once the app has it; an Android
- * action button also answers the question, if it is still waiting. The home-screen shortcuts (manifest) open the
+ * action button also answers the question, if it is still waiting: asked again since, under the same key, or kept by
+ * Desk while the conversation sleeps. The home-screen shortcuts (manifest) open the
  * Home the same way, with ?open=.
  */
 export function useNoticeLinks(sessions: readonly SessionView[] | undefined, open: (key: string) => void): void {
@@ -35,9 +37,10 @@ export function useNoticeLinks(sessions: readonly SessionView[] | undefined, ope
 		const target = sessions?.find(session => session.key === notice.session);
 		if (!target) return;
 		open(target.key); setNotice(undefined);
-		const waiting = notice.answer && target.ui?.interactions.find(item => item.id === notice.answer!.interaction);
-		if (waiting && target.ui) void api(`/sessions/${target.key}/command`, { id: crypto.randomUUID(), generation: target.ui.generation,
-			command: { kind: "answer", id: waiting.id, answer: notice.answer!.answer } }).catch(() => {});
+		const chosen = notice.answer, waiting = chosen && openQuestions(target).find(item => item.id === chosen.interaction
+			|| !!chosen.key && item.form.kind === "question" && item.form.key === chosen.key);
+		if (waiting) void api(`/sessions/${target.key}/command`, { id: crypto.randomUUID(), generation: target.ui?.generation,
+			command: { kind: "answer", id: waiting.id, answer: chosen.answer } }).catch(() => {});
 	}, [notice, sessions]);
 }
 

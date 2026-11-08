@@ -84,6 +84,12 @@ export interface UiQuestion {
 	allowComment: boolean;
 	/** Asked without waiting (ask_user wait: false): the agent works on, so the conversation isn't waiting on the user. */
 	background?: boolean;
+	/**
+	 * Names a background question across its owner's restarts: an owner that asks it again when the conversation restarts
+	 * gives it the same key. A host can then keep the question while the conversation has no process, and give an answer
+	 * the user gave it meanwhile to the question asked again under this key.
+	 */
+	key?: string;
 }
 export interface UiTextInput {
 	kind: "input" | "editor";

@@ -3,6 +3,7 @@ import { basename } from "node:path";
 import type { PushNotice } from "../account/push.ts";
 import type { HostEvent, SessionView } from "../shared/protocol.ts";
 import type { UiAnswer } from "../../../pi-ui/index.ts";
+import { openQuestions, questionKey } from "../shared/attention.ts";
 
 interface NoticeHost {
 	/** The user has used Desk recently (presence.ts). */
@@ -51,8 +52,8 @@ async function lastReply(file: string | undefined): Promise<{ text?: string; err
  */
 export class AwayNotices {
 	private host: NoticeHost;
-	/** Questions waiting for an answer, by conversation and question id, and those sent. One still waiting when the user
-	 * leaves is sent then. */
+	/** Questions waiting for an answer, by conversation and question (questionKey: one asked again when its conversation
+	 * restarts is the same question), and those sent. One still waiting when the user leaves is sent then. */
 	private questions = new Map<string, { view: SessionView; interaction: string; form: Form }>();
 	private sent = new Set<string>();
 	/** Each conversation's finished mark already considered, by key; marks from before this host started are not news. */
@@ -81,9 +82,9 @@ export class AwayNotices {
 
 	private session(view: SessionView): void {
 		const prefix = `${view.key}/`, live = new Set<string>();
-		for (const item of view.ui?.interactions ?? []) {
-			if (item.settings) continue;
-			const id = prefix + item.id; live.add(id);
+		// Those Desk keeps while the conversation sleeps included.
+		for (const item of openQuestions(view)) {
+			const id = prefix + questionKey(item); live.add(id);
 			this.questions.set(id, { view, interaction: item.id, form: item.form });
 		}
 		for (const id of this.questions.keys()) if (id.startsWith(prefix) && !live.has(id)) { this.questions.delete(id); this.sent.delete(id); }
@@ -110,6 +111,7 @@ export class AwayNotices {
 		this.send({ title: `${name(view)} asks`, body: excerpt([form.title, detail].filter(Boolean).join("\n"), 500), tag: `question:${this.key(view)}/${interaction}`,
 			session: this.key(view), urgency: "high",
 			...(choices.length ? { actions: choices.map(([title], index) => ({ action: String(index), title: excerpt(title, 40) })),
-				answers: Object.fromEntries(choices.map(([, answer], index) => [String(index), { interaction, answer }])) } : {}) });
+				answers: Object.fromEntries(choices.map(([, answer], index) => [String(index),
+					{ interaction, ...(form.kind === "question" && form.key ? { key: form.key } : {}), answer }])) } : {}) });
 	}
 }

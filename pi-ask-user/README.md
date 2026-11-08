@@ -33,7 +33,9 @@ Registered tool name: `ask_user`.
 A question asked without waiting is recorded in the conversation and asked again when the conversation restarts,
 such as for a Desk update, so an answer given later still arrives. Desk shows it as "Question" beside the
 conversation's activity, and doesn't count it as waiting on the user: the composer stays free, settings can change,
-and stopping or interrupting a run leaves it open.
+and stopping or interrupting a run leaves it open. It is asked again under its ID as key (pi-ui `UiQuestion.key`), so
+it doesn't keep the conversation from sleeping either: while the conversation is closed in Desk's sidebar, Desk keeps
+the question on screen, and an answer reopens the conversation and reaches the agent once the question is asked again.
 
 In the terminal the question opens as an overlay. `PI_ASK_USER_DISPLAY_MODE=inline`
 shows it in place instead. `alt+o` hides and reopens the overlay and `ctrl+g` toggles

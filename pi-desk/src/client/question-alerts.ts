@@ -1,18 +1,20 @@
 import { useEffect, useRef } from "react";
 import type { SessionView } from "../shared/protocol.ts";
+import { openQuestions, questionKey } from "../shared/attention.ts";
 
 /**
  * A conversation that waits for an answer (a command guard confirmation, an agent's question) must reach the
- * user wherever they are: the window title counts open questions, and each new one posts a system notification
- * unless it is already on screen. Clicking the notification opens its conversation (public/sw.js, notice-links.ts).
+ * user wherever they are: the window title counts open questions, those Desk keeps while their conversation sleeps
+ * included, and each new one posts a system notification unless it is already on screen. A question asked again when
+ * its conversation restarts is the same question (questionKey). Clicking the notification opens its conversation
+ * (public/sw.js, notice-links.ts).
  * Notifications are posted through the service worker: Android's browser has no `new Notification()`.
  */
 export function useQuestionAlerts(sessions: readonly SessionView[] | undefined, selected: string,
 	name: (session: SessionView) => string): void {
-	const pending = (sessions ?? []).flatMap(session => (session.ui?.interactions ?? [])
-		.filter(item => !item.settings).map(item => ({ session, item })));
+	const pending = (sessions ?? []).flatMap(session => openQuestions(session).map(item => ({ session, item })));
 	const seen = useRef(new Set<string>()), shown = useRef(new Set<string>());
-	const ids = pending.map(({ session, item }) => `${session.key}/${item.id}`).join("\n");
+	const ids = pending.map(({ session, item }) => `${session.key}/${questionKey(item)}`).join("\n");
 	useEffect(() => () => { for (const id of shown.current) close(id); }, []);
 	useEffect(() => {
 		if (!pending.length) return;
@@ -27,7 +29,7 @@ export function useQuestionAlerts(sessions: readonly SessionView[] | undefined, 
 		for (const id of shown.current) if (!live.has(id)) { close(id); shown.current.delete(id); }
 		if (typeof Notification === "undefined" || !navigator.serviceWorker) return;
 		for (const { session, item } of pending) {
-			const id = `${session.key}/${item.id}`;
+			const id = `${session.key}/${questionKey(item)}`;
 			if (seen.current.has(id)) continue;
 			seen.current.add(id);
 			if (session.key === selected && document.visibilityState === "visible" && document.hasFocus()) continue;

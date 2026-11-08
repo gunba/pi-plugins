@@ -1,8 +1,8 @@
 import { restorePaneWidths } from "./pane-width.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { UiConversation, UiDetails } from "../../../pi-ui/index.ts";
+import type { UiAnswer, UiConversation, UiDetails } from "../../../pi-ui/index.ts";
 import { isControl } from "../shared/controls.ts";
-import { asksInBackground } from "../shared/attention.ts";
+import { asksInBackground, openQuestions, questionKey } from "../shared/attention.ts";
 import { splitDictationNote } from "../shared/dictation-note.ts";
 import type { ChatMessage, HistoryPage, WorkerCommand } from "../shared/protocol.ts";
 import type { BrowserAccount } from "./account.ts";
@@ -179,7 +179,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const openAgentPane = (id?: string, history = false) => { if (id) chooseAgent(id); setAgentHistoryOpen(history); setPanel("agents"); };
   useEffect(() => { setFocusedAgent(localStorage.getItem(`pi-desk:agent-selection:${selected}`) ?? ""); }, [selected]);
   const settingsForms = (ui?.interactions ?? []).filter(interaction => interaction.settings);
-  const questions = (ui?.interactions ?? []).filter(interaction => !interaction.settings);
+  // Those Desk keeps while the conversation sleeps included: answering one reopens it.
+  const questions = session ? openQuestions(session) : [];
   const settingsForm = settingsForms[0];
   const question = questions.find(question => question.id === activeQuestion) ?? questions[0];
   // A question asked without waiting leaves the agent working and the composer free (ask_user wait: false).
@@ -191,7 +192,7 @@ export function App({ account }: { account?: BrowserAccount }) {
   }, [questions, activeQuestion]);
   useEffect(() => {
     const pending = new Set(state.host?.sessions.flatMap(session =>
-      session.ui?.interactions.map(question => `${session.key}/${question.id}`) ?? []));
+      [...session.ui?.interactions ?? [], ...openQuestions(session)].map(question => `${session.key}/${questionKey(question)}`)));
     for (const id of questionDrafts.current.keys()) if (!pending.has(id)) questionDrafts.current.delete(id);
   }, [state.host?.sessions]);
   useEffect(askForNotificationsOnFirstClick, []);
@@ -425,6 +426,10 @@ export function App({ account }: { account?: BrowserAccount }) {
       command,
     });
   }
+  /** Answers a question the conversation's process asks, or one Desk keeps while it has none, which needs no generation. */
+  function answerQuestion(id: string, answer: UiAnswer | null) {
+    return api(`/sessions/${selected}/command`, { id: crypto.randomUUID(), generation: session?.ui?.generation, command: { kind: "answer", id, answer } });
+  }
   const run = (command: WorkerCommand) => {
     void commandPromise(command);
   };
@@ -595,7 +600,8 @@ export function App({ account }: { account?: BrowserAccount }) {
           <div className="connection-banner">
             {/* Asleep: closed and kept with something to wake it; Desk reopens it then. */}
             <span>{session.state === "closed" && session.kept && (session.wakes || session.watching)
-              ? `Asleep: Desk reopens it ${[session.wakes && wakeLabel(session.wakes).replace(/^Wakes /, "at "), session.watching && "when a watch has news"].filter(Boolean).join(" or ")}. Open it to read or carry on.`
+              ? `Asleep: Desk reopens it ${[session.wakes && wakeLabel(session.wakes).replace(/^Wakes /, "at "), session.watching && "when a watch has news",
+                questions.length && "when you answer its question"].filter(Boolean).join(" or ")}. Open it to read or carry on.`
               : "Pi is not running. Resume to continue."}
               {session.state === "closed" && session.kept && session.waiting && <ul className="sleep-waiting">{session.waiting.map((item, index) =>
                 <li key={index}><strong>{item.title}</strong>{item.detail && <span>{item.detail}</span>}</li>)}</ul>}</span>
@@ -645,9 +651,9 @@ export function App({ account }: { account?: BrowserAccount }) {
               </div>
             )}</>}
         />
-        {question && inlineQuestion && <InteractionForm inline key={`${selected}/${question.id}`} draftKey={`${selected}/${question.id}`}
+        {question && inlineQuestion && <InteractionForm inline key={`${selected}/${question.id}`} draftKey={`${selected}/${questionKey(question)}`}
           interaction={question} questions={questions} choose={id => { setActiveQuestion(id); setDismissedQuestion(""); }} drafts={questionDrafts.current}
-          close={() => setDismissedQuestion(`${selected}/${question.id}`)} answer={async answer => { await command({ kind: "answer", id: question.id, answer }); }} />}
+          close={() => setDismissedQuestion(`${selected}/${question.id}`)} answer={answer => answerQuestion(question.id, answer)} />}
         {session && canCompose && (
           <div className="composer-dock">
             <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} shown={outgoingReceipts} />
@@ -756,14 +762,14 @@ export function App({ account }: { account?: BrowserAccount }) {
       {question && !inlineQuestion && `${selected}/${question.id}` !== dismissedQuestion && (
         <InteractionForm
           key={`${selected}/${question.id}`}
-          draftKey={`${selected}/${question.id}`}
+          draftKey={`${selected}/${questionKey(question)}`}
           owner={`${currentComputer ? `${currentComputer.name} · ` : ""}${session ? conversationTitle(session) : ""}`}
           interaction={question}
           questions={questions}
           choose={id => { setActiveQuestion(id); setDismissedQuestion(""); }}
           drafts={questionDrafts.current}
           close={() => setDismissedQuestion(`${selected}/${question.id}`)}
-          answer={async answer => { await command({ kind: "answer", id: question.id, answer }); }}
+          answer={answer => answerQuestion(question.id, answer)}
         />
       )}
     </div></BriefContext.Provider></RewindContext.Provider></WorkFocus.Provider>

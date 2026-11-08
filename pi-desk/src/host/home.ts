@@ -6,19 +6,21 @@ import type { InputSubmission } from "../shared/inputs.ts";
 import type { SessionView } from "../shared/protocol.ts";
 import { HOME_MODEL, type HomeSnapshot, type HomeWatch, type HomeWork, type HomeRun } from "../shared/home.ts";
 import type { HostCore, ManagedSession } from "./host-core.ts";
+import { openQuestions } from "../shared/attention.ts";
 import { HomeStore } from "./home-store.ts";
 
 /**
- * The conversations Home lists: every open one, and closed ones a watch will reopen (status Closed, shown only on the
- * timeline of wakes), each with what it is doing and when a watch next wakes it; secondary agents that are working are listed too. Token and usage changes don't change it.
+ * The conversations Home lists: every open one, closed ones a watch will reopen (status Closed, shown only on the
+ * timeline of wakes) and closed ones with a question Desk keeps for them, each with what it is doing and when a watch
+ * next wakes it; secondary agents that are working are listed too. Token and usage changes don't change it.
  */
 /** The longest tasks file the page shows and lets Jordan change. */
 const PAGE_LIMIT = 200_000;
 const pageVersion = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
 export function homeWork(sessions: SessionView[]): HomeWork[] {
-	return sessions.filter(session => !session.home && (session.state !== "closed" || !!session.wakes)).flatMap(session => {
-		const questions = session.ui?.interactions?.filter(item => !item.settings) ?? [];
+	return sessions.filter(session => !session.home && (session.state !== "closed" || !!session.wakes || openQuestions(session).length > 0)).flatMap(session => {
+		const questions = openQuestions(session);
 		const plans = (session.ui?.views ?? []).filter(view => view.kind === "details" && (view.id === "plan" || view.id.endsWith("/plan")));
 		const blocked = plans.find(view => (view.data as { fields?: { label: string; value: string }[] }).fields?.some(field => field.label === "State" && field.value === "blocked"));
 		const status = questions.length ? "Waiting on you" : blocked ? "Blocked" : session.snapshot?.activity === "running" ? "Working"

@@ -1,4 +1,4 @@
-import type { UiInteraction, UiValue, UiView } from "../../../pi-ui/index.ts";
+import type { UiAnswer, UiInteraction, UiQuestion, UiValue, UiView } from "../../../pi-ui/index.ts";
 import type { Ledger } from "../../../pi-context-ledger/model.ts";
 import type { FileCommand, FileReference } from "./files.ts";
 import type { HistoryPosition } from "./history.ts";
@@ -30,6 +30,11 @@ export interface InteractionSnapshot {
 	deadline?: number;
 	scope?: { id: string; label: string };
 }
+/**
+ * A question Desk keeps for a conversation between its processes (SessionView.questions). `id` is the interaction's id
+ * in the process that last asked it; `answer` is set once the user answers (null: closed without an answer).
+ */
+export interface KeptQuestion { id: string; form: UiQuestion; answer?: UiAnswer | null }
 export interface PresentationSnapshot {
 	generation: string;
 	views: ViewSnapshot[];
@@ -167,6 +172,9 @@ export interface SessionView {
 	asleep?: { files: { path: string; stamp: string }[]; boot: number };
 	/** Closed and kept, what it waits on: its watches as their views listed them when it closed. */
 	waiting?: { title: string; detail?: string }[];
+	/** Without a process (closed and kept, restarting or failed), the questions its agent asked without waiting, which
+	 * Desk keeps on screen; answered, until the agent has the answer (host server.ts). */
+	questions?: KeptQuestion[];
 	/** When its turn ended with nothing left to wake it, so it waits for the user (shared/attention.ts); cleared when it works again. */
 	finished?: number;
 	/** When someone last looked at it, on any device. */

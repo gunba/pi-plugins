@@ -1,7 +1,8 @@
 import { statSync } from "node:fs";
 import { uptime } from "node:os";
 import type { SessionView } from "../shared/protocol.ts";
-import type { UiDetails } from "../../../pi-ui/index.ts";
+import type { UiDetails, UiQuestion } from "../../../pi-ui/index.ts";
+import { deskKeeps } from "../shared/attention.ts";
 
 /**
  * Conversations that sleep: closed and kept in the sidebar with no process running, reopened when one of their watches
@@ -30,6 +31,21 @@ export function waiting(ui: SessionView["ui"]): SessionView["waiting"] {
 	return items.length ? items : undefined;
 }
 
+/**
+ * The questions Desk keeps for a conversation whose process is ending: those its agent asked without waiting
+ * (deskKeeps), which its owner asks again under the same key when the conversation restarts, and answers given to the
+ * questions it kept, until the agent has them. `ran`: the process got as far as running, so it asked again whatever it
+ * was going to, and answers it didn't take are dropped. Without `ui`, nothing is known of its questions, so the kept
+ * ones stay.
+ */
+export function keptQuestions(kept: SessionView["questions"], ui: SessionView["ui"], ran: boolean): SessionView["questions"] {
+	if (!ui) return kept;
+	const answered = ran ? [] : (kept ?? []).filter(item => item.answer !== undefined);
+	const asked = ui.interactions.filter(item => deskKeeps(item) && !answered.some(other => other.form.key === (item.form as UiQuestion).key))
+		.map(item => ({ id: item.id, form: item.form as UiQuestion }));
+	return answered.length || asked.length ? [...answered, ...asked] : undefined;
+}
+
 /** A sleeping conversation has news when a file changed, or when the computer restarted, which stopped its commands. */
 export function hasNews(record: NonNullable<SessionView["asleep"]>): boolean {
 	return Math.abs(boot() - record.boot) > 120_000 || record.files.some(file => stamp(file.path) !== file.stamp);
@@ -45,11 +61,12 @@ export const WAITING_SLEEP_AFTER_MS = 15 * 60_000;
 
 /**
  * Whether a running conversation is at rest: idle, with nothing it waits on from the user (questions, messages not yet
- * delivered, an operation) and no agents of its own working.
+ * delivered, an operation) and no agents of its own working. Questions Desk keeps while it sleeps (deskKeeps) don't
+ * count.
  */
 export function atRest(view: SessionView, pendingInputs: number): boolean {
 	return view.state === "ready" && view.snapshot?.activity === "idle" && !view.reconnecting && !view.updating && !pendingInputs
 		&& !view.controls?.some(control => control.state === "running")
-		&& !view.ui?.interactions.some(item => !item.settings)
+		&& !view.ui?.interactions.some(item => !item.settings && !deskKeeps(item))
 		&& !view.ui?.views.some(item => item.kind === "conversation" && (item.data as { active?: boolean } | null)?.active);
 }

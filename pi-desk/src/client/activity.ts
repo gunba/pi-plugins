@@ -1,6 +1,6 @@
 import { HOUR_MINUTE, localDate, localDateTime, localTime } from "./local-format.ts";
 import type { SessionView } from "../shared/protocol.ts";
-import { asksInBackground } from "../shared/attention.ts";
+import { asksInBackground, openQuestions } from "../shared/attention.ts";
 import { agentInventory } from "./agent-inventory.ts";
 
 export function sessionActivity(session: Pick<SessionView, "state" | "snapshot" | "ui" | "interrupted" | "reconnecting" | "updating" | "kept" | "controls">): string {
@@ -69,17 +69,17 @@ export function backgroundWork(session: Parameters<typeof sessionActivity>[0] & 
 }
 
 /**
- * What a sidebar row shows of a conversation: its dot, its status, and how many questions it asked without waiting.
- * A question gives the dot its question mark, whatever else the conversation waits on: a wake's or a watch's green ring
- * said there was nothing to do. `unseen`: it has news no one has looked at (shared/attention.ts); `finished` then says
- * it is done, with nothing to wake it.
+ * What a sidebar row shows of a conversation: its dot, its status, and how many questions it asked without waiting,
+ * those Desk keeps while it sleeps included. A question gives the dot its question mark, whatever else the
+ * conversation waits on: a wake's or a watch's green ring said there was nothing to do. `unseen`: it has news no one
+ * has looked at (shared/attention.ts); `finished` then says it is done, with nothing to wake it.
  */
-export function rowStatus(session: Parameters<typeof backgroundWork>[0], unseen: boolean):
+export function rowStatus(session: Parameters<typeof backgroundWork>[0] & Pick<SessionView, "questions">, unseen: boolean):
 	{ dot: string; label: string; title?: string; questions: number; finished: boolean } {
 	const background = backgroundWork(session), activity = sessionActivity(session);
 	const finished = unseen && !background && ["idle", "ready", "sleeping", "error"].includes(activity);
 	const label = background?.label ?? (finished && activity !== "error" ? "Finished" : activityLabel(activity));
-	const questions = session.ui?.interactions.filter(item => asksInBackground(item.form)).length ?? 0;
+	const questions = openQuestions(session).filter(item => asksInBackground(item.form)).length;
 	// An idle conversation still waiting on something is not done: its dot and label say what it waits on.
 	const dot = questions ? "waiting" : background && (activity === "idle" || activity === "ready") ? "background" : finished && activity !== "error" ? "finished" : activity;
 	return { dot, label, ...(background ? { title: background.title } : {}), questions, finished };
@@ -90,10 +90,10 @@ export function rowStatus(session: Parameters<typeof backgroundWork>[0], unseen:
  * it, open or asleep (closed, kept to be woken); 2 closed. Those waiting and those closed fold away, each under its own
  * heading.
  */
-export function sidebarGroup(session: Parameters<typeof backgroundWork>[0]): 0 | 1 | 2 {
-	// A question keeps it in view whatever else it waits on. One asked without waiting leaves the conversation idle, so
-	// its activity doesn't say so, yet the window title counts it (question-alerts.ts).
-	if (session.ui?.interactions.some(item => !item.settings)) return 0;
+export function sidebarGroup(session: Parameters<typeof backgroundWork>[0] & Pick<SessionView, "questions">): 0 | 1 | 2 {
+	// A question keeps it in view whatever else it waits on, asleep too. One asked without waiting leaves the
+	// conversation idle, so its activity doesn't say so, yet the window title counts it (question-alerts.ts).
+	if (openQuestions(session).length) return 0;
 	if (session.state === "closed" || session.state === "failed") return session.kept && (session.wakes || session.watching) ? 1 : 2;
 	const waits = backgroundWork(session)?.kind;
 	return waits === "wake" || waits === "watch" ? 1 : 0;

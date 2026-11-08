@@ -542,8 +542,12 @@ stay visible within the viewport.
 
 A question an agent asks without waiting (`ask_user` with `wait: false`) appears the
 same way, but the agent keeps working: the sidebar shows "Question" beside its
-activity, in the needs-input colour, rather than "Needs input", and the composer and
-settings stay available. Stopping or interrupting the agent leaves it open.
+activity, and a question mark for its dot, in the needs-input colour, rather than
+"Needs input", and the composer and settings stay available. Stopping or interrupting
+the agent leaves it open. Nor does it keep the conversation from sleeping: closed in the
+sidebar, by the user or to sleep while it waits on watches, the conversation keeps the
+question on screen, in the sidebar and on Home, and answering it reopens the
+conversation and gives the agent the answer. Removing the conversation cancels it.
 
 Type `/` to browse the worker’s installed Pi commands, loaded extension commands,
 templates and skills. Arrow keys select a match, Tab completes it and Escape

@@ -6,11 +6,14 @@ import { AccountError } from "./identity.ts";
 
 /** A browser's push subscription (PushSubscription.toJSON()). */
 export interface PushSubscriptionData { endpoint: string; keys: { p256dh: string; auth: string } }
-/** What the service worker shows (public/sw.js). `session` is the app's conversation key; `answers` maps action ids to answers. */
+/**
+ * What the service worker shows (public/sw.js). `session` is the app's conversation key; `answers` maps action ids to
+ * answers, each to the question `interaction` names or, asked again since, the one with its `key` (pi-ui UiQuestion.key).
+ */
 export interface PushNotice {
 	title: string; body?: string; tag: string; session?: string; urgency?: "high" | "normal";
 	actions?: { action: string; title: string }[];
-	answers?: Record<string, { interaction: string; answer: unknown }>;
+	answers?: Record<string, { interaction: string; key?: string; answer: unknown }>;
 }
 interface PushState { version: 1; vapid: { publicKey: string; privateKey: JsonWebKey }; subscriptions: Record<string, PushSubscriptionData & { created: number }> }
 

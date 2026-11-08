@@ -82,7 +82,7 @@ export class ConversationMoves {
 		}
 		if (!keep) this.core.endWatches(managed.view.agentId ?? managed.view.snapshot?.id, ended);
 		managed.view = keep ? { ...managed.view, state: "closed", kept: true }
-			: { ...managed.view, state: "closed", kept: undefined, wakes: undefined, watching: undefined, watchEvery: undefined, asleep: undefined, waiting: undefined, ...(moved ? { moved } : {}) };
+			: { ...managed.view, state: "closed", kept: undefined, wakes: undefined, watching: undefined, watchEvery: undefined, asleep: undefined, waiting: undefined, questions: undefined, ...(moved ? { moved } : {}) };
 		this.core.persist(true); this.core.emit({ type: "session", session: managed.view });
 	}
 

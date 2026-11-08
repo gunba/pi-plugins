@@ -66,7 +66,7 @@ test("worker loss and stale generations are not reported as definitive command r
 		response = await send();
 		assert.equal(response.status, 409); await response.text();
 		const managed = host.sessions.get(key);
-		managed.view.ui = { generation: "old", interactions: [{ id: "unanswerable" }] };
+		managed.view.ui = { generation: "old", interactions: [{ id: "unanswerable", form: { kind: "confirm", title: "Continue?", message: "Sample" } }] };
 		managed.view.snapshot = { activity: "waiting" };
 		host.workerEvent(key, { type: "fatal", error: "Worker stopped" });
 		assert.equal(managed.view.ui, undefined, "a stopped worker cannot leave a live question");

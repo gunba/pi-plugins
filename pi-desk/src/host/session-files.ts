@@ -45,7 +45,7 @@ export class SessionCatalog {
 			title: view.snapshot?.title ?? view.title,
 			leaf: view.snapshot ? view.snapshot.leaf : view.leaf,
 			...(view.home ? { home: true } : {}), pinned: view.pinned, interrupted: view.interrupted, error: view.error, kept: view.kept, ...(view.moved ? { moved: view.moved } : {}), ...(view.wakes ? { wakes: view.wakes } : {}),
-			...(view.snapshot?.activity === "running" ? { working: true } : {}), ...(view.resumedAt ? { resumedAt: view.resumedAt } : {}), ...(view.watching ? { watching: true } : {}), ...(view.watchEvery ? { watchEvery: view.watchEvery } : {}), ...(view.asleep ? { asleep: view.asleep } : {}), ...(view.waiting ? { waiting: view.waiting } : {}), ...(view.lastModel ? { lastModel: view.lastModel } : {}), ...(view.createdBy ? { createdBy: view.createdBy } : {}), ...(view.finished ? { finished: view.finished } : {}), ...(view.seen ? { seen: view.seen } : {}),
+			...(view.snapshot?.activity === "running" ? { working: true } : {}), ...(view.resumedAt ? { resumedAt: view.resumedAt } : {}), ...(view.watching ? { watching: true } : {}), ...(view.watchEvery ? { watchEvery: view.watchEvery } : {}), ...(view.asleep ? { asleep: view.asleep } : {}), ...(view.waiting ? { waiting: view.waiting } : {}), ...(view.questions ? { questions: view.questions } : {}), ...(view.lastModel ? { lastModel: view.lastModel } : {}), ...(view.createdBy ? { createdBy: view.createdBy } : {}), ...(view.finished ? { finished: view.finished } : {}), ...(view.seen ? { seen: view.seen } : {}),
 			controls: view.controls, activation: view.activation,
 		}));
 		atomicJson(this.file, { version: 1, sessions: records }, { compact: true });

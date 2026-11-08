@@ -32,7 +32,8 @@ import type { UpdateCheckpoint } from "../shared/checkpoint.ts";
 import { Attachments } from "./attachments.ts";
 import { assertRuntimeHost, selectedRuntime } from "../../manage/installation.ts";
 import { isOpenSession } from "../shared/workspace.ts";
-import { SLEEP_AFTER_MS, WAITING_SLEEP_AFTER_MS, asleep, atRest, hasNews, waiting } from "./sleep.ts";
+import { SLEEP_AFTER_MS, WAITING_SLEEP_AFTER_MS, asleep, atRest, hasNews, keptQuestions, waiting } from "./sleep.ts";
+import { validateAnswer } from "./presentation.ts";
 import { Folders } from "./folders.ts";
 import { Parties } from "./parties.ts";
 import { Dictation } from "./dictation.ts";
@@ -53,6 +54,8 @@ import { asksInBackground, settle } from "../shared/attention.ts";
 import { WATCHES, WatchService } from "./watches.ts";
 import { Pictures } from "./pictures.ts";
 
+/** wakeDue's mark for reopening a conversation to give its agent an answer the user gave while it was closed. */
+const ANSWERED = -2;
 /** What an agent is told when Desk continues its work after the computer stopped mid-turn. */
 const RESUME_NOTE = "Desk restarted after this computer stopped while you were working. Commands, tools and helpers that were running then were stopped and are not run again. Check where your work stands (files, processes, partial results) before carrying on.";
 
@@ -149,6 +152,7 @@ export class DeskHost {
 			refreshParties: () => this.refreshParties(),
 			// Its helper agents run only in its process, so their watches go with it.
 			endWatches: (agent, reason) => { for (const id of agent ? [agent, ...this.parties?.store.helpers(agent) ?? []] : []) this.watches?.endAgent(id, reason); },
+			answerKept: (managed, id, answer) => this.answerKept(managed, id, answer),
 		};
 		const signingIn = () => !!this.logins?.signingIn;
 		this.updates = new HostUpdates(this.core, { runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, signingIn });
@@ -428,6 +432,8 @@ export class DeskHost {
 				const kept = managed.keepOnClose && !managed.replacing, sleeping = kept ? asleep(managed.view.ui) : undefined;
 				managed.view = { ...managed.view, state: managed.replacing ? "starting" : "closed", interrupted: false, snapshot: undefined, ui: undefined, historyReady: false, error: undefined,
 					kept: managed.keepOnClose || undefined, inputs: this.inputs?.pending(key), asleep: sleeping, waiting: kept ? waiting(managed.view.ui) : undefined,
+					// Kept or restarting, its questions stay on screen; removed, they end with it.
+					questions: kept || managed.replacing ? keptQuestions(managed.view.questions, managed.view.ui, !!managed.initialized) : undefined,
 					...(managed.keepOnClose || managed.replacing ? {} : { wakes: undefined, watching: undefined, watchEvery: undefined }) };
 				managed.keepOnClose = undefined;
 			}
@@ -466,7 +472,8 @@ export class DeskHost {
 				&& !managed.view.controls?.some(control => control.kind === "close" && control.state === "running")
 				&& (!managed.reconnectAt || Date.now() - managed.reconnectAt >= 60_000);
 			managed.view = { ...managed.view, state: reconnect ? "starting" : "failed", error: reconnect ? undefined : message.error,
-				reconnecting: reconnect ? true : undefined, interrupted: !reconnect, snapshot: undefined, ui: undefined, historyReady: false };
+				reconnecting: reconnect ? true : undefined, interrupted: !reconnect, snapshot: undefined, ui: undefined, historyReady: false,
+				questions: keptQuestions(managed.view.questions, managed.view.ui, !!managed.initialized) };
 			managed.worker = undefined;
 			if (reconnect) {
 				managed.reconnectAt = Date.now();
@@ -475,7 +482,7 @@ export class DeskHost {
 		} else if (message.type === "fatal") {
 			this.inputs?.interrupt(key, "The session worker stopped");
 			managed.view = { ...managed.view, state: "failed", error: message.error, interrupted: true, snapshot: undefined, ui: undefined, historyReady: false,
-				inputs: this.inputs?.pending(key) };
+				inputs: this.inputs?.pending(key), questions: keptQuestions(managed.view.questions, managed.view.ui, !!managed.initialized) };
 			const worker = managed.worker;
 			void worker?.close().catch(() => {}).finally(() => {
 				if (managed.worker === worker) managed.worker = undefined;
@@ -491,6 +498,7 @@ export class DeskHost {
 			if (message.snapshot.activity === "running") managed.resumeRunning = true;
 			else if (message.snapshot.activity === "idle" && managed.resumeRunning) { managed.resumeRunning = undefined; managed.view = { ...managed.view, resumedAt: undefined }; }
 		}
+		this.deliverAnswers(managed);
 		settle(managed);
 		this.events.emit({ type: "session", session: managed.view });
 		this.persist();
@@ -504,8 +512,9 @@ export class DeskHost {
 	 * Reopens listed conversations that aren't running when one of their watches is due, such as after the computer
 	 * restarted or the user closed one keeping it in the sidebar; the watch then wakes the agent. A conversation that
 	 * was watching for something is reopened too when its process was lost rather than closed, so its watches go on,
-	 * and a sleeping one when a file its watches write changed (sleep.ts). One that fails to start is tried again every
-	 * 15 minutes while it stays listed, and a sleeping one is reopened for its files at most that often.
+	 * a sleeping one when a file its watches write changed (sleep.ts), and one whose kept question the user answered
+	 * (answerKept). One that fails to start is tried again every 15 minutes while it stays listed, and a sleeping one is
+	 * reopened for its files at most that often.
 	 */
 	private wakeDue(): void {
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate) return;
@@ -518,15 +527,16 @@ export class DeskHost {
 			// Desk runs the watches of conversations whose agents gave them to it, and reopens those itself (watches.ts).
 			const desk = this.watches?.has(view.agentId);
 			const due = !desk && view.wakes && view.wakes <= now ? view.wakes : !desk && view.watching && view.interrupted ? 0
-				: sleeping && view.asleep && hasNews(view.asleep) ? -1 : undefined;
+				: sleeping && view.asleep && hasNews(view.asleep) ? -1 : view.questions?.some(item => item.answer !== undefined) ? ANSWERED : undefined;
 			const tried = this.wakeTried.get(view.key);
 			if (due === undefined || (tried?.wakes === due && tried.at > now - 15 * 60_000)) continue;
 			this.wakeTried.set(view.key, { wakes: due, at: now });
 			try {
 				const key = this.createSession(view.cwd, view.file, managed);
-				// Asleep by choice, it goes back to sleep when done; one that stopped unasked stays open as it was.
+				// Asleep by choice, it goes back to sleep when done; one that stopped unasked stays open as it was, and so
+				// does one the user answered, as for a message from them.
 				const reopened = this.sessions.get(key);
-				if (reopened && sleeping) reopened.sleepWhenIdle = true;
+				if (reopened && sleeping && due !== ANSWERED) reopened.sleepWhenIdle = true;
 			} catch (error) { console.error(`Could not reopen ${view.title ?? view.key} for its watch:`, error instanceof Error ? error.message : String(error)); }
 		}
 	}
@@ -643,6 +653,51 @@ export class DeskHost {
 			if (opened) opened.sleepWhenIdle = true;
 		} catch (error) { console.error("Could not open a conversation for its watch:", error instanceof Error ? error.message : String(error)); }
 		return "waking";
+	}
+
+	/**
+	 * Takes the user's answer to a question Desk keeps for a conversation without a process (SessionView.questions), and
+	 * opens the conversation for it; its agent gets the answer once the process asks the question again (deliverAnswers).
+	 * False when `id` names no question Desk keeps. Throws when it is answered already, or the answer doesn't fit it.
+	 */
+	private answerKept(managed: ManagedSession, id: string, answer: unknown): boolean {
+		const question = managed.view.questions?.find(item => item.id === id);
+		if (!question || managed.view.moved) return false;
+		if (question.answer !== undefined) throw new Error("This question has already been answered.");
+		const value = validateAnswer(question.form, answer);
+		managed.view = { ...managed.view, questions: managed.view.questions!.map(item => item === question ? { ...item, answer: value } : item) };
+		this.events.emit({ type: "session", session: managed.view }); this.persistEvent(true);
+		const { view } = managed;
+		if (managed.worker) this.deliverAnswers(managed);
+		// Otherwise wakeDue tries again.
+		else if (!this.closing && !this.checkpoints?.held && !this.restoringUpdate && view.file && isOpenSession(view)) {
+			try { this.createSession(view.cwd, view.file, managed); }
+			catch (error) { console.error(`Could not reopen ${view.title ?? view.key} for an answer:`, error instanceof Error ? error.message : String(error)); }
+		}
+		return true;
+	}
+
+	/**
+	 * Gives the agent the answers the user gave to questions Desk kept for its conversation (SessionView.questions), each
+	 * once its process asks the question again under the same key. Kept questions no one answered give way to the
+	 * process's own.
+	 */
+	private deliverAnswers(managed: ManagedSession): void {
+		const { worker, view } = managed, ui = view.ui;
+		if (!view.questions || !worker || !managed.initialized || view.state !== "ready" || !ui) return;
+		const answered = view.questions.filter(item => item.answer !== undefined);
+		if (answered.length !== view.questions.length) managed.view = { ...view, questions: answered.length ? answered : undefined };
+		for (const item of answered) {
+			const key = item.form.key!, asked = ui.interactions.find(other => other.form.kind === "question" && other.form.key === key);
+			if (!asked || managed.answering?.has(key)) continue;
+			(managed.answering ??= new Set()).add(key);
+			void worker.command({ kind: "answer", id: asked.id, answer: item.answer ?? null }, ui.generation).then(() => {
+				const left = managed.view.questions?.filter(other => other.form.key !== key);
+				managed.view = { ...managed.view, questions: left?.length ? left : undefined };
+				this.events.emit({ type: "session", session: managed.view }); this.persistEvent(true);
+			}, error => console.error(`An answer given while ${view.title ?? view.key} was closed did not reach its agent:`, error instanceof Error ? error.message : String(error)))
+				.finally(() => managed.answering?.delete(key));
+		}
 	}
 
 	private reconnectWorker(managed: ManagedSession, instance: string): void {
@@ -936,6 +991,7 @@ export class DeskHost {
 				cwd: snapshot.cwd, file: snapshot.file, name: snapshot.name, title: snapshot.title, leaf: snapshot.leaf,
 				workerRuntime: worker.runtime, reconnecting: undefined };
 			managed.initialized = true; managed.initialGeneration = worker.initialGeneration ?? snapshot.ui.generation;
+			this.deliverAnswers(managed);
 			this.saved?.invalidate();
 			this.events.emit({ type: "session", session: managed.view });
 			this.persistEvent(true);

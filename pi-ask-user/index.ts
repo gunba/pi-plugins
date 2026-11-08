@@ -1475,7 +1475,8 @@ export default function(pi: ExtensionAPI) {
    /**
     * Questions asked without waiting stay open in Desk, marked as not blocking, while the agent works on; the answer
     * comes back as a message that joins the agent's run or starts a turn. They are recorded in the conversation and
-    * asked again when it restarts, so an answer given after a Desk update still arrives.
+    * asked again when it restarts, under their ID as key (UiQuestion.key), so an answer given after a Desk update, or
+    * given to Desk while the conversation was closed, still arrives.
     */
    let open = new AbortController(), running = false;
    const asking = new Set<string>();
@@ -1485,7 +1486,7 @@ export default function(pi: ExtensionAPI) {
       asking.add(item.id);
       const signal = open.signal;
       void presentation.request({ kind: "question", title: item.question, context: item.context, options: item.options,
-         allowMultiple: item.allowMultiple, allowFreeform: item.options.length === 0 || item.allowFreeform, allowComment: item.allowComment, background: true },
+         allowMultiple: item.allowMultiple, allowFreeform: item.options.length === 0 || item.allowFreeform, allowComment: item.allowComment, background: true, key: item.id },
          { signal }).then(answer => {
             asking.delete(item.id);
             // Closed with the conversation: it is asked again when the conversation restarts.

@@ -1,6 +1,7 @@
 import { realpathSync, rmSync } from "node:fs";
 import { isControl } from "../shared/controls.ts";
 import type { InputSubmission } from "../shared/inputs.ts";
+import type { WorkerCommand } from "../shared/protocol.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
 import { commandFrom, string, workerCommandFrom } from "./commands.ts";
 import { reply, type HostCore } from "./host-core.ts";
@@ -105,7 +106,7 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 				if (data.keep !== true) for (const file of managed.view.asleep?.files ?? []) rmSync(file.path, { force: true });
 				if (data.keep !== true) core.endWatches(managed.view.agentId ?? managed.view.snapshot?.id, REMOVED);
 				managed.view = { ...managed.view, state: "closed", interrupted: false, error: undefined, kept: data.keep === true || undefined,
-					...(data.keep === true ? {} : { wakes: undefined, watching: undefined, watchEvery: undefined, asleep: undefined, waiting: undefined }),
+					...(data.keep === true ? {} : { wakes: undefined, watching: undefined, watchEvery: undefined, asleep: undefined, waiting: undefined, questions: undefined }),
 					snapshot: undefined, ui: undefined, inputs: core.inputs.pending(managed.view.key) };
 				core.persist(true);
 				core.emit({ type: "session", session: managed.view });
@@ -135,6 +136,11 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 	if (route) {
 		const managed = core.sessions.get(route[1]!);
 		if (!managed) return reply({ error: "Unknown session." }, 404);
+		// An answer to a question Desk keeps while the conversation has no process, or is starting one, needs neither.
+		if (route[2] === "command" && request.method === "POST" && (data.command as { kind?: unknown } | undefined)?.kind === "answer") {
+			const command = workerCommandFrom(data.command) as Extract<WorkerCommand, { kind: "answer" }>;
+			if (core.answerKept(managed, command.id, command.answer)) return reply({ result: null });
+		}
 		if (!managed.worker || managed.view.state === "closed" || managed.view.state === "failed") throw new Error("Resume this conversation before using its controls.");
 		const origin = { message: url.searchParams.get("message"), source: url.searchParams.get("source") ?? undefined };
 		if (route[2] === "command" && request.method === "POST") {

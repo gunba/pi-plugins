@@ -1,8 +1,28 @@
 import type { UiConversation, UiInteraction } from "../../../pi-ui/index.ts";
-import type { SessionView, ViewSnapshot } from "./protocol.ts";
+import type { InteractionSnapshot, SessionView, ViewSnapshot } from "./protocol.ts";
 
 /** A question asked without waiting (ask_user wait: false): the agent works on, so it doesn't hold the conversation. */
 export const asksInBackground = (form: UiInteraction | undefined) => form?.kind === "question" && form.background === true;
+
+/**
+ * A question Desk can keep while the conversation has no process: one the conversation's own agent asked without
+ * waiting, under a key its owner asks it again with when the conversation restarts (UiQuestion.key). The others end
+ * with the process.
+ */
+export const deskKeeps = (item: Pick<InteractionSnapshot, "form" | "settings" | "scope">): boolean =>
+	item.form.kind === "question" && item.form.background === true && !!item.form.key && !item.settings && !item.scope;
+
+/** What names a question across its conversation's restarts: its key where it has one, otherwise its id. */
+export const questionKey = (item: Pick<InteractionSnapshot, "id" | "form">): string =>
+	item.form.kind === "question" && item.form.key ? `key:${item.form.key}` : item.id;
+
+/**
+ * The questions waiting for the user's answer: those the conversation's process asks, or, while it has none, those Desk
+ * keeps for it (SessionView.questions) that are not answered yet.
+ */
+export function openQuestions(view: Pick<SessionView, "ui" | "questions">): InteractionSnapshot[] {
+	return view.ui ? view.ui.interactions.filter(item => !item.settings) : (view.questions ?? []).filter(item => item.answer === undefined);
+}
 
 /** Agents a conversation started that are still working or have tasks queued; it wakes when they report. */
 export function workingAgents(views: readonly ViewSnapshot[]): ViewSnapshot[] {
