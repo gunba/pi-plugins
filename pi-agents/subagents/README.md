@@ -39,7 +39,8 @@ interruption; unknown targets are errors. Interruption preserves queued work, de
 follow-up, a report from its own agents or an owning-driver resume can unpark retained work.
 
 There is no waiting tool: a parent carries on or ends its turn, and reports wake it. To wait for a command or a time,
-agents use `watch` (pi-watch).
+agents use `watch` (pi-watch). Events from a child's watches that come between its turns reach it in the next turn its
+parent gives it.
 
 ## Model, account and tool choices
 

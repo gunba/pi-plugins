@@ -147,7 +147,8 @@ export class DeskHost {
 			drainInputs: managed => this.drainInputs(managed),
 			attachments: key => this.attachments(key),
 			refreshParties: () => this.refreshParties(),
-			endWatches: (agent, reason) => this.watches?.endAgent(agent, reason),
+			// Its helper agents run only in its process, so their watches go with it.
+			endWatches: (agent, reason) => { for (const id of agent ? [agent, ...this.parties?.store.helpers(agent) ?? []] : []) this.watches?.endAgent(id, reason); },
 		};
 		const signingIn = () => !!this.logins?.signingIn;
 		this.updates = new HostUpdates(this.core, { runtime: () => this.runtime, runtimeHome: () => this.runtimeHome, signingIn });
@@ -614,9 +615,13 @@ export class DeskHost {
 	/**
 	 * Reopens a conversation for its watch's news, as wakeDue does for a time: one asleep by choice goes back to sleep
 	 * when done. One Desk doesn't list, from Pi in a terminal, opens here. Removed, moved or missing, it is gone.
+	 * A helper agent's news waits for the next turn its conversation gives it: only that conversation's process runs it,
+	 * and holds its history open, so opening it here would fail.
 	 */
 	private wakeForWatch(managed: ManagedSession | undefined, agent: string): "waking" | "later" | "gone" {
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate) return "later";
+		const member = this.parties?.store.member(agent);
+		if (member?.kind === "child") return "later";
 		if (managed) {
 			const { view } = managed;
 			if (managed.worker) return "waking";
@@ -629,7 +634,6 @@ export class DeskHost {
 			} catch (error) { console.error(`Could not reopen ${view.title ?? view.key} for its watch:`, error instanceof Error ? error.message : String(error)); }
 			return "waking";
 		}
-		const member = this.parties?.store.member(agent);
 		const file = this.parties?.store.sessionFile(agent)
 			?? (member ? SessionManager.findById(member.cwd, agent, configuredSessionDirectory(member.cwd, this.options.agentDir, this.options.sessionDir)) : undefined);
 		if (!file) return "gone";

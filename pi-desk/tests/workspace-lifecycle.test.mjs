@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -77,6 +77,52 @@ test("host restart preserves open membership without starting Pi; explicit close
 		assert.equal((await close(restored.activation)).status, 200);
 		assert.equal(host.state().sessions.length, 0);
 		assert.equal(new SessionCatalog(dir).read()[0].interrupted, false);
+	} finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+/** Registers a helper agent as the subagent runtime does, with its history in its conversation's folder. */
+function helperOf(host, dir, root) {
+	const helper = randomUUID(), folder = join(dir, "subagents", "sessions", root), file = join(folder, `2026-11-08T02-20-55-550Z_${helper}.jsonl`);
+	mkdirSync(folder, { recursive: true });
+	writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: helper, timestamp: new Date().toISOString(), cwd: dir }) + "\n");
+	host.parties.store.register(helper, randomUUID(), "Untitled conversation", dir, "child", file);
+	return helper;
+}
+
+test("watch news for a helper agent waits for its next turn instead of opening it as a conversation", async () => {
+	// Desk opened Idea Arena's helpers for their watches' news. Their conversation's process held them open, so each try
+	// left a failed "New conversation" row, and another every 15 minutes.
+	const dir = mkdtempSync(join(tmpdir(), "desk-workspace-"));
+	const host = new DeskHost({ cwd: dir, agentDir: dir, dataDir: dir, port: 0 });
+	try {
+		await host.start();
+		const helper = helperOf(host, dir, randomUUID());
+		host.watches.store.addEvent({ id: randomUUID(), watch: "", agent: helper, home: "", name: "w1", text: "The auditor ruled.", created: Date.now(), state: "pending" });
+		host.watches.scan();
+		assert.deepEqual(host.state().sessions, []);
+		assert.deepEqual(host.watches.store.events(helper, "pending").map(event => event.text), ["The auditor ruled."]);
+	} finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("removing a conversation ends its helper agents' watches with its own", async () => {
+	// A helper runs only in its conversation's process; once that was removed, the helper's watches ran on unheard.
+	const dir = mkdtempSync(join(tmpdir(), "desk-workspace-"));
+	const host = new DeskHost({ cwd: dir, agentDir: dir, dataDir: dir, port: 0 });
+	try {
+		await host.start();
+		const root = randomUUID(), helper = helperOf(host, dir, root), stranger = helperOf(host, dir, randomUUID());
+		const watch = agent => {
+			const id = randomUUID(), created = Date.now();
+			host.watches.store.insert({ id, agent, home: "", runs: "", name: "w1", spec: { id: "w1", mode: "time", at: created + 3_600_000, cwd: dir, created },
+				state: "running", created, progress: {} });
+			return id;
+		};
+		const own = watch(root), helpers = watch(helper), others = watch(stranger);
+		const key = randomUUID(), activation = randomUUID();
+		host.sessions.set(key, { view: { key, activation, cwd: dir, created: 1, state: "closed", kept: true, agentId: root } });
+		const removed = await host.api.handle("operator", { method: "POST", path: `/api/sessions/${key}/close`, body: { id: randomUUID(), activation, keep: false } });
+		assert.equal(removed.status, 200);
+		assert.deepEqual([own, helpers, others].map(id => host.watches.store.get(id).state), ["ended", "ended", "running"]);
 	} finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 

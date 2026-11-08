@@ -31,6 +31,9 @@ from Desk (`desk.ts`); the watch, its runner and its events live in Desk's store
 - An event waits in the store until the agent's Pi process has put it in the conversation. A conversation that isn't
   running when one arrives is reopened for it, from its file if Desk didn't list it; one asleep by choice closes
   again once it is at rest. One that can't be reopened is tried again every 15 minutes.
+- A secondary agent's events that come between its turns wait for the next turn its parent gives it: only the parent's
+  process runs it, so Desk doesn't open it as a conversation of its own. Its watches end when its conversation is removed from Desk or moves
+  away.
 - An open conversation that waits on its watches, with nothing else under way, sleeps once it has been at rest for 15
   minutes: closed with no process, kept in the sidebar under Waiting, and reopened when a watch has news. Home stays
   open.
