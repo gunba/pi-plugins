@@ -4,8 +4,12 @@ import type { ViewSnapshot } from "../shared/protocol.ts";
 import { Icon } from "./icons.tsx";
 import { PlanView } from "./plan-view.tsx";
 
-/** The step a plan is on: the one in progress, else the first not done, else the last. */
-export function currentStep(items: NonNullable<UiDetails["items"]>): number {
+/**
+ * The step a plan is on: the one in progress, else the first not done, else the last. A complete plan is on its last
+ * step, whatever steps it left open (pi-plan lets a plan complete with steps still open).
+ */
+export function currentStep(items: NonNullable<UiDetails["items"]>, complete = false): number {
+	if (complete) return items.length - 1;
 	const active = items.findIndex(item => item.status === "in progress");
 	if (active >= 0) return active;
 	const next = items.findIndex(item => item.status !== "completed");
@@ -22,7 +26,8 @@ export function PlanHeader({ view, invoke, disabled, title }: {
 	title?: ReactNode;
 }) {
 	const data = view.data as UiDetails, items = data.items ?? [];
-	const current = currentStep(items), completed = items.filter(item => item.status === "completed").length;
+	const complete = data.fields?.some(field => field.label === "State" && field.value === "complete") ?? false;
+	const current = currentStep(items, complete), completed = items.filter(item => item.status === "completed").length;
 	const [peek, setPeek] = useState<number>();
 	const [open, setOpen] = useState(false);
 	const root = useRef<HTMLDivElement>(null);
@@ -36,8 +41,9 @@ export function PlanHeader({ view, invoke, disabled, title }: {
 		document.addEventListener("pointerdown", away); document.addEventListener("keydown", escape);
 		return () => { document.removeEventListener("pointerdown", away); document.removeEventListener("keydown", escape); };
 	}, [open]);
-	// The step under way needs no label; one leafed to, or a finished plan's last, says where it stands.
-	const status = !step || step.status === "in progress" ? "" : step.status === "completed" ? "Done" : shown < current ? "Skipped" : "Next";
+	// The step under way needs no label; one leafed to, or a finished plan's last, says where it stands. A complete plan
+	// has no step under way: the steps it left open were skipped.
+	const status = !step ? "" : step.status === "completed" ? "Done" : complete || shown < current ? "Skipped" : step.status === "in progress" ? "" : "Next";
 	return <div className="plan-header" ref={root} onPointerLeave={() => setPeek(undefined)}>
 		<button type="button" className="plan-rolodex" aria-expanded={open} aria-label={`Plan: ${data.summary ?? ""}. Step ${shown + 1} of ${items.length}${step ? `: ${step.title}` : ""}`}
 			title={data.summary} onClick={() => setOpen(value => !value)}
