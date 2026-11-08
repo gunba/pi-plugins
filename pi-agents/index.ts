@@ -17,6 +17,8 @@ import { agentId, nativeId } from "./network.ts";
 import { partyForkPoint } from "./fork.ts";
 import { partyDelivery } from "./availability.ts";
 import { providePrimaryAgents, rememberAgentLabels, type PrimaryAgents } from "./primary.ts";
+import { readHandbookFile } from "../pi-handbook/src/file.ts";
+import { provideHandbookReader } from "../pi-handbook/src/peers.ts";
 
 export const PARTY_MESSAGE = "pi-party/message";
 /** agent_start's result when Jordan answers no. Programs get only this data, so it says who refused. */
@@ -104,6 +106,22 @@ export default function party(pi: ExtensionAPI): void {
 		} catch (error) { return { reopened: "no", reason: (error instanceof Error ? error.message : String(error)).replace(/ Receipt: \S+$/, "") }; }
 		finally { clearTimeout(timer); }
 	};
+	/** Another agent's handbook: read from its history when it is on this computer, else asked of its computer's Desk. */
+	const readHandbook = async (target: string, signal?: AbortSignal): Promise<string> => {
+		const store = database(), peer = store.peer(session, target), name = store.handles().get(peer.session) ?? peer.label;
+		const computer = peer.computer ?? "local";
+		if (computer === "local") {
+			const file = store.sessionFile(nativeId(peer.session));
+			if (!file) throw Error(`${name}'s history is not on this computer.`);
+			return await readHandbookFile(file) ?? `${name} has no handbook.`;
+		}
+		if (!store.computerOnline(computer)) throw Error(`${name}'s computer is offline.`);
+		if (!store.computerSupports(computer, "handbook")) throw Error(`${name}'s computer runs an older Desk that cannot share handbooks.`);
+		const request = operations().queue(store, session, owner, { kind: "handbook", computer, session: nativeId(peer.session) });
+		try { return (await operations().wait(request.id, signal)).result?.text ?? `${name} has no handbook.`; }
+		catch (error) { throw Error((error instanceof Error ? error.message : String(error)).replace(/ Receipt: \S+$/, "")); }
+	};
+	provideHandbookReader(readHandbook);
 	const publish = () => {
 		const self = member();
 		if (!self || self.owner !== owner || !store) { chat?.close(); remote?.close(); remote = undefined; source?.set(undefined); return; }

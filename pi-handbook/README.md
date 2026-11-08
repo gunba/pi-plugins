@@ -51,6 +51,12 @@ The tidy-up returns changes to single entries as JSON, and code applies them aft
 Each pass records, per entry, whether the work touched it, whether the agent followed it and was corrected, and
 whether the user had to say it again.
 
+## Other agents' handbooks
+
+An agent can read another conversation's handbook with the tool's read action and `agent` (a name or ID from
+`agent_list`), on any of the user's computers: one on this computer is read from its history, one elsewhere is
+asked of that computer's Desk (the `handbook` agent operation). Reading changes nothing.
+
 ## History
 
 A new conversation's handbook reads from its first message. In a conversation that existed before this extension,

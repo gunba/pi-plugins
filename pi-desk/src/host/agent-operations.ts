@@ -5,6 +5,7 @@ import { createPartyFork } from "../../../pi-agents/fork.ts";
 import type { PartyComputer, PartyOperation, OperationResult } from "../../../pi-agents/network.ts";
 import type { PartyOperations } from "../../../pi-agents/operations.ts";
 import { MESSAGE_PARTS } from "../../../pi-agents/store.ts";
+import { readHandbookFile } from "../../../pi-handbook/src/file.ts";
 import { RELEASE } from "../shared/release.ts";
 import type { ConversationSearch } from "./conversation-search.ts";
 import type { ConversationMoves } from "./conversation-moves.ts";
@@ -64,7 +65,7 @@ export class AgentOperations {
 	computer(): PartyComputer {
 		const teleport = this.host.teleport();
 		return { name: hostname(), platform: process.platform, version: RELEASE.version,
-			operations: [HOME_WORK, "create", "fork", "resume", "files", "settings", "close", MESSAGE_PARTS, ...teleport ? [...teleport.operations(), "move"] : [],
+			operations: [HOME_WORK, "create", "fork", "resume", "files", "settings", "close", "handbook", MESSAGE_PARTS, ...teleport ? [...teleport.operations(), "move"] : [],
 				...this.host.search?.()?.operations() ?? [], ...this.host.watches?.() ? [WATCHES] : []] };
 	}
 
@@ -88,6 +89,7 @@ export class AgentOperations {
 		// As long as the requester waits, leaving time for the reply to reach it.
 		const wait = Math.max(30_000, request.expires - Date.now() - 15_000);
 		if (request.kind === "resume") return this.resume(request.session!, wait);
+		if (request.kind === "handbook") return this.handbook(request.session!);
 		if (request.kind === "move") return this.moveHere(computer, request, wait);
 		if (request.kind === "close") return this.closeCreated(computer, request);
 		let fork: { cwd: string; file: string } | undefined;
@@ -121,6 +123,15 @@ export class AgentOperations {
 			}
 			throw error;
 		}
+	}
+
+	/** A conversation's handbook, read from its history, when an agent on any computer asks. */
+	private async handbook(session: string): Promise<NonNullable<OperationResult["result"]>> {
+		const managed = [...this.core.sessions.values()].find(item => item.view.agentId === session);
+		const file = managed?.view.file ?? this.host.parties().store.sessionFile(session);
+		if (!file) throw Error("This conversation's history is not on this computer.");
+		const text = await readHandbookFile(file);
+		return { session, state: text ? "read" : "empty", ...(text ? { text } : {}) };
 	}
 
 	/** Reopen a conversation by its agent id, when an agent asks. One that is already running is left as it is. */

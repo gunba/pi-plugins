@@ -12,10 +12,11 @@ export interface PartyOperation {
 	id: string; sender: string; sender_epoch: string; created: number; expires: number;
 	/** move: the sender moves itself to the receiving computer, into cwd (empty: its home folder); task is its note for continuing there. */
 	/** close: end a conversation the sender started (session), with task as its closing note; only for computers that announce "close". */
-	kind: "create" | "fork" | "resume" | "move" | "close"; cwd: string; task: string; label: string; call?: string;
+	/** handbook: read the handbook of a conversation (session) on the receiving computer; only for computers that announce "handbook". */
+	kind: "create" | "fork" | "resume" | "move" | "close" | "handbook"; cwd: string; task: string; label: string; call?: string;
 	/** provider/id or a bare model id; omitted uses the target computer's default. */
 	model?: string; reasoning?: string;
-	/** resume: the native session id of the conversation to reopen. Only sent to computers that list "resume". */
+	/** resume, close, handbook: the native session id of the conversation. Only sent to computers that list the operation. */
 	session?: string;
 	/** close: stay in the sidebar with watches going on, or not; omitted, kept when it has watches. */
 	keep?: boolean;
@@ -23,7 +24,8 @@ export interface PartyOperation {
 /** What a computer announces about itself with its agent directory; hosts before 0.5.76 send nothing. */
 export interface PartyComputer { name: string; platform: string; version: string; operations: string[] }
 /** model and reasoning report what was applied; hosts before 0.5.45 ignore a requested model. */
-export interface OperationResult { id: string; result?: { session: string; state: string; key?: string; model?: string; reasoning?: string }; error?: string }
+/** text is a handbook's text, for "handbook". */
+export interface OperationResult { id: string; result?: { session: string; state: string; key?: string; model?: string; reasoning?: string; text?: string }; error?: string }
 export type PartyPacket =
 	| { type: "home-work"; work: import("../pi-desk/src/shared/home.ts").HomeWork[] }
 	| { type: "directory"; agents: NetworkMember[]; computer?: PartyComputer }
@@ -82,7 +84,7 @@ export function remoteMessage(value: unknown): PartyMessage {
 }
 export function partyOperation(value: unknown): PartyOperation {
 	const input = record(value), kind = text(input.kind, 20);
-	if (kind !== "create" && kind !== "fork" && kind !== "resume" && kind !== "move" && kind !== "close") throw Error("Invalid agent operation.");
+	if (kind !== "create" && kind !== "fork" && kind !== "resume" && kind !== "move" && kind !== "close" && kind !== "handbook") throw Error("Invalid agent operation.");
 	const operation: PartyOperation = { id: id(input.id), sender: id(input.sender), sender_epoch: id(input.sender_epoch),
 		kind, created: integer(input.created), expires: integer(input.expires),
 		cwd: text(input.cwd, 4096), task: text(input.task, MAX_NETWORK_PACKET), label: text(input.label, 120) };
@@ -95,7 +97,7 @@ export function partyOperation(value: unknown): PartyOperation {
 		operation.call = text(input.call, 512);
 		if (!operation.call) throw Error("Specify the executing fork call.");
 	}
-	if (kind === "resume") {
+	if (kind === "resume" || kind === "handbook") {
 		operation.session = id(input.session);
 		return operation;
 	}
@@ -126,7 +128,8 @@ export function operationResult(value: unknown): OperationResult {
 		result.result = { session: id(output.session), state: text(output.state, 40),
 			...(output.key !== undefined ? { key: id(output.key) } : {}),
 			...(output.model !== undefined ? { model: text(output.model, 300) } : {}),
-			...(output.reasoning !== undefined ? { reasoning: text(output.reasoning, 20) } : {}) };
+			...(output.reasoning !== undefined ? { reasoning: text(output.reasoning, 20) } : {}),
+			...(output.text !== undefined ? { text: text(output.text, 200_000) } : {}) };
 	}
 	return result;
 }

@@ -8,6 +8,7 @@ import { getPresentation, type Presentation, type UiAction, type UiValue, type U
 import { isManagedChild } from "../../pi-work-coordination/index.ts";
 import { CHANGE_ENTRY, PUBLISHED_ENTRY, applyChange, emptyState, foldBranch, lastPublished, live, normal, quotes,
 	type Actor, type Change, type Draft, type Op, type State } from "../src/domain.ts";
+import { handbookReader } from "../src/peers.ts";
 import { SECTION_TAG, fullText, sectionText, viewData } from "../src/render.ts";
 import { TIDY_SYSTEM, WINDOW_CHARS, collectWindow, commitOps, parseReply, planReply, textOf, tidyRequest } from "../src/tidy.ts";
 
@@ -36,6 +37,7 @@ const Parameters = Type.Object({
 	holds_while: Type.Optional(Type.String({ description: "The conditions the entry rests on." })),
 	points_to: Type.Optional(Type.Array(Type.String(), { description: "Files or addresses the entry refers to." })),
 	id: Type.Optional(Type.String({ description: "flag: the entry's ID, such as i3 or l2." })),
+	agent: Type.Optional(Type.String({ description: "read: another agent's handbook, by its name or ID from agent_list, on any of the user's computers." })),
 }, { additionalProperties: false });
 type Params = Static<typeof Parameters>;
 
@@ -210,8 +212,13 @@ class Handbook {
 		}
 	}
 
-	private tool(params: Params): string {
+	private async tool(params: Params, signal?: AbortSignal): Promise<string> {
 		const state = this.state, text = params.text?.trim();
+		if (params.action === "read" && params.agent?.trim()) {
+			const read = handbookReader();
+			if (!read) throw new Error("Other agents' handbooks can be read only in Desk, with agent messaging loaded.");
+			return await read(params.agent.trim(), signal);
+		}
 		if (params.action === "read") return fullText(state);
 		if (params.action === "purpose") {
 			if (!text) throw new Error("Give the purpose as text.");
@@ -354,9 +361,9 @@ class Handbook {
 			name: "handbook", label: "Handbook",
 			description: "This conversation's handbook (shown in <conversation_handbook>): add the user's lasting instruction, quoted exactly, "
 				+ "or a learning about doing this conversation's kind of work; flag an entry that is wrong or out of date; write the purpose "
-				+ "if there is none; or read the whole handbook.",
+				+ "if there is none; or read the whole handbook, or with agent, another agent's.",
 			promptGuidelines: [GUIDELINE], parameters: Parameters, executionMode: "sequential",
-			execute: async (_id, params: Params) => ({ content: [{ type: "text" as const, text: this.tool(params) }], details: {} }),
+			execute: async (_id, params: Params, signal) => ({ content: [{ type: "text" as const, text: await this.tool(params, signal) }], details: {} }),
 			renderCall: (params, theme) => new Text(theme.fg("toolTitle", "Handbook ") + [params.action, params.kind, params.id].filter(Boolean).join(" · "), 0, 0),
 		});
 		this.pi.registerCommand("handbook", {
