@@ -41,16 +41,16 @@ export function wakeLabel(at: number, now = Date.now()): string {
 /** States in which a pending wake says more than the activity itself. */
 export const showsWake = (state: string) => ["idle", "ready", "sleeping", "closed", "interrupted"].includes(state);
 
-/**
- * What a conversation that isn't working is still waiting on: agents it started, a watch on a command, or a time a watch
- * wakes it. Undefined when nothing is under way, or when its own activity (working, needs input) says more.
- */
 /** An interval as the sidebar states it: "30 secs", "5 mins", "6 hrs", in the largest unit that is a whole number. */
 export function everyLabel(seconds: number): string {
 	const [count, unit] = seconds % 3600 === 0 ? [seconds / 3600, "hr"] : seconds % 60 === 0 ? [seconds / 60, "min"] : [seconds, "sec"];
 	return `${count} ${unit}${count === 1 ? "" : "s"}`;
 }
 
+/**
+ * What a conversation that isn't working is still waiting on: agents it started, a watch on a command, or a time a watch
+ * wakes it. Undefined when nothing is under way, or when its own activity (working, needs input) says more.
+ */
 export function backgroundWork(session: Parameters<typeof sessionActivity>[0] & Pick<SessionView, "watching" | "wakes" | "waiting" | "watchEvery">):
 	{ kind: "agents" | "wake" | "watch"; label: string; title: string } | undefined {
 	const activity = sessionActivity(session);
@@ -66,4 +66,18 @@ export function backgroundWork(session: Parameters<typeof sessionActivity>[0] & 
 		?? session.waiting?.map(item => `${item.title}${item.detail ? `: ${item.detail}` : ""}`).join("\n");
 	if (session.watching) return { kind: "watch", label: session.watchEvery ? `Watching \u00b7 ${everyLabel(session.watchEvery)}` : "Watching",
 		title: watches ? `Watching:\n${watches}` : "A watch wakes it when something happens" };
+}
+
+/**
+ * Where the sidebar lists a conversation: 0 at work or waiting for the user; 1 only waiting for a watch or timer to wake
+ * it, open or asleep (closed, kept to be woken); 2 closed. Those waiting and those closed fold away, each under its own
+ * heading.
+ */
+export function sidebarGroup(session: Parameters<typeof backgroundWork>[0]): 0 | 1 | 2 {
+	// A question keeps it in view whatever else it waits on. One asked without waiting leaves the conversation idle, so
+	// its activity doesn't say so, yet the window title counts it (question-alerts.ts).
+	if (session.ui?.interactions.some(item => !item.settings)) return 0;
+	if (session.state === "closed" || session.state === "failed") return session.kept && (session.wakes || session.watching) ? 1 : 2;
+	const waits = backgroundWork(session)?.kind;
+	return waits === "wake" || waits === "watch" ? 1 : 0;
 }

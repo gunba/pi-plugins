@@ -1,7 +1,7 @@
 import { localDateTime } from "./local-format.ts";
 import { useState } from "react";
 import { api } from "./connection.ts";
-import { activityLabel, backgroundWork, sessionActivity } from "./activity.ts";
+import { activityLabel, backgroundWork, sessionActivity, sidebarGroup } from "./activity.ts";
 import { useAppUpdate } from "./app-update.ts";
 import { CloseConversationButton } from "./close-conversation.tsx";
 import { connectionLabel, connectionTone, isOffline } from "./connection-state.ts";
@@ -16,16 +16,6 @@ import type { SessionView } from "../shared/protocol.ts";
 import { asksInBackground, unseen } from "../shared/attention.ts";
 import { Navigation } from "./surfaces.tsx";
 import { conversationTitle, folderName, type Computer, type WorkspaceState } from "./workspace.ts";
-
-/**
- * Where a conversation is listed: 0 at work or waiting for the user; 1 only waiting for a watch or timer to wake it, open
- * or asleep (closed, kept to be woken); 2 closed. Those waiting and those closed fold away, each under its own heading.
- */
-const restRank = (item: SessionView) => {
-  if (item.state === "closed" || item.state === "failed") return item.kept && (item.wakes || item.watching) ? 1 : 2;
-  const waits = backgroundWork(item)?.kind;
-  return waits === "wake" || waits === "watch" ? 1 : 0;
-};
 
 /** Computers whose section, or one of its folded groups, has been toggled; kept per browser under `key`. */
 function useComputerSet(key: string): [Set<string>, (id: string) => void] {
@@ -174,12 +164,12 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
       {(() => {
         // Within each group, open ones first.
         const rows = host.sessions.filter(item => !item.home && item.computer === computer.id)
-          .sort((a, b) => restRank(a) - restRank(b) || Number(a.state === "closed") - Number(b.state === "closed")
+          .sort((a, b) => sidebarGroup(a) - sidebarGroup(b) || Number(a.state === "closed") - Number(b.state === "closed")
             || Number(!!b.pinned) - Number(!!a.pinned) || b.created - a.created);
         const id = computer.id ?? "local";
         /** A folded group's heading and rows. Folded away, a conversation still shows while it is open here or has something new. */
         const group = (rank: number, shown: boolean, toggle: () => void, label: string, what: string) => {
-          const items = rows.filter(item => restRank(item) === rank);
+          const items = rows.filter(item => sidebarGroup(item) === rank);
           if (!items.length) return null;
           return <>
             <button type="button" className="resting-toggle" aria-expanded={shown} title={`${shown ? "Hide" : "Show"} ${what}`} onClick={toggle}>
@@ -188,7 +178,7 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
           </>;
         };
         return <>
-          {rows.filter(item => restRank(item) === 0).map(item => sessionRow(item, computer))}
+          {rows.filter(item => sidebarGroup(item) === 0).map(item => sessionRow(item, computer))}
           {group(1, waitingShown.has(id), () => toggleWaiting(id), "Waiting", "conversations a watch or timer will wake")}
           {group(2, closedRowsShown.has(id), () => toggleClosedRows(id), "Closed", "closed conversations")}
         </>;

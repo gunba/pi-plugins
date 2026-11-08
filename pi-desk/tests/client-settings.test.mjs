@@ -4,7 +4,7 @@ import { openingMessage, sessionTitle } from "../src/shared/session-title.ts";
 import { providerIdentity } from "../src/host/provider-identity.ts";
 import { LiveNotices, deskStatus, dismissDeskStatus, reportDeskError, subscribeDeskStatus } from "../src/client/desk-status.ts";
 import { clearSubmission, createSubmission, readSubmission, submissionDecision, submitWithReceipt } from "../src/client/input-submission.ts";
-import { activityLabel, sessionActivity } from "../src/client/activity.ts";
+import { activityLabel, sessionActivity, sidebarGroup } from "../src/client/activity.ts";
 
 test("startup sends preserve normal steering and explicitly queued delivery", () => {
 	for (const state of ["starting", "ready"]) for (const delivery of ["steer", "followUp"]) {
@@ -19,6 +19,18 @@ test("closed conversations do not inherit old error activity and collapsed parti
 	assert.equal(sessionActivity({ state: "closed", interrupted: true, snapshot: { activity: "error" } }), "closed");
 	assert.equal(activityLabel(sessionActivity({ state: "failed", interrupted: true })), "Unavailable", "a lost worker connection does not prove the actor stopped");
 	assert.equal(sessionActivity({ state: "ready", snapshot: { activity: "running" }, ui: { interactions: [{}] } }), "waiting");
+});
+
+test("a conversation with a question stays among the active ones while it also waits on a watch", () => {
+	// A question asked without waiting leaves the conversation idle, so its watch's wake folded it under Waiting, out of
+	// sight, while the window title said a conversation needed an answer.
+	const question = { id: "q", form: { kind: "question", title: "Which folders?", background: true } };
+	const idle = { state: "ready", snapshot: { activity: "idle" }, wakes: Date.now() + 3_600_000 };
+	assert.equal(sidebarGroup({ ...idle, ui: { views: [], interactions: [question] } }), 0);
+	assert.equal(sidebarGroup({ ...idle, ui: { views: [], interactions: [] } }), 1);
+	assert.equal(sidebarGroup({ ...idle, ui: { views: [], interactions: [{ ...question, settings: true }] } }), 1, "a settings form is not a question");
+	assert.equal(sidebarGroup({ state: "closed", kept: true, watching: true }), 1);
+	assert.equal(sidebarGroup({ state: "closed", kept: true }), 2);
 });
 
 test("lost input acknowledgements are reconciled before a resend warning", async () => {

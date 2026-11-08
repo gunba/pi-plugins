@@ -56,7 +56,7 @@ export class EventDelivery {
 		const old = key === undefined ? -1 : this.pending.findIndex(item => item.key === key);
 		if (old >= 0) { this.bytes -= this.pending[old]!.bytes; this.pending.splice(old, 1); }
 		if (this.pending.length >= 128 || this.pending.length > 0 && this.bytes + bytes > 8 * 1024 * 1024
-			|| bytes > 32 * 1024 * 1024) { const waiting = this.pending.length; this.close(); this.failed(`${waiting} events were waiting`); return; }
+			|| bytes > 32 * 1024 * 1024) { const waiting = this.pending.length; this.close(); this.failed(`it fell behind, with ${waiting} events waiting`); return; }
 		this.pending.push({ event, key, bytes }); this.bytes += bytes;
 		this.resume();
 	}
@@ -65,7 +65,7 @@ export class EventDelivery {
 		const first = this.pending[0]!, sequence = this.window.reserve(first.event);
 		if (sequence === undefined) return;
 		this.pending.shift(); this.bytes -= first.bytes; this.sending = true;
-		void this.send(sequence, first.event).catch(() => { this.close(); this.failed("an event could not be sent"); })
+		void this.send(sequence, first.event).catch(error => { this.close(); this.failed(`an event could not be sent (${error instanceof Error ? error.message : String(error)})`); })
 			.finally(() => { this.sending = false; this.resume(); });
 	}
 	close(): void { this.closed = true; this.pending = []; this.bytes = 0; }
