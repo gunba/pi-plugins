@@ -23,16 +23,19 @@ export function helperRoot(file: string): string | undefined {
  * PartyStore.peer finds an agent by its handle.
  */
 export function agentHandles(agents: readonly Pick<Member, "session" | "label" | "computer">[], computerName: (computer: string | undefined) => string): Map<string, string> {
-	const byName = new Map<string, Pick<Member, "session" | "label" | "computer">[]>();
+	// Counted in one pass: a computer knows thousands of agents, most named "Untitled conversation", and this runs
+	// whenever an agent's status is published.
+	const named = new Map<string, number>(), placed = new Map<string, number>();
+	const place = (key: string, agent: Pick<Member, "computer">) => key + "\0" + (agent.computer ?? "");
 	for (const agent of agents) {
 		const key = nameKey(agent.label);
-		byName.set(key, [...byName.get(key) ?? [], agent]);
+		named.set(key, (named.get(key) ?? 0) + 1);
+		placed.set(place(key, agent), (placed.get(place(key, agent)) ?? 0) + 1);
 	}
 	const handles = new Map<string, string>();
 	for (const agent of agents) {
-		const same = byName.get(nameKey(agent.label))!, label = agent.label.trim() || "Untitled conversation";
-		const here = same.filter(other => (other.computer ?? undefined) === (agent.computer ?? undefined));
-		handles.set(agent.session, same.length === 1 ? label : here.length === 1 ? `${label} on ${computerName(agent.computer ?? undefined)}`
+		const key = nameKey(agent.label), label = agent.label.trim() || "Untitled conversation";
+		handles.set(agent.session, named.get(key) === 1 ? label : placed.get(place(key, agent)) === 1 ? `${label} on ${computerName(agent.computer ?? undefined)}`
 			: `${label} [${nativeId(agent.session).slice(-8)}]`);
 	}
 	return handles;
