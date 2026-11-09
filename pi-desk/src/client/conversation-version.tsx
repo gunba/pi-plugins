@@ -5,6 +5,12 @@ type Host = { name: string; release?: { version: string }; updates?: { automatic
 import { api } from "./connection.ts";
 import { Icon } from "./icons.tsx";
 
+/** Whether a computer's Desk reads a stopped conversation's saved messages: 0.5.342 and later; older ones refuse until it is resumed. */
+export function readsStopped(computer?: Host): boolean {
+	const [major = 0, minor = 0, patch = 0] = (computer?.release?.version ?? "").split(".").map(Number);
+	return major > 0 || minor > 5 || minor === 5 && patch >= 342;
+}
+
 /** A running conversation keeps the code it started with; this is the version it runs when that differs from its computer's. */
 export function staleVersion(session: WorkspaceSession, computer?: Host): { running: string; current: string } | undefined {
 	const current = computer?.release?.version;

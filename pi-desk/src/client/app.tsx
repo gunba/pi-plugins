@@ -25,7 +25,7 @@ import { ResumeModel } from "./new-model.tsx";
 import { connectionLabel, isOffline } from "./connection-state.ts";
 import { ControlActivity, EditorSuggestion } from "./control-status.tsx";
 import { ConversationTitle } from "./conversation-title.tsx";
-import { VersionBanner } from "./conversation-version.tsx";
+import { readsStopped, VersionBanner } from "./conversation-version.tsx";
 import { deskCommandCatalog } from "./desk-commands.ts";
 import { DeskStatusBar } from "./desk-status-bar.tsx";
 import { LiveNotices, reportDeskError } from "./desk-status.ts";
@@ -633,7 +633,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           session={selected} generation={session?.ui?.generation ?? ""}
           connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady
             // Not running, its saved messages are read from its file.
-            || (session?.state === "closed" || session?.state === "failed") && !!session.file)} epoch={epoch}
+            || (session?.state === "closed" || session?.state === "failed") && !!session.file && readsStopped(currentComputer ?? host))} epoch={epoch}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
           overlay={session && compacting && <CompactionOverlay key={`${selected}:${compacting.started}`} compacting={compacting} context={session.snapshot?.context}
             stopping={stoppingCompaction || !connected} stop={() => { setStoppingCompaction(true); void commandPromise({ kind: "abort" }).finally(() => setStoppingCompaction(false)); }} />}

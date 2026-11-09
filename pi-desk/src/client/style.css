@@ -620,7 +620,14 @@ details[open] > summary:before {
 /* Over the banner, the buttons and the activity have a backing of their own, so they stay readable. */
 .topbar:has(> .topbar-picture) .top-actions :is(.header-chip, .icon-button, .conversation-activity) { background:color-mix(in srgb, var(--bg) 85%, transparent); }
 .topbar:has(> .topbar-picture) .top-actions :is(.header-chip, .icon-button):is(:hover, .selected) { background:var(--hover); }
-.topbar:has(> .topbar-picture) .conversation-activity { height:30px; padding:0 10px; border-radius:8px; margin-right:0; }
+.topbar:has(> .topbar-picture) .conversation-activity { padding:0 10px; margin-right:0; }
+.topbar:has(> .topbar-picture) .top-actions > .header-chip { border-color:transparent; }
+/* The header's controls are one size and shape, which shows once the banner gives each a backing; larger for touch. */
+.top-actions { --top-control:32px; }
+@media (pointer:coarse) { .top-actions { --top-control:38px; } }
+.top-actions > :is(.conversation-activity, .header-chip, .icon-button) { height:var(--top-control); min-height:0; border-radius:8px; }
+.top-actions > .icon-button { width:var(--top-control); min-width:0; padding:0; }
+@media (max-width:700px) { .topbar:has(> .topbar-picture) .conversation-activity { width:var(--top-control); padding:0; justify-content:center; } }
 .settings-banner { flex:none; width:150px; height:50px; object-fit:cover; border-radius:6px; }
 .conversation-heading {
   min-width: 0;
