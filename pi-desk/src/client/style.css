@@ -2227,9 +2227,11 @@ details[open] > summary:before {
 .change-paragraph:hover .change-reply, .change-cells tr:hover .change-reply, .shown-described li:hover .change-reply { opacity:1; }
 .change-cells .change-reply, .shown-described .change-reply { opacity:0; }
 .change-gap { margin:0; padding:3px 14px; font-size:11px; color:var(--muted); }
-/* An Office file's pages, drawn by pdf.js (office-pages.tsx): white sheets on the pane, one under another. */
+/* An Office file's pages, slides or sheets, drawn in the browser (office-pages.tsx), one under another. */
 .office-pages { display:flex; flex-direction:column; gap:12px; max-height:560px; overflow:auto; margin:6px 12px 8px; padding:12px; border-radius:8px; background:var(--hover); }
-.office-page { display:block; width:100%; height:auto; background:#fff; border-radius:3px; box-shadow:0 1px 3px rgb(0 0 0 / .18), 0 0 0 1px rgb(0 0 0 / .06); }
+/* The file drawn in a sandboxed frame: a picture, so the pane scrolls over it and nothing in it can be clicked. */
+.office-frame { display:block; width:100%; border:0; pointer-events:none; }
+.office-pages > .office-pages-status { margin:0; }
 .office-pages-status { margin:6px 12px; font-size:12.5px; }
 .change-slide { padding:4px 0; }
 .change-slide h4 { display:flex; gap:8px; align-items:baseline; margin:6px 12px 2px; font-size:12px; }

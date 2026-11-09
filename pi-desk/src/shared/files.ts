@@ -1,7 +1,7 @@
 export const FILE_CHUNK_BYTES = 256 * 1024;
 export const FILE_DOWNLOAD_LIMIT = 128 * 1024 * 1024;
 export const FILE_IMAGE_LIMIT = 16 * 1024 * 1024;
-/** Office files Desk shows as their pages: Word, Excel and PowerPoint documents, current and older formats. */
+/** Office files: Word, Excel and PowerPoint documents, current and older formats. Agents read their pages (host/office-pages.ts); Work draws the current formats itself (client/office-pages.tsx). */
 export const OFFICE_PAGES = /\.(docx|docm|doc|rtf|odt|xlsx|xlsm|xls|ods|pptx|pptm|ppt|odp)$/i;
 export interface FileReference { id: string; name: string; line?: number }
 export interface FileInfo extends FileReference {
@@ -15,6 +15,4 @@ export type FileCommand = { kind: "file"; id: string } & (
 	| { operation: "chunk"; version: string; offset: number }
 	| { operation: "open"; version: string }
 	| { operation: "reveal"; version: string }
-	/** An Office file's pages as a PDF, which the answer references as a file of its own. */
-	| { operation: "pages"; version: string }
 );

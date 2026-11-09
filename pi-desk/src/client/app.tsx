@@ -64,6 +64,26 @@ const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 const emptyMessages: NonNullable<ClientState["messages"][string]> = [];
 
+const WORK_HIDDEN = "pi-desk:work-pane-hidden", WORK_BY_CONVERSATION = "pi-desk:work-pane";
+/** Whether Work was hidden in this conversation; one not opened here before takes the last choice made in any. */
+function workHiddenFor(conversation: string): boolean {
+  try {
+    const choice = (JSON.parse(localStorage.getItem(WORK_BY_CONVERSATION) ?? "{}") as Record<string, unknown>)[conversation];
+    if (typeof choice === "boolean") return choice;
+  } catch { /* unreadable: the last choice */ }
+  return localStorage.getItem(WORK_HIDDEN) === "true";
+}
+/** Keeps the choice for this conversation, for the 300 most recently changed. */
+function rememberWorkHidden(conversation: string, hidden: boolean): void {
+  localStorage.setItem(WORK_HIDDEN, String(hidden));
+  let choices: Record<string, boolean> = {};
+  try { choices = JSON.parse(localStorage.getItem(WORK_BY_CONVERSATION) ?? "{}") as Record<string, boolean>; } catch { /* start again */ }
+  delete choices[conversation]; choices[conversation] = hidden;
+  const kept = Object.keys(choices);
+  for (const old of kept.slice(0, Math.max(0, kept.length - 300))) delete choices[old];
+  localStorage.setItem(WORK_BY_CONVERSATION, JSON.stringify(choices));
+}
+
 export function App({ account }: { account?: BrowserAccount }) {
   const [state, setState] = useState<ClientState>({ messages: {} });
   const [authorized, setAuthorized] = useState<boolean | undefined>();
@@ -84,7 +104,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     "settings" | "view" | "agents" | undefined
   >();
   // Changes and shown work open beside the conversation; hidden stays hidden until the agent shows something new.
-  const [workHidden, setWorkHidden] = useState(() => localStorage.getItem("pi-desk:work-pane-hidden") === "true");
+  const [workHidden, setWorkHidden] = useState(() => workHiddenFor(localStorage.getItem("pi-desk:selected") ?? ""));
   const [workSelected, setWorkSelected] = useState<string>();
   const [workExtra, setWorkExtra] = useState<WorkItem>();
   const [workModal, setWorkModal] = useState<WorkItem>();
@@ -302,17 +322,23 @@ export function App({ account }: { account?: BrowserAccount }) {
     } catch (error) { setError(errorText(error)); }
   }
   const paneItems = [...workExtra && !loadedWork.some(item => item.id === workExtra.id) ? [workExtra, ...loadedWork] : loadedWork, ...briefItems];
-  const workSeen = useRef<{ session: string; ids: Set<string> }>({ session: "", ids: new Set() });
+  const workSeen = useRef<{ session: string; opened: number; ids: Set<string> }>({ session: "", opened: 0, ids: new Set() });
+  const hideWork = (hidden: boolean) => { setWorkHidden(hidden); rememberWorkHidden(selected, hidden); };
   useEffect(() => {
     // Updating or rearranging an existing part does not reopen Work or steal selection.
     const seen = workSeen.current;
-    if (seen.session !== selected) { workSeen.current = { session: selected, ids: new Set(loadedWork.map(item => item.id)) }; setWorkSelected(undefined); setWorkExtra(undefined); setMobileWorkOpen(false); return; }
+    if (seen.session !== selected) {
+      workSeen.current = { session: selected, opened: Date.now(), ids: new Set(loadedWork.map(item => item.id)) };
+      setWorkSelected(undefined); setWorkExtra(undefined); setMobileWorkOpen(false); setWorkHidden(workHiddenFor(selected)); return;
+    }
     const added = loadedWork.filter(item => !seen.ids.has(item.id));
     for (const item of loadedWork) seen.ids.add(item.id);
     const newest = added.at(-1);
     if (newest) {
       setWorkSelected(newest.id);
-      if (newest.block.type === "shown") { setWorkHidden(false); localStorage.setItem("pi-desk:work-pane-hidden", "false"); }
+      // Only a result shown since the conversation was opened here reopens Work; its earlier ones load in after opening
+      // it. Times come from the conversation's computer, so a few seconds of clock difference are allowed.
+      if (newest.block.type === "shown" && newest.at > seen.opened - 5000) hideWork(false);
     }
   }, [selected, loadedWork]);
   const showWorkPane = !homeSelected && (wideWorkspace || mobileWorkOpen) && !!session && !workHidden && paneItems.length + loadedLinks.length > 0 && (!panel || settings);
@@ -336,7 +362,7 @@ export function App({ account }: { account?: BrowserAccount }) {
     if (wideWorkspace && !homeSelected) {
       // A brief is listed from its own state, which a copy here would leave behind.
       if (item.block.type !== "brief" && !loadedWork.some(known => known.id === item.id)) setWorkExtra(item);
-      setWorkSelected(item.id); setWorkHidden(false); localStorage.setItem("pi-desk:work-pane-hidden", "false");
+      setWorkSelected(item.id); hideWork(false);
       if (panel && !settings) setPanel(undefined);
     } else setWorkModal(item);
   };
@@ -572,7 +598,7 @@ export function App({ account }: { account?: BrowserAccount }) {
               <Icon name="party" />{!phone && "Messages "}<b>{(messagesView.data as UiDetails).items!.length}</b></button>}
             {paneItems.length + loadedLinks.length > 0 && !homeSelected && <button type="button" className="icon-button"
               title={showWorkPane ? "Hide Work" : "Show Work"} aria-label="Work" aria-pressed={showWorkPane}
-              onClick={() => { const hidden = showWorkPane; setMobileWorkOpen(!hidden); setWorkHidden(hidden); localStorage.setItem("pi-desk:work-pane-hidden", String(hidden)); if (!hidden && panel && !settings) setPanel(undefined); }}>
+              onClick={() => { const hidden = showWorkPane; setMobileWorkOpen(!hidden); hideWork(hidden); if (!hidden && panel && !settings) setPanel(undefined); }}>
               <Icon name="panel-right" /></button>}
             <button type="button" className="icon-button" title="Conversation settings" aria-label="Conversation settings" aria-pressed={settings}
               onClick={() => {
@@ -715,7 +741,7 @@ export function App({ account }: { account?: BrowserAccount }) {
       </main>
 
       {showWorkPane && <WorkPane items={paneItems} links={loadedLinks} selected={workSelected} select={setWorkSelected} expand={setWorkModal} session={selected}
-        close={() => { setMobileWorkOpen(false); setWorkHidden(true); localStorage.setItem("pi-desk:work-pane-hidden", "true"); }} />}
+        close={() => { setMobileWorkOpen(false); hideWork(true); }} />}
       {panel && (
         <Inspector settings={settings} className={panel === "agents" ? "agents-panel" : panel === "view" && focusedView === "plan" ? "plan-panel" : ""} title={settings ? "Settings" : panel === "agents" ? "Agents" : visibleViews[0]?.title ?? "Details"}
           close={() => setPanel(undefined)}>

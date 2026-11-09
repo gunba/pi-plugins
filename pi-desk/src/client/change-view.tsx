@@ -335,7 +335,7 @@ function HtmlPage({ session, file, large }: { session: string; file: FileReferen
 		onLoad={() => frame.current?.contentWindow?.postMessage({ type: "render", html }, "*")} />;
 }
 
-/** Several Office files in one result render on request: each opens Word, Excel or PowerPoint on its computer. */
+/** Several Office files in one result are drawn on request, so a long list doesn't draw them all at once. */
 const officeCount = (items: ShownItem[]) => items.filter(item => item.path && OFFICE_PAGES.test(item.path) && !item.missing).length;
 function ShownEntry({ item, file, session, title, large, office = 1 }: { item: ShownItem; file: FileReference | null; session: string; title: string; large?: boolean; office?: number }) {
 	const [source, setSource] = useState(false);

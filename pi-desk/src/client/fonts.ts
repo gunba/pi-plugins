@@ -17,7 +17,7 @@ export interface TextFont {
 	italic?: string;
 }
 
-// Vite emits each file and rewrites these URLs only when they are literal (as for the PDF worker in office-pages.tsx).
+// Vite emits each file and rewrites these URLs only when they are literal.
 export const TEXT_FONTS: readonly TextFont[] = [
 	{ id: "system", name: "System", note: "This device's own font: Segoe UI on Windows, Roboto on Android, and usually Noto Sans on Linux." },
 	{ id: "inter", name: "Inter", note: "Clear and neutral, designed for screens.",

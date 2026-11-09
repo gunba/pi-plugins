@@ -29,7 +29,9 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 			const id = string(data.id, 64);
 			if (data.operation === "info") return { kind: "file", id, operation: "info", origin: origin() };
 			const version = string(data.version, 64);
-			if (data.operation === "open" || data.operation === "reveal" || data.operation === "pages") return { kind: "file", id, operation: data.operation, version, origin: origin() };
+			// The Work pane asked for "pages" before it drew Office files itself (client/office-pages.tsx).
+			if (data.operation === "pages") throw new Error("Reload Desk to see this file: it is now drawn in the browser.");
+			if (data.operation === "open" || data.operation === "reveal") return { kind: "file", id, operation: data.operation, version, origin: origin() };
 			if (data.offset !== undefined && (!Number.isSafeInteger(data.offset) || Number(data.offset) < 0)) throw new Error("Invalid file position.");
 			const offset = data.offset === undefined ? undefined : Number(data.offset);
 			if (data.operation === "chunk" && offset !== undefined) return { kind: "file", id, operation: "chunk", version, offset, origin: origin() };

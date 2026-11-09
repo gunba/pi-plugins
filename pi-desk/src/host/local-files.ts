@@ -1,13 +1,12 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { open, realpath, type FileHandle } from "node:fs/promises";
-import { basename, dirname, extname, resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fileLink } from "../../../pi-local-links/extensions/links.ts";
 import { ExpiredReference } from "./references.ts";
 import { expandHome, localPath } from "./local-path.ts";
 import { openDesktopFile, type DesktopFileAction } from "./desktop-files.ts";
-import { OFFICE_PAGES, officePdf } from "./office-pages.ts";
 import { FILE_CHUNK_BYTES, FILE_DOWNLOAD_LIMIT, type FileCommand, type FileInfo, type FileReference, type FileTextPage } from "../shared/files.ts";
 
 interface Grant extends FileReference { path: string; snapshot?: FileInfo }
@@ -111,13 +110,6 @@ export class LocalFiles {
 		}
 		const info = grant.snapshot ?? await this.command({ kind: "file", operation: "info", id: command.id }) as FileInfo;
 		if (info.version !== command.version) throw new Error("File changed. Refresh it before continuing.");
-		if (command.operation === "pages") {
-			if (!OFFICE_PAGES.test(info.path)) throw new Error("Only Office files are shown as pages.");
-			const pdf = await officePdf(info.path, info.version);
-			const pages = this.observePath(pdf, dirname(pdf), `${basename(info.name, extname(info.name))}.pdf`);
-			if (!pages) throw new Error("Desk could not read the rendered pages.");
-			return this.command({ kind: "file", operation: "info", id: pages.id });
-		}
 		return this.opened(info.path, async file => {
 			if ((await stamp(file)).version !== command.version) throw new Error("File changed. Refresh it before continuing.");
 			if (command.operation === "open" || command.operation === "reveal") {
