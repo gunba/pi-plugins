@@ -62,14 +62,17 @@ export type WatchPacket = { type: "watch-requests"; requests: Request[] } | { ty
 	| { type: "watch-events"; events: WireEvent[] } | { type: "watch-acks"; ids: string[] };
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+/** A packet, or part of one, that isn't what the watch protocol sends. */
+class InvalidWatchPacket extends Error {}
 function record(value: unknown): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid watch packet.");
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new InvalidWatchPacket("Invalid watch packet.");
 	return value as Record<string, unknown>;
 }
-const uuid = (value: unknown) => { if (typeof value !== "string" || !UUID.test(value)) throw new Error("Invalid watch id."); return value; };
-const text = (value: unknown, max: number) => { if (typeof value !== "string" || value.length > max) throw new Error("Invalid watch text."); return value; };
+const uuid = (value: unknown) => { if (typeof value !== "string" || !UUID.test(value)) throw new InvalidWatchPacket("Invalid watch id."); return value; };
+const text = (value: unknown, max: number) => { if (typeof value !== "string" || value.length > max) throw new InvalidWatchPacket("Invalid watch text."); return value; };
 const optional = (value: unknown, max: number) => value === undefined || value === null ? undefined : text(value, max);
-const whole = (value: unknown, min = 0) => { if (!Number.isSafeInteger(value) || (value as number) < min) throw new Error("Invalid watch number."); return value as number; };
+const whole = (value: unknown, min = 0) => { if (!Number.isSafeInteger(value) || (value as number) < min) throw new InvalidWatchPacket("Invalid watch number."); return value as number; };
+const fit = (value: string, max: number) => value.length > max ? `${value.slice(0, max - 1)}…` : value;
 /** What another computer is sent of a watch: what to run and when, never where its files are. */
 const wire = (spec: WatchSpec): Partial<WatchSpec> => ({ mode: spec.mode, ...(spec.command !== undefined ? { command: spec.command } : {}),
 	...(spec.program !== undefined ? { program: spec.program } : {}), ...(spec.every ? { every: spec.every } : {}), ...(spec.wakeWhen ? { wakeWhen: spec.wakeWhen } : {}),
@@ -82,11 +85,22 @@ function summary(spec: WatchSpec): { title: string; detail: string } {
 		...spec.mode === "change" && spec.every ? [`every ${interval(spec.every)}`] : [], ...spec.wakeWhen ? [`wakes it when ${short(spec.wakeWhen, 200)}`] : [],
 		...spec.keep ? ["keeps reporting"] : []].join(" · ") };
 }
+/**
+ * The longest text each field of a watch event carries between computers. The sender cuts its fields to fit, and the
+ * receiver cuts what an older sender didn't: refusing the event would drop the link, and the sender would send it
+ * again each time the link returned. An unlabelled watch's title is its whole command, which can be longer.
+ */
+const EVENT_LIMITS = { id: 40, title: 2_000, status: 2_000, command: 100_000, output: 20_000, log: 4_096 } as const;
+function fitEvent(event: WatchEvent): WatchEvent {
+	return Object.fromEntries(Object.entries(event).map(([key, value]) =>
+		[key, typeof value === "string" && key in EVENT_LIMITS ? fit(value, EVENT_LIMITS[key as keyof typeof EVENT_LIMITS]) : value])) as unknown as WatchEvent;
+}
 function wireEvent(value: unknown): WatchEvent | undefined {
 	if (value === undefined || value === null) return undefined;
 	const input = record(value);
-	return { id: text(input.id, 40), title: text(input.title, 2000), status: text(input.status, 2000), ...(input.command !== undefined ? { command: text(input.command, 100_000) } : {}),
-		...(input.output !== undefined ? { output: text(input.output, 20_000) } : {}), ...(input.log !== undefined ? { log: text(input.log, 4096) } : {}) };
+	const field = (key: keyof typeof EVENT_LIMITS) => fit(text(input[key], Number.MAX_SAFE_INTEGER), EVENT_LIMITS[key]);
+	return { id: field("id"), title: field("title"), status: field("status"), ...(input.command !== undefined ? { command: field("command") } : {}),
+		...(input.output !== undefined ? { output: field("output") } : {}), ...(input.log !== undefined ? { log: field("log") } : {}) };
 }
 
 /**
@@ -450,7 +464,7 @@ export class WatchService {
 		if (requests.length) packets.push({ type: "watch-requests", requests });
 		const events = this.store.outgoing(computer, 16);
 		if (events.length) packets.push({ type: "watch-events", events: events.map(event => ({ id: event.id, watch: event.watch, agent: event.agent, name: event.name,
-			text: event.text, ...(event.event ? { event: event.event } : {}), ...(event.ended ? { ended: event.ended } : {}), created: event.created })) });
+			text: event.text, ...(event.event ? { event: fitEvent(event.event) } : {}), ...(event.ended ? { ended: fit(event.ended, 2_000) } : {}), created: event.created })) });
 		return packets;
 	}
 
@@ -470,7 +484,7 @@ export class WatchService {
 			for (const result of packet.results) this.answered(computer, result);
 		} else if (packet.type === "watch-events") {
 			if (!Array.isArray(packet.events) || packet.events.length > 16) throw new Error("Invalid watch events.");
-			const ids = packet.events.map(event => this.accept(computer, event));
+			const ids = packet.events.flatMap(event => this.acceptReadable(computer, event));
 			await reply({ type: "watch-acks", ids });
 		} else if (packet.type === "watch-acks") {
 			if (!Array.isArray(packet.ids) || packet.ids.length > 64) throw new Error("Invalid watch acknowledgements.");
@@ -550,10 +564,24 @@ export class WatchService {
 		this.touched(row.agent);
 	}
 
+	/**
+	 * accept, except that an event this computer can't read is acknowledged and dropped, and logged: refused, it would
+	 * drop the link to that computer, and come back each time the link did. One without a readable id can't be.
+	 */
+	private acceptReadable(computer: string, value: unknown): string[] {
+		try { return [this.accept(computer, value)]; }
+		catch (error) {
+			if (!(error instanceof InvalidWatchPacket)) throw error;
+			const id = value && typeof value === "object" && "id" in value && typeof value.id === "string" && UUID.test(value.id) ? value.id : undefined;
+			const name = this.host.computers().find(known => known.id === computer)?.name ?? computer;
+			console.error(`A watch event from ${name} could not be read, so it was dropped: ${error.message}`);
+			return id ? [id] : [];
+		}
+	}
 	/** An event from the computer running an agent's watch; its id, to acknowledge, whether it is kept or not. */
 	private accept(computer: string, value: unknown): string {
 		const input = record(value), id = uuid(input.id), watch = uuid(input.watch), agent = uuid(input.agent);
-		const row = this.store.get(watch), body = text(input.text, 1_000_000), ended = optional(input.ended, 2_000);
+		const row = this.store.get(watch), body = text(input.text, 1_000_000), reason = optional(input.ended, Number.MAX_SAFE_INTEGER), ended = reason && fit(reason, 2_000);
 		// Only news of watches agents here asked for, while they want it, and the news that one ended.
 		if (!row || row.runs !== computer || row.agent !== agent) return id;
 		// News of one this computer had given up on: it is still running there, so it is stopped.

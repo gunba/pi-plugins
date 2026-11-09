@@ -25,6 +25,8 @@ export class PartyNetwork {
 	/** This computer, as announced with its directory, and what each peer announced (older hosts announce nothing). */
 	private self?: PartyComputer;
 	private announced = new Map<string, PartyComputer>();
+	/** The last reason each computer's packet was refused, so a link refused again and again is logged once. */
+	private refusals = new Map<string, string>();
 	private sync?: SettingsSync;
 	/** The settings manifest last sent to each computer. */
 	private manifests = new Map<string, string>();
@@ -125,8 +127,25 @@ export class PartyNetwork {
 		this.asking.set(id, Date.now());
 		await send({ type: "message-file-request", ...next });
 	}
+	/**
+	 * One packet from a connected computer. A packet refused here drops the link, and the computer sends the same
+	 * packet again when the link returns, so the reason is logged: nothing else shows why that computer is offline.
+	 */
 	async receive(id: string, raw: unknown): Promise<void> {
 		if (this.closed || !this.peers.has(id)) throw Error("Party computer is disconnected.");
+		try { await this.take(id, raw); this.refusals.delete(id); }
+		catch (error) {
+			const type = raw && typeof raw === "object" && "type" in raw ? String(raw.type).slice(0, 40) : "unknown";
+			const reason = `its "${type}" packet was refused (${error instanceof Error ? error.message : String(error)})`;
+			if (this.refusals.get(id) !== reason) {
+				this.refusals.set(id, reason);
+				const name = this.announced.get(id)?.name ?? this.store.computers().find(computer => computer.id === id)?.name ?? id;
+				console.error(`The link with ${name} was dropped: ${reason}.`);
+			}
+			throw error;
+		}
+	}
+	private async take(id: string, raw: unknown): Promise<void> {
 		const packet = record(raw);
 		if (packet.type === "home-work") {
 			if (!Array.isArray(packet.work) || packet.work.length > 200) throw Error("Invalid Home work snapshot.");
