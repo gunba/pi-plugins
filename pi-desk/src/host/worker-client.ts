@@ -68,9 +68,13 @@ export class SessionWorker {
 		}
 	}
 
+	/** Why the connection to the worker failed or ended, once it has. */
+	get failure(): Error | undefined { return this.failed; }
+	private failed?: Error;
+
 	private fail(error: Error, detached = false): void {
 		if (this.stopped) return;
-		this.stopped = true;
+		this.stopped = true; this.failed = error;
 		for (const pending of this.pending.values()) pending.reject(new WorkerConnectionError(`${error.message} The outcome was not confirmed; check saved history before repeating the operation.`));
 		this.pending.clear();
 		if (!this.shutdownConfirmed && !this.intentionalDetach) this.event({ type: detached ? "detached" : "fatal", error: error.message });

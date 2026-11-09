@@ -165,6 +165,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   const controlBusy = controls.some(control => control.state === "running");
   const closing = controls.some(control => control.kind === "close" && control.state === "running");
   const confirmation = useConfirmation(`${authorized}:${selected}:${session?.activation}:${ui?.generation}:${connected}`);
+  /** The conversation whose earlier process is being stopped so it can open. */
+  const [stoppingOld, setStoppingOld] = useState<string>();
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${conversationTitle(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], focusedView);
   const settings = panel === "settings" || panel === "view" && visibleViews[0]?.surface === "settings";
@@ -465,6 +467,18 @@ export function App({ account }: { account?: BrowserAccount }) {
       if (text !== undefined && selectedRef.current === selected) { setDraft(text); localStorage.setItem(draftKey(selected), text); composerInput.current?.focus({ preventScroll: true }); }
     } catch (error) { setError(errorText(error)); }
   }
+  /** Stops the process that holds this conversation without answering, once the user agrees, and opens it. */
+  async function stopAndOpen() {
+    if (!session || !connected) return;
+    const key = session.key;
+    if (!await confirmation.request({ title: "Stop the earlier process?", context: confirmationContext, accept: "Stop and open",
+      body: <p>Desk stops the process that still holds this conversation, then opens it again. Whatever it was in the middle of is lost,
+        such as a reply being written. Its saved messages stay.</p> })) return;
+    setStoppingOld(key);
+    try { await api(`/sessions/${key}/restart`, { takeover: true, stop: true }); }
+    catch (error) { setError(errorText(error)); }
+    finally { setStoppingOld(current => current === key ? undefined : current); }
+  }
   async function restartSession() {
     if (!session || !connected) return;
     try {
@@ -602,18 +616,24 @@ export function App({ account }: { account?: BrowserAccount }) {
             <span>{session.state === "closed" && session.kept && (session.wakes || session.watching)
               ? `Asleep: Desk reopens it ${[session.wakes && wakeLabel(session.wakes).replace(/^Wakes /, "at "), session.watching && "when a watch has news",
                 questions.length && "when you answer its question"].filter(Boolean).join(" or ")}. Open it to read or carry on.`
+              : session.unresponsive ? "Its earlier process is still running but doesn't answer, so Desk won't open a second one beside it."
               : "Pi is not running. Resume to continue."}
               {session.state === "closed" && session.kept && session.waiting && <ul className="sleep-waiting">{session.waiting.map((item, index) =>
                 <li key={index}><strong>{item.title}</strong>{item.detail && <span>{item.detail}</span>}</li>)}</ul>}</span>
             {session.state === "closed" && session.kept && <ResumeModel sessions={host.sessions} session={session} disabled={!connected}
               change={choice => void api(`/sessions/${session.key}/restart`, { takeover: true, setup: choice, sleep: true }).catch(error => setError(errorText(error)))} />}
-            <button disabled={!connected} onClick={() => void restartSession()}>{session.state === "closed" && session.kept ? "Open" : session.file ? "Resume" : "Retry"}</button>
+            {session.unresponsive && <button disabled={!connected || stoppingOld === session.key} onClick={() => void stopAndOpen()}>
+              {stoppingOld === session.key ? "Stopping…" : "Stop it and open"}</button>}
+            <button disabled={!connected || stoppingOld === session.key} onClick={() => void restartSession()}>
+              {session.state === "closed" && session.kept ? "Open" : session.unresponsive ? "Try again" : session.file ? "Resume" : "Retry"}</button>
           </div>
         )}
         {host.directoryError && <div className="connection-banner" role="status">{host.directoryError}</div>}
         <TranscriptView key={`${selected}/${session?.ui?.generation ?? ""}`}
           session={selected} generation={session?.ui?.generation ?? ""}
-          connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady)} epoch={epoch}
+          connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady
+            // Not running, its saved messages are read from its file.
+            || (session?.state === "closed" || session?.state === "failed") && !!session.file)} epoch={epoch}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
           overlay={session && compacting && <CompactionOverlay key={`${selected}:${compacting.started}`} compacting={compacting} context={session.snapshot?.context}
             stopping={stoppingCompaction || !connected} stop={() => { setStoppingCompaction(true); void commandPromise({ kind: "abort" }).finally(() => setStoppingCompaction(false)); }} />}
@@ -629,7 +649,7 @@ export function App({ account }: { account?: BrowserAccount }) {
                     : session?.state === "starting" ? closing ? "Closing this conversation…" : controlBusy ? "Updating this conversation…" : "Opening this conversation…"
                     : session ? "New conversation" : "No conversation open"}
                 </h1>
-                {session && !canCompose && <p>{session.error || "Resume Pi to load this conversation. Nothing has been resent."}</p>}
+                {session && !canCompose && <p>{session.error || (session.file ? "Resume to carry on. Nothing has been resent." : "Resume Pi to load this conversation. Nothing has been resent.")}</p>}
                 {!session && (
                   <button className="primary" onClick={() => newConversation.open()}>
                     Start a conversation <span>↗</span>

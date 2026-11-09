@@ -160,7 +160,8 @@ export class WorkerChannel {
 		return new Promise((resolve, reject) => {
 			const socket = createConnection({ host: "127.0.0.1", port: address.port });
 			let authenticated = false;
-			const timer = setTimeout(() => socket.destroy(), 5000);
+			// A worker in the middle of a long step answers late; this only gives up on one that does not answer at all.
+			const timer = setTimeout(() => { failures.set(socket, new WorkerConnectionError("The worker did not answer within 30 seconds.")); socket.destroy(); }, 30_000);
 			socket.setNoDelay(true);
 			socket.on("error", error => {
 				const code = (error as NodeJS.ErrnoException).code;
@@ -170,7 +171,7 @@ export class WorkerChannel {
 			socket.on("close", () => {
 				clearTimeout(timer);
 				if (authenticated) disconnected(failures.get(socket));
-				else reject(new WorkerConnectionError("Worker attachment could not be authenticated."));
+				else reject(failures.get(socket) ?? new WorkerConnectionError("Worker attachment could not be authenticated."));
 			});
 			socket.once("connect", () => write(socket, { protocol: PROTOCOL, instance: address.instance, secret: address.secret }));
 			frames(socket, () => MAX_FRAME, value => {

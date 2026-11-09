@@ -8,6 +8,11 @@ import { reply, type HostCore } from "./host-core.ts";
 import type { SavedSessionIndex } from "./saved-sessions.ts";
 import { REMOVED } from "./watches.ts";
 import { StaleGeneration } from "./worker-errors.ts";
+import { ClosedHistory } from "./closed-history.ts";
+import { stopUnresponsiveWorker, workerDirectory } from "./worker-registry.ts";
+
+/** Histories of conversations that are not running, read from their files. */
+const closedHistory = new ClosedHistory();
 
 /**
  * The API for conversations: starting and resuming them, messages and uploads, restart, close and pin, their native
@@ -46,6 +51,12 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 				if (managed.worker && data.replace === true) return reply({ key: await core.replaceWorker(managed) }, 202);
 				if (managed.worker && (managed.view.state === "starting" || managed.view.state === "ready")) return reply({ key });
 				if (managed.worker) throw new Error("Wait for this session worker to stop before restarting it.");
+				// The user chose to stop an earlier process that holds this conversation without answering.
+				if (data.stop === true) {
+					if (managed.view.state !== "failed") throw new Error("Only a conversation that could not open can have its earlier process stopped.");
+					await stopUnresponsiveWorker(workerDirectory(core.directory, key));
+					if (managed.worker) throw new Error("This conversation is opening already.");
+				}
 				// A sleeping conversation's model can be changed: it opens, takes the choice once ready, and sleeps again.
 				const setup = data.setup && typeof data.setup === "object" ? data.setup as Record<string, unknown> : undefined;
 				const choice = setup ? { ...(setup.model !== undefined ? { model: string(setup.model, 300) } : {}),
@@ -140,6 +151,13 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 		if (route[2] === "command" && request.method === "POST" && (data.command as { kind?: unknown } | undefined)?.kind === "answer") {
 			const command = workerCommandFrom(data.command) as Extract<WorkerCommand, { kind: "answer" }>;
 			if (core.answerKept(managed, command.id, command.answer)) return reply({ result: null });
+		}
+		// A conversation that is not running can still be read: its messages, and the images in them, come from its file.
+		if ((!managed.worker || managed.view.state === "closed" || managed.view.state === "failed") && managed.view.file && request.method === "GET"
+			&& (route[2] === "history" && !url.searchParams.has("source") || route[3])) {
+			if (route[3]) return { status: 200, body: null, asset: closedHistory.asset(managed.view.file, route[3]) };
+			return reply(await closedHistory.history(managed.view.file, managed.view.leaf ?? undefined, managed.view.cwd, {
+				before: url.searchParams.get("before") ?? undefined, after: url.searchParams.get("after") ?? undefined, from: url.searchParams.get("from") ?? undefined }));
 		}
 		if (!managed.worker || managed.view.state === "closed" || managed.view.state === "failed") throw new Error("Resume this conversation before using its controls.");
 		const origin = { message: url.searchParams.get("message"), source: url.searchParams.get("source") ?? undefined };

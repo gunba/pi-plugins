@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { SessionLease, SessionOwnedError } from "../../../pi-session-ownership/lease.ts";
 import type { WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { WorkerChannel, type WorkerEndpointAddress } from "./worker-channel.ts";
-import { WorkerConnectionError } from "./worker-errors.ts";
+import { WorkerConnectionError, WorkerUnresponsiveError } from "./worker-errors.ts";
 import { piPackageDir, pointStableRuntime, runtimePin, stablePath } from "./stable-runtime.ts";
 import { atomicJson } from "../../manage/store.ts";
 
@@ -142,8 +142,9 @@ export async function attachWorker(directory: string, options: WorkerInit, recei
 				const channel = await WorkerChannel.connect(previous, receive, disconnected);
 				return { channel, bootstrap, record: previous, created: false };
 			} catch (error) {
+				if (!vacant(directory)) throw new WorkerUnresponsiveError(`Its earlier process is still running but did not answer (${
+					(error instanceof Error ? error.message : String(error)).replace(/\.$/, "").replace(/^[A-Z](?=[a-z])/, letter => letter.toLowerCase())}), so Desk did not start another beside it.`);
 				if (settings.adoptOnly) throw new WorkerConnectionError("The existing worker could not be adopted; no replacement was started.");
-				if (!vacant(directory)) throw new WorkerConnectionError("The existing worker could not be attached. Its lease is still held; it was not replaced.");
 				if (!workerGone(directory, previous.pid, "worker.json", bootstrap.started)) throw new WorkerConnectionError("The previous worker process is still present; no replacement was started.");
 				removeWorkerRecord(directory, previous.instance);
 			}
@@ -191,6 +192,39 @@ export async function attachWorker(directory: string, options: WorkerInit, recei
 		}
 		throw new WorkerConnectionError("Worker startup is unconfirmed. Inspect its registry before retrying; the process was not killed.");
 	} finally { launch.close(); }
+}
+
+/** A running process's command line, or undefined when it can't be read. */
+function commandLine(pid: number): string | undefined {
+	try {
+		if (process.platform === "linux") return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim() || undefined;
+		if (process.platform === "win32") return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+			`(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`], { encoding: "utf8", windowsHide: true, timeout: 30_000 }).trim() || undefined;
+		return execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", timeout: 10_000 }).trim() || undefined;
+	} catch { return undefined; }
+}
+
+/**
+ * Stops, at the user's request, the worker that holds a conversation without answering, and returns once the
+ * conversation is free. Only the process the worker record names is stopped, and only while it is still that worker:
+ * the same start time on Linux, the host's Node executable elsewhere, and a command line naming the worker directory.
+ * Asked to stop first, it is killed if it hasn't after 10 seconds; a blocked worker can't run its shutdown.
+ */
+export async function stopUnresponsiveWorker(directory: string): Promise<void> {
+	if (vacant(directory)) return;
+	const record = readWorkerRecord(directory), bootstrap = readWorkerBootstrap(directory);
+	if (!record || bootstrap?.instance !== record.instance) throw new WorkerConnectionError("Desk has no record of the process holding this conversation, so nothing was stopped.");
+	const runs = () => !workerGone(directory, record.pid, "worker.json", bootstrap.started) && !!commandLine(record.pid)?.includes(directory);
+	let signalled = false;
+	for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+		if (!runs()) break;
+		try { process.kill(record.pid, signal); signalled = true; }
+		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+		for (const until = Date.now() + 10_000; Date.now() < until; await delay(100)) if (vacant(directory)) return;
+	}
+	if (vacant(directory)) return;
+	throw new WorkerConnectionError(signalled ? "The earlier process did not stop."
+		: "What holds this conversation is not the process Desk recorded for it, so nothing was stopped.");
 }
 
 export async function waitWorkerStopped(directory: string, instance: string, timeout = 30_000): Promise<void> {

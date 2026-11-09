@@ -18,7 +18,7 @@ import { PackageUpdates } from "./package-updates.ts";
 import { homeFolder } from "./local-path.ts";
 import { readSessionHeader, SessionCatalog } from "./session-files.ts";
 import { SavedSessionIndex } from "./saved-sessions.ts";
-import { WorkerConnectionError } from "./worker-errors.ts";
+import { WorkerConnectionError, WorkerUnresponsiveError } from "./worker-errors.ts";
 import { HostControl, removeHostRecord, type HostStatus } from "./host-control.ts";
 import { RELEASE } from "../shared/release.ts";
 import { InputLedger } from "./inputs.ts";
@@ -471,7 +471,9 @@ export class DeskHost {
 			const reconnect = instance && managed.initialized && !this.checkpoints?.held && !this.restoringUpdate
 				&& !managed.view.controls?.some(control => control.kind === "close" && control.state === "running")
 				&& (!managed.reconnectAt || Date.now() - managed.reconnectAt >= 60_000);
+			if (!reconnect) console.error(`Could not keep ${managed.view.title ?? key} open: ${message.error}`);
 			managed.view = { ...managed.view, state: reconnect ? "starting" : "failed", error: reconnect ? undefined : message.error,
+				unresponsive: !reconnect && managed.worker?.failure instanceof WorkerUnresponsiveError || undefined,
 				reconnecting: reconnect ? true : undefined, interrupted: !reconnect, snapshot: undefined, ui: undefined, historyReady: false,
 				questions: keptQuestions(managed.view.questions, managed.view.ui, !!managed.initialized) };
 			managed.worker = undefined;
@@ -481,7 +483,9 @@ export class DeskHost {
 			}
 		} else if (message.type === "fatal") {
 			this.inputs?.interrupt(key, "The session worker stopped");
+			console.error(`Could not keep ${managed.view.title ?? key} open: ${message.error}`);
 			managed.view = { ...managed.view, state: "failed", error: message.error, interrupted: true, snapshot: undefined, ui: undefined, historyReady: false,
+				unresponsive: managed.worker?.failure instanceof WorkerUnresponsiveError || undefined,
 				inputs: this.inputs?.pending(key), questions: keptQuestions(managed.view.questions, managed.view.ui, !!managed.initialized) };
 			const worker = managed.worker;
 			void worker?.close().catch(() => {}).finally(() => {
@@ -961,7 +965,7 @@ export class DeskHost {
 		// Adopting the same process carries over a restart waiting for its close to complete.
 		const managed: ManagedSession = { reconnectAt: adopt ? existing?.reconnectAt : undefined,
 			...(adopt && existing?.replaceAfter ? { replacing: true, replaceAfter: existing.replaceAfter } : {}), view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
-			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, interrupted: false, kept: undefined, asleep: undefined, waiting: undefined,
+			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, unresponsive: undefined, interrupted: false, kept: undefined, asleep: undefined, waiting: undefined,
 			reconnecting: adopt ? existing?.view.reconnecting : undefined,
 			snapshot: undefined, ui: undefined, historyReady: false, activation: adopt ? existing?.view.activation : randomUUID(), inputs: this.inputs!.pending(key) } };
 		this.sessions.set(key, managed);
@@ -1002,8 +1006,11 @@ export class DeskHost {
 			if (this.closing || this.sessions.get(key)?.worker !== worker || managed.view.state === "closed"
 				|| managed.view.controls?.some(control => control.kind === "close" && control.state === "running")) return;
 			if (!adopt) this.inputs!.interrupt(key, "Session startup failed");
-			managed.view = { ...managed.view, state: "failed", reconnecting: undefined, historyReady: false, error: error instanceof Error ? error.message : String(error),
-				inputs: this.inputs!.pending(key) };
+			const message = error instanceof Error ? error.message : String(error);
+			// A lost connection has already failed it, and said so (workerEvent).
+			if (managed.view.state !== "failed") console.error(`Could not open ${managed.view.title ?? key}: ${message}`);
+			managed.view = { ...managed.view, state: "failed", reconnecting: undefined, historyReady: false, error: message,
+				unresponsive: error instanceof WorkerUnresponsiveError || managed.view.unresponsive, inputs: this.inputs!.pending(key) };
 			this.events.emit({ type: "session", session: managed.view });
 			this.persistEvent(true);
 			void (adopt ? worker.detach() : worker.close()).catch(() => {}).finally(() => { if (managed.worker === worker) managed.worker = undefined; this.updates.refresh(); });

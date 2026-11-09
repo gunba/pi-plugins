@@ -187,6 +187,9 @@ export interface SessionView {
 	historyReady?: boolean;
 	ui?: PresentationSnapshot;
 	error?: string;
+	/** It failed to open because its earlier process still holds it without answering; the user may stop that process
+	 * (restart with stop, host worker-registry.ts stopUnresponsiveWorker). */
+	unresponsive?: boolean;
 	file?: string;
 	name?: string;
 	title?: string;

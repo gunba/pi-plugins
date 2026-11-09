@@ -460,7 +460,8 @@ export class DeskEngine {
 				if (event.errorMessage && !event.aborted && event.reason !== "manual") this.presentation.notify(`Context compaction failed: ${event.errorMessage}`, "error");
 			}
 			if (event.type === "message_end" || event.type === "agent_settled") this.usageRevision++;
-			if (event.type === "agent_start") this.running = true;
+			// An extension's error marks the conversation until its next run: an earlier failure no longer describes it.
+			if (event.type === "agent_start") { this.running = true; this.failed = false; }
 			if (event.type === "agent_settled") this.running = false;
 			if (event.type === "message_update" || event.type === "message_start" || event.type === "message_end") {
 				// The shared feed projects native messages and sends only token deltas.
