@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./connection.ts";
 import { fileBlob } from "./file-view.tsx";
+import { drawingKey, keepDrawing, keptDrawing } from "./office-cache.ts";
 import { useReferenceQuery } from "./reference-origin.tsx";
 import type { FileInfo, FileReference } from "../shared/files.ts";
 import { RELEASE } from "../shared/release.ts";
@@ -38,12 +39,14 @@ export function drawsOffice(path: string): boolean { return KINDS.some(entry => 
 /**
  * An Office file as a picture of its pages, slides or sheets, drawn by a script in this browser: no Office application
  * or other program runs on any computer. The file's bytes go into Desk's sandboxed frame, which has no network and no
- * access to Desk, and it draws them there; nothing in the picture responds to the pointer.
+ * access to Desk, and it draws them there; nothing in the picture responds to the pointer. A file drawn before, in the
+ * same version, is shown from the copy kept of its drawing (office-cache.ts), without fetching or drawing it again.
  */
 export function OfficePages({ session, file, large, auto = true }: { session: string; file: FileReference; large?: boolean; auto?: boolean }) {
 	const origin = useReferenceQuery(), frame = useRef<HTMLIFrameElement>(null), written = useRef(false);
 	const kind = KINDS.find(entry => entry.pattern.test(file.name));
-	const [wanted, setWanted] = useState(auto), [ready, setReady] = useState<{ html: string; bytes: ArrayBuffer }>();
+	const [wanted, setWanted] = useState(auto);
+	const [ready, setReady] = useState<{ html: string; bytes?: ArrayBuffer; key: string; file: string }>();
 	const [error, setError] = useState(""), [done, setDone] = useState(false), [height, setHeight] = useState(240);
 	useEffect(() => {
 		if (!wanted || !kind) return;
@@ -51,19 +54,26 @@ export function OfficePages({ session, file, large, auto = true }: { session: st
 		setReady(undefined); setDone(false); setError(""); written.current = false;
 		void (async () => {
 			const info = await api<FileInfo>(`/sessions/${session}/files/${file.id}?${origin}`);
+			const { key, file: path } = drawingKey(origin, info.path, info.version, RELEASE.version), kept = await keptDrawing(key);
+			if (controller.signal.aborted) return;
+			if (kept !== undefined) { setReady({ html: kept, key, file: path }); return; }
 			const [blob, script] = await Promise.all([fileBlob(session, info, origin, controller.signal, () => {}), frameScript(kind.kind)]);
 			if (controller.signal.aborted) return;
-			setReady({ html: `<!doctype html><meta charset="utf-8"><style>${STYLE}</style><div id="office"></div><script>${script}</script>`, bytes: await blob.arrayBuffer() });
+			setReady({ html: `<!doctype html><meta charset="utf-8"><style>${STYLE}</style><div id="office"></div><script>${script}</script>`,
+				bytes: await blob.arrayBuffer(), key, file: path });
 		})().catch(failure => { if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : String(failure)); });
 		return () => controller.abort();
 	}, [session, file.id, origin, wanted, kind]);
 	useEffect(() => {
 		if (!ready) return;
 		const listen = (event: MessageEvent) => {
-			const target = frame.current?.contentWindow, data = event.data as { type?: unknown; height?: unknown; error?: unknown } | null;
+			const target = frame.current?.contentWindow, data = event.data as { type?: unknown; height?: unknown; error?: unknown; snapshot?: unknown } | null;
 			if (!target || event.source !== target) return;
-			if (data?.type === "office-ready") target.postMessage({ type: "office", bytes: ready.bytes.slice(0) }, "*");
-			else if (data?.type === "office-done") setDone(true);
+			if (data?.type === "office-ready" && ready.bytes) target.postMessage({ type: "office", bytes: ready.bytes.slice(0) }, "*");
+			else if (data?.type === "office-done") {
+				setDone(true);
+				if (typeof data.snapshot === "string") void keepDrawing(ready.key, ready.file, data.snapshot);
+			}
 			else if (data?.type === "office-error") setError(typeof data.error === "string" ? data.error : "This file could not be drawn.");
 			else if (data?.type === "height" && typeof data.height === "number" && Number.isFinite(data.height)) setHeight(Math.max(Math.ceil(data.height), 60));
 		};
@@ -82,6 +92,8 @@ export function OfficePages({ session, file, large, auto = true }: { session: st
 				if (written.current) return;
 				written.current = true;
 				frame.current?.contentWindow?.postMessage({ type: "render", html: ready.html }, "*");
+				// A kept drawing is the finished picture.
+				if (!ready.bytes) setDone(true);
 			}} />}
 	</div>;
 }

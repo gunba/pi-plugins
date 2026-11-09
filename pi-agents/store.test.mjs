@@ -196,6 +196,19 @@ test("discovery registers ungrouped agents, searches metadata, and excludes expi
 	assert.equal(next.nextOffset, undefined);
 });
 
+test("another computer's directory may list a conversation Desk is restarting", t => {
+	const { a, b } = fixture(t), target = randomUUID();
+	b.register(target, "old", "Target");
+	b.release(target, "old");
+	b.restarting(target);
+	const [restarting] = b.networkDirectory();
+	assert.equal(restarting.state, "restarting");
+	// Refusing it dropped the link to that computer until its restarts were over.
+	const computer = randomUUID();
+	a.cacheDirectory(computer, [restarting]);
+	assert.deepEqual(a.computers().map(known => [known.id, known.state]), [[computer, "connected"]]);
+});
+
 test("network discovery lists running agents and recently closed conversations that can be reopened", t => {
 	const { a, advance } = fixture(t);
 	for (let i = 0; i < 700; i++) {

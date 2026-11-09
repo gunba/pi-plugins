@@ -20,7 +20,9 @@ export function desktopFileCommand(path: string, action: DesktopFileAction, plat
 }
 export async function openDesktopFile(path: string, action: DesktopFileAction): Promise<void> {
 	const { command, args } = desktopFileCommand(path, action);
-	const child = spawn(command, args, { detached: true, windowsHide: true, stdio: "ignore" });
+	// Not windowsHide: Explorer opens its folder window in the state it is started with, so it was hidden. Neither
+	// Explorer nor rundll32 has a console window to hide.
+	const child = spawn(command, args, { detached: true, stdio: "ignore" });
 	await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
 	child.unref();
 }

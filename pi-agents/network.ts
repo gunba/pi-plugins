@@ -64,8 +64,10 @@ function id(value: unknown): string {
 	return value;
 }
 export function remoteMember(computer: string, value: unknown, now: number): Member {
+	// "restarting" is a conversation Desk is moving onto a new version; Desks before 0.5.347 refused it, which dropped
+	// the link to that computer until its restarts were over.
 	const input = record(value), state = text(input.state, 20), kind = text(input.kind, 20);
-	if (!["idle", "working", "offline"].includes(state) || !["session", "child"].includes(kind)) throw Error("Invalid party agent state.");
+	if (!["idle", "working", "offline", "restarting"].includes(state) || !["session", "child"].includes(kind)) throw Error("Invalid party agent state.");
 	return { session: agentId(id(computer), id(input.session)), computer, owner: "",
 		room: "", epoch: id(input.epoch), agent_epoch: id(input.agent_epoch),
 		label: text(input.label, 120), cwd: text(input.cwd, 4096), description: text(input.description, 1600),
