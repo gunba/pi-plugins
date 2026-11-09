@@ -4,7 +4,6 @@ import { fileBlob } from "./file-view.tsx";
 import { drawingKey, heldDrawing, keepDrawing, keptDrawing } from "./office-cache.ts";
 import { useReferenceQuery } from "./reference-origin.tsx";
 import type { FileInfo, FileReference } from "../shared/files.ts";
-import { RELEASE } from "../shared/release.ts";
 
 /** The kinds of Office file drawn here; build.mjs bundles the script that draws each (src/office-frame). */
 const KINDS: { pattern: RegExp; kind: "docx" | "pptx" | "xlsx" }[] = [
@@ -12,12 +11,15 @@ const KINDS: { pattern: RegExp; kind: "docx" | "pptx" | "xlsx" }[] = [
 	{ pattern: /\.(pptx|pptm)$/i, kind: "pptx" },
 	{ pattern: /\.(xlsx|xlsm)$/i, kind: "xlsx" },
 ];
+/** The drawing scripts' names, hashes of their content; the build supplies them (build.mjs), and tests have none. */
+declare const __OFFICE_FRAMES__: Record<"docx" | "pptx" | "xlsx", string> | undefined;
+const FRAMES = typeof __OFFICE_FRAMES__ === "undefined" ? undefined : __OFFICE_FRAMES__;
 const scripts = new Map<string, Promise<string>>();
 /** A kind's drawing script, fetched once; it is written inside a script element, so no "</script" may end it early. */
-function frameScript(kind: string): Promise<string> {
+function frameScript(kind: "docx" | "pptx" | "xlsx"): Promise<string> {
 	let script = scripts.get(kind);
 	if (!script) {
-		script = fetch(`/assets/office-${kind}-${RELEASE.version}.js`).then(async response => {
+		script = fetch(`/assets/office-${kind}-${FRAMES?.[kind]}.js`).then(async response => {
 			if (!response.ok) throw new Error("Reload Desk to see this file.");
 			return (await response.text()).replace(/<\/script/gi, "<\\/script");
 		});
@@ -26,12 +28,6 @@ function frameScript(kind: string): Promise<string> {
 	}
 	return script;
 }
-const STYLE = `html,body{margin:0;background:transparent;overflow:hidden}body{font:13px system-ui,sans-serif;color:#222}
-#office{pointer-events:none;user-select:none}
-.docx-wrapper{background:transparent!important;padding:0!important;gap:12px}.docx-wrapper>section.docx{box-shadow:0 1px 3px rgb(0 0 0/.18),0 0 0 1px rgb(0 0 0/.06);margin:0 auto 12px!important}
-h2{font-size:13px;font-weight:600;margin:10px 2px 6px;color:#444}.sheet{overflow:hidden;background:#fff;border-radius:4px;box-shadow:0 0 0 1px rgb(0 0 0/.08)}
-table{border-collapse:collapse;table-layout:fixed;font:12px Calibri,Carlito,system-ui,sans-serif}td,th{border:1px solid #e1e1e1;padding:2px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:18px}
-th{background:#f3f3f3;color:#666;font-weight:400;text-align:center}.sheet p{margin:6px 8px;color:#666}`;
 
 /** What each file showed last on this page, by computer, conversation and file: its drawing's key and height. */
 const shown = new Map<string, { key: string; file: string; height: number }>();
@@ -59,7 +55,7 @@ export function OfficePages({ session, file, large, auto = true }: { session: st
 		setError("");
 		void (async () => {
 			const info = await api<FileInfo>(`/sessions/${session}/files/${file.id}?${origin}`);
-			const { key, file: path } = drawingKey(origin, info.path, info.version, RELEASE.version);
+			const { key, file: path } = drawingKey(origin, info.path, info.version, FRAMES?.[kind.kind] ?? "");
 			if (controller.signal.aborted || held !== undefined && key === last!.key) return;
 			shown.set(place, { key, file: path, height: shown.get(place)?.height ?? 240 });
 			const kept = await keptDrawing(key);
@@ -67,7 +63,7 @@ export function OfficePages({ session, file, large, auto = true }: { session: st
 			if (kept !== undefined) { setReady({ html: kept, key, file: path }); return; }
 			const [blob, script] = await Promise.all([fileBlob(session, info, origin, controller.signal, () => {}), frameScript(kind.kind)]);
 			if (controller.signal.aborted) return;
-			setReady({ html: `<!doctype html><meta charset="utf-8"><style>${STYLE}</style><div id="office"></div><script>${script}</script>`,
+			setReady({ html: `<!doctype html><meta charset="utf-8"><div id="office"></div><script>${script}</script>`,
 				bytes: await blob.arrayBuffer(), key, file: path });
 		})().catch(failure => { if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : String(failure)); });
 		return () => controller.abort();

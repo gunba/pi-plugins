@@ -5,7 +5,16 @@
  * drawing Desk keeps (snapshot), or "office-error", and reports its height as the sandbox page does. Nothing in it
  * responds to the pointer: it is a picture of the file.
  */
+/** The page around a drawing; it travels with the drawing scripts, so a drawing kept by their name has the same. */
+const STYLE = `html,body{margin:0;background:transparent;overflow:hidden}body{font:13px system-ui,sans-serif;color:#222}
+#office{pointer-events:none;user-select:none}
+.docx-wrapper{background:transparent!important;padding:0!important;gap:12px}.docx-wrapper>section.docx{box-shadow:0 1px 3px rgb(0 0 0/.18),0 0 0 1px rgb(0 0 0/.06);margin:0 auto 12px!important}
+h2{font-size:13px;font-weight:600;margin:10px 2px 6px;color:#444}.sheet{overflow:hidden;background:#fff;border-radius:4px;box-shadow:0 0 0 1px rgb(0 0 0/.08)}
+table{border-collapse:collapse;table-layout:fixed;font:12px Calibri,Carlito,system-ui,sans-serif}td,th{border:1px solid #e1e1e1;padding:2px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:18px}
+th{background:#f3f3f3;color:#666;font-weight:400;text-align:center}.sheet p{margin:6px 8px;color:#666}`;
+
 export function officeFrame(draw: (bytes: ArrayBuffer, root: HTMLElement) => Promise<void>): void {
+	document.head.append(Object.assign(document.createElement("style"), { textContent: STYLE }));
 	const root = document.getElementById("office")!;
 	hideBroken();
 	addEventListener("resize", fitMarked);

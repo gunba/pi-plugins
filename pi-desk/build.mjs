@@ -1,5 +1,6 @@
 import { build } from "esbuild";
-import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isBuiltin } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,21 +55,30 @@ await build({
   define: { "process.env.WS_NO_BUFFER_UTIL": '"1"', "process.env.WS_NO_UTF_8_VALIDATE": '"1"' },
 });
 if (existsSync(resolve(root, "index.html"))) {
-  const { build: buildClient } = await import("vite");
-  await buildClient({ root, build: { outDir: "dist/client", emptyOutDir: true } });
   // The scripts that draw Office files in Work. They run inside the sandboxed page, which loads nothing itself, so the
-  // app fetches one and writes it into the page (client/office-pages.tsx); the version in the name lets it be cached.
-  for (const kind of ["docx", "pptx", "xlsx"]) await build({
-    absWorkingDir: root,
-    entryPoints: [`src/office-frame/${kind}.ts`],
-    outfile: `dist/client/assets/office-${kind}-${manifest.version}.js`,
-    bundle: true,
-    format: "iife",
-    minify: true,
-    target: "es2022",
-    legalComments: "eof",
-    define: { "process.env.NODE_ENV": '"production"' },
-  });
+  // app fetches one and writes it into the page (client/office-pages.tsx). Each is named by a hash of its content,
+  // which the app is built with: the name lets it be cached, and Work keeps drawings by it, so they are drawn again
+  // only when the drawing changes, not with every Desk release.
+  const frames = {};
+  for (const kind of ["docx", "pptx", "xlsx"]) {
+    const { outputFiles: [script] } = await build({
+      absWorkingDir: root,
+      entryPoints: [`src/office-frame/${kind}.ts`],
+      write: false,
+      outfile: `office-${kind}.js`,
+      bundle: true,
+      format: "iife",
+      minify: true,
+      target: "es2022",
+      legalComments: "eof",
+      define: { "process.env.NODE_ENV": '"production"' },
+    });
+    frames[kind] = { hash: createHash("sha256").update(script.contents).digest("hex").slice(0, 16), contents: script.contents };
+  }
+  const { build: buildClient } = await import("vite");
+  await buildClient({ root, build: { outDir: "dist/client", emptyOutDir: true },
+    define: { __OFFICE_FRAMES__: JSON.stringify(Object.fromEntries(Object.entries(frames).map(([kind, frame]) => [kind, frame.hash]))) } });
+  for (const [kind, frame] of Object.entries(frames)) writeFileSync(resolve(root, `dist/client/assets/office-${kind}-${frame.hash}.js`), frame.contents);
 }
 // The account authority is a separate deployment from the opaque routing broker.
 await build({

@@ -1,7 +1,7 @@
 /**
  * Office files Work has drawn, kept as copies of their drawings (office-frame/frame.ts, snapshot) so a file is drawn
- * once, not each time Work shows it. A copy is found by the file's computer, path and version and Desk's version, so a
- * changed file or a new way of drawing it is drawn again. Copies are kept in memory for this page and in this browser's
+ * once, not each time Work shows it. A copy is found by the file's computer, path and version and the drawing script's
+ * name, a hash of its content, so a changed file or a new way of drawing it is drawn again. Copies are kept in memory for this page and in this browser's
  * IndexedDB, up to STORED characters, the least recently shown going first; a file's older versions go when a newer
  * one is kept. Without IndexedDB, as in tests, only memory keeps them.
  */
@@ -40,10 +40,10 @@ function remember(key: string, html: string): void {
 	for (const [old, kept] of [...memory].reverse()) if ((size += kept.length) > IN_MEMORY) memory.delete(old);
 }
 
-/** The key of a file's drawing: which computer, which file, which version of it, drawn by which Desk. */
-export function drawingKey(computer: string, path: string, version: string, desk: string): { key: string; file: string } {
+/** The key of a file's drawing: which computer, which file, which version of it, drawn by which script. */
+export function drawingKey(computer: string, path: string, version: string, script: string): { key: string; file: string } {
 	const file = JSON.stringify([computer, path]);
-	return { key: JSON.stringify([computer, path, version, desk]), file };
+	return { key: JSON.stringify([computer, path, version, script]), file };
 }
 
 /** A drawing kept in memory, at once: none is read from storage. */
