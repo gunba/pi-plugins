@@ -349,6 +349,24 @@ test("a conversation keeps more than eight time watches", async t => {
 });
 
 
+test("a program is told which of its bash calls are still running in the background", async t => {
+  // A program returned r.output, empty while the command ran on, and on a slow computer agents took that for a bash
+  // call that returned nothing.
+  const h = await harness(t, pi => pi.registerTool({ name: "bash", label: "bash", description: "Runs a command.",
+    parameters: Type.Object({ command: Type.String(), wait: Type.Optional(Type.Number()) }),
+    async execute(_id, params) {
+      const running = params.command.startsWith("slow");
+      return { content: [{ type: "text", text: running ? "Still running" : "ok" }], details: {},
+        structuredContent: { output: running ? "" : "ok", exit_code: running ? null : 0, ...(running ? { running: "w7" } : {}) } };
+    } }));
+  const result = await h.run(`
+    const fast = await tools.bash({command: "echo ok"});
+    const slow = await tools.bash({command: "slow-search --everything\\nsecond line", wait: 20});
+    return fast.output + slow.output;`);
+  assert.deepEqual(result.content.map(part => part.text), ["ok",
+    "Still running in the background after its wait, so the program had only its output so far: w7 (`slow-search --everything`). Each wakes you with its result when it ends."]);
+});
+
 test("a program that ends normally lists the operations that failed", async t => {
   // A program ignored an {error} result and the agent saw only "Script completed".
   const h = await harness(t);

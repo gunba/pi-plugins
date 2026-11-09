@@ -31,7 +31,7 @@ const CORE = new Set(["codemode", "tool_search", "read", "bash", "edit", "write"
  * Tools loaded on demand are left out: loading one must not change the definition, and searchTools finds them.
  */
 export const requestDescription = (others: readonly string[]) => `Run a JavaScript program (QuickJS) that calls operations and returns data. Top-level await and return work. There is no Node: no process, require, Buffer, imports, files, network or timers except through operations. Send the source raw where raw input is accepted, otherwise as {code}.
-- await tools.NAME(args) returns the operation's data, or {error:string} if it failed. Check for an error before a step that depends on it.
+- await tools.NAME(args) returns the operation's data, or {error:string} if it failed. Check for one before a step that depends on it.
 - Await side effects in order; use Promise.all only for independent steps. Calls still pending at return are cancelled; finished ones are not undone.
 - Return only the fields you need: const r=await tools.bash({command:"git status --short",description:"Check changes"}); return r.error??r.output;
 - Every operation takes description: a short sentence for the user on what the call does; signatures leave it out.
@@ -43,7 +43,7 @@ bash({command,wait?,warn?,progress?}) -> {output,exit_code,truncated,full_output
 edit({path,edits:[{oldText,newText}]}) -> text. Each oldText must occur once in the original file; edits must not overlap.
 write({path,content}) -> text. Creates folders; replaces the file: for new files and full rewrites.
 Common operations:
-ask_user({question,options?,context?,done_when?,wait?}) -> {response,cancelled}: when only Jordan can decide, supply or approve something. done_when: a command that exits 0 once it's done; wait:false: carry on; the answer wakes you.
+ask_user({question,options?:[text],context?,done_when?,wait?}) -> {response,cancelled}: when only Jordan can decide, supply or approve something. done_when: a command that exits 0 once it's done; wait:false: carry on; the answer wakes you.
 web_search({goal,queries}): current facts; one search per question. web_fetch({urls,goal?,full?}) -> {pages,failures}: read pages and PDFs by URL. Cite sources as links.
 watch({command?,program?,every?,until?,wake_when?,stop?}): end with a watch to be woken by a command, program, time or change; with every, checks run without you. Never loop to wait.
 Other operations (describeTool(name) gives one's contract):
@@ -244,8 +244,11 @@ async function limited(name: string, options: ExecuteToolOptions | undefined, ca
   }
 }
 
-/** All nested operations still pass through Pi's validation, guards, approvals and Desk events. */
-function context(ctx: ExtensionToolContext, terminate: () => void): ExtensionToolContext {
+/**
+ * All nested operations still pass through Pi's validation, guards, approvals and Desk events. `background` hears of
+ * each bash call still running when its wait ended, which returned only the output so far.
+ */
+function context(ctx: ExtensionToolContext, terminate: () => void, background: (call: { watch: string; command: string }) => void): ExtensionToolContext {
   return Object.create(ctx, {
     tools: { value: ctx.tools.map(scriptTool) },
     executeTool: { value: async (...args: Parameters<ExtensionToolContext["executeTool"]>) => {
@@ -258,6 +261,8 @@ function context(ctx: ExtensionToolContext, terminate: () => void): ExtensionToo
       const text = result.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
       const value = outcome.isError ? { error: invalidCall(text, ctx.tools.find(tool => tool.name === args[0])) || text || `Operation ${args[0]} failed` }
         : result.structuredContent ?? (["ask_user", "tool_search"].includes(args[0]) ? result.details : text);
+      const running = name === "bash" && value && typeof value === "object" ? (value as { running?: unknown }).running : undefined;
+      if (typeof running === "string") background({ watch: running, command: String((params as { command?: unknown } | undefined)?.command ?? "") });
       // The script unwraps this private envelope; a handoff must end it before another side effect.
       return { ...outcome, result: { ...result, structuredContent: [value, result.terminate === true] } };
     } },
@@ -270,8 +275,8 @@ export function createStructuredToolExtension(): ExtensionFactory {
     /** Runs a program: its data, native diagnostics and attachments, and a note naming the operations that failed. */
     const run = async (id: string, code: string, signal: AbortSignal | undefined, update: Parameters<typeof definition.execute>[3], ctx: ExtensionToolContext) => {
       let terminate = false;
-      const saved = visibleSaved(ctx.cwd, ctx.sessionManager.getBranch(), new Set(ctx.tools.map(tool => tool.name)));
-      const result = await definition.execute(id, { code: script(code, saved) }, signal, update, context(ctx, () => { terminate = true; }));
+      const saved = visibleSaved(ctx.cwd, ctx.sessionManager.getBranch(), new Set(ctx.tools.map(tool => tool.name))), running: { watch: string; command: string }[] = [];
+      const result = await definition.execute(id, { code: script(code, saved) }, signal, update, context(ctx, () => { terminate = true; }, call => running.push(call)));
       // Keep native failure diagnostics, image attachments, spill paths and nested-call metadata.
       const content = result.content.slice(1);
       const value = content.length === 1 && content[0]?.type === "text" ? content[0].text : undefined;
@@ -283,7 +288,11 @@ export function createStructuredToolExtension(): ExtensionFactory {
         ?.calls ?? []).filter(call => call.status === "error");
       const note = failed.length ? [{ type: "text" as const, text: `${failed.length} operation${failed.length === 1 ? "" : "s"} failed: ${failed.slice(0, 5)
         .map(call => `${call.name}: ${(call.error ?? "").replace(/\s+/g, " ").slice(0, 160)}`).join("; ")}${failed.length > 5 ? "; …" : ""}` }] : [];
-      return { ...result, content: [...content, ...note], structuredContent: data, ...(terminate ? { terminate: true } : {}) };
+      // A program usually returns a command's output, which is empty or partial for one still running: on a slow
+      // computer, agents took that for a bash call that returned nothing.
+      const still = running.length ? [{ type: "text" as const, text: `Still running in the background after its wait, so the program had only its output so far: ${running.slice(0, 5)
+        .map(call => `${call.watch} (\`${call.command.split("\n")[0]!.slice(0, 80)}\`)`).join(", ")}${running.length > 5 ? ", …" : ""}. Each wakes you with its result when it ends.` }] : [];
+      return { ...result, content: [...content, ...note, ...still], structuredContent: data, ...(terminate ? { terminate: true } : {}) };
     };
     // pi-watch's program watches run programs between turns, with the context of the agent's latest call.
     let runs = 0;

@@ -125,7 +125,15 @@ function displayText(text: string): string {
    return stripVTControlCharacters(text).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
 }
 
-function normalizeOptions(options: AskOptionInput[]): QuestionOption[] {
+function normalizeOptions(given: AskOptionInput[] | string): QuestionOption[] {
+   // Agents sometimes write the list as JSON text, which validation then wraps as a list of one option.
+   const options = (typeof given === "string" ? [given] : given).flatMap((option): AskOptionInput[] => {
+      if (typeof option !== "string" || !/^\s*\[/.test(option)) return [option];
+      try {
+         const parsed: unknown = JSON.parse(option);
+         return Array.isArray(parsed) ? parsed as AskOptionInput[] : [option];
+      } catch { return [option]; }
+   });
    return options
       .map((option): QuestionOption | null => {
          if (typeof option === "string") {

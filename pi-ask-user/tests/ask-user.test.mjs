@@ -22,6 +22,15 @@ test('an unanswered question says whether it timed out or was dismissed, not tha
  assert.equal(dismissed.content[0].text, 'The user closed the question without answering.');
 });
 
+test('options written as JSON text are shown as separate options', async () => {
+ let shown;
+ let tool;
+ extension({registerTool: value => tool = value, on() {}, events: {emit(_name, probe) { probe.presentation = {operatorAvailable: true, request: async form => { shown = form.options; return null; }}; }}});
+ // Validation wraps text given for the list as a list of one, which Desk showed as a single option.
+ await tool.execute('id', {question: 'Sign in again?', options: ['["Signed in again", "Skip the picture"]'], timeout: 60_000}, undefined, undefined, {hasUI: true, ui: {}});
+ assert.deepEqual(shown.map(option => option.title), ['Signed in again', 'Skip the picture']);
+});
+
 test('aborted calls do not prompt', async () => {
  const signal = AbortSignal.abort();
  const result = await tool().execute('id', {question: 'Proceed?'}, signal, undefined, {});
