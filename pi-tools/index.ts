@@ -53,12 +53,26 @@ Output: return, text(value), image(block) and console.log. exit() stops the prog
 Optional first line: // @options: {"max_output_tokens":10000,"timeout_ms":60000}
 Chrome and MCP operations keep their own results and errors. Show images with image(), never as text.`;
 
-/** name({a,b?}) from a tool's parameter schema, leaving out the description every operation takes. */
-const signature = (name: string, parameters: unknown) => {
-  const schema = parameters as { properties?: Record<string, unknown>; required?: string[] };
+/** a,b? from an object schema's fields, leaving out the description every operation takes. */
+const fields = (schema: Schema) => {
   const required = new Set(schema.required ?? []);
-  const keys = Object.keys(schema.properties ?? {}).filter(key => key !== "description");
-  return `${name}({${keys.map(key => required.has(key) ? key : `${key}?`).join(",")}})`;
+  return Object.keys(schema.properties ?? {}).filter(key => key !== "description").map(key => required.has(key) ? key : `${key}?`).join(",");
+};
+/**
+ * A list parameter's items when they are small objects or texts, as :[{a,b?}] or :[text|{a}]. Without it agents guess
+ * the fields from the list's name (steps as {title}) and the call fails.
+ */
+const items = (schema: Schema | undefined) => {
+  if (schema?.type !== "array" || !schema.items) return "";
+  const shapes = (schema.items.anyOf ?? [schema.items]).map(item => item.type === "string" ? "text"
+    : item.type === "object" && item.properties && Object.keys(item.properties).length <= 4 ? `{${fields(item)}}` : undefined);
+  return shapes.every(Boolean) ? `:[${shapes.join("|")}]` : "";
+};
+/** name({a,b?,list?:[{c,d?}]}) from a tool's parameter schema. */
+const signature = (name: string, parameters: unknown) => {
+  const schema = parameters as Schema;
+  const listed = fields(schema).split(",").filter(Boolean).map(field => field + items(schema.properties?.[field.replace(/\?$/, "")]));
+  return `${name}({${listed.join(",")}})`;
 };
 /** What each operation is for, in at most 100 characters, worded so agents reach for it at the right moment. */
 const INTROS: Record<string, string> = {

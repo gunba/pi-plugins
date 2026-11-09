@@ -210,6 +210,21 @@ test("an update that leaves out unfinished steps says so in the next result, sin
 	await h.emit("session_shutdown");
 });
 
+test("steps and actions written in agents' usual words are read, and other step fields are dropped", async () => {
+	const h = createExtensionHarness(); await h.start();
+	// Pi prepares a call's arguments before checking them against the schema and running the tool.
+	const prepared = (name, args) => executeTool(h, name, preparePlanArguments(args));
+	await prepared("create_plan", { objective: "Finish", auto_continue: false, steps: [{ title: "Read the case", done: true },
+		{ step: "Draft the deck", status: "In progress", notes: "Use the template" }, { text: "Send it", id: 3 }] });
+	assert.deepEqual((await read(h)).steps, [{ content: "Read the case", status: "completed" },
+		{ content: "Draft the deck", status: "in_progress", detail: "Use the template" }, { content: "Send it", status: "pending" }]);
+	await prepared("update_plan", { action: "update", steps: [{ title: "Read the case", status: "done" }, { title: "Draft the deck", status: "done" }, { title: "Send it", status: "doing" }] });
+	assert.deepEqual((await read(h)).steps, [{ content: "Read the case", status: "completed" },
+		{ content: "Draft the deck", status: "completed", detail: "Use the template" }, { content: "Send it", status: "in_progress" }]);
+	assert.throws(() => preparePlanArguments({ action: "edit", steps: [{ title: "Send it", status: "blocked" }] }), /status must be pending, in_progress, or completed/);
+	await h.emit("session_shutdown");
+});
+
 test("a step given as a string is a pending step", async () => {
 	const h = createExtensionHarness(); await h.start();
 	await create(h, { auto_continue: false, steps: ["Read the case", { content: "Draft the deck", status: "in_progress" }] });

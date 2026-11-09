@@ -30,6 +30,31 @@ export type UpdateParams = Static<typeof UpdateParameters>;
  */
 const pending = <T>(step: T | string): T | PlanStep => typeof step === "string" ? { content: step, status: "pending" } : step;
 
+/** Where agents put a step's text, its notes, and the words they use for its status, in the order they are trusted. */
+const TEXT = ["content", "title", "text", "step", "task", "name", "description"];
+const NOTES = ["detail", "details", "notes", "note", "description"];
+const STATUS: Record<string, PlanStep["status"]> = { pending: "pending", todo: "pending", to_do: "pending", not_started: "pending", open: "pending",
+	in_progress: "in_progress", active: "in_progress", current: "in_progress", doing: "in_progress", started: "in_progress", working: "in_progress",
+	completed: "completed", complete: "completed", done: "completed", finished: "completed" };
+/**
+ * A step as agents write it without the schema in front of them (from a program they see only "steps"): its text under
+ * title, step or text, its status as done: true or a synonym, or none, which is pending; and notes for detail. Other
+ * fields mean nothing to a plan and are dropped. What can't be read this way is left for planSteps to refuse.
+ */
+function looseStep(value: unknown): unknown {
+	if (typeof value === "string" || !value || typeof value !== "object" || Array.isArray(value)) return value;
+	const item = value as Record<string, unknown>;
+	const textKey = TEXT.find(key => typeof item[key] === "string" && (item[key] as string).trim());
+	if (!textKey) return value;
+	const done = [item.done, item.completed, item.checked].find(flag => typeof flag === "boolean");
+	const status = typeof item.status === "string" ? STATUS[item.status.trim().toLowerCase().replace(/[\s-]+/g, "_")] ?? item.status
+		: typeof done === "boolean" ? done ? "completed" : "pending" : "pending";
+	const detail = NOTES.find(key => key !== textKey && typeof item[key] === "string");
+	return { content: item[textKey], status, ...(detail ? { detail: item[detail] } : {}) };
+}
+/** update_plan's action as agents name it. */
+const ACTIONS: Record<string, string> = { update: "edit", change: "edit", set: "edit", replace: "edit", modify: "edit", done: "complete", finish: "complete", block: "blocked" };
+
 export function preparePlanArguments<T extends CreateParams | UpdateParams>(value: unknown): T {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return value as T;
 	const { plan_id: _id, revision: _revision, ...input } = value as Record<string, unknown>;
@@ -43,6 +68,8 @@ export function preparePlanArguments<T extends CreateParams | UpdateParams>(valu
 	if (typeof input.steps === "string" && input.steps.trim().startsWith("[")) {
 		try { input.steps = JSON.parse(input.steps); } catch { throw new Error("steps is text that isn't a JSON array; send an array of step texts or {content, status} objects"); }
 	}
+	if (typeof input.action === "string") input.action = ACTIONS[input.action.trim().toLowerCase()] ?? input.action;
+	if (Array.isArray(input.steps)) input.steps = input.steps.map(looseStep);
 	if ("steps" in input) planSteps(Array.isArray(input.steps) ? input.steps.map(pending) : input.steps, true);
 	return input as T;
 }
