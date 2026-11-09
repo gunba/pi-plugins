@@ -356,7 +356,22 @@ class Handbook {
 	}
 
 	register(): void {
-		if (!this.topLevel) return;
+		if (!this.topLevel) {
+			// A helper has no handbook, but it inherits its parent's tools and fails to start without each one, so it gets
+			// the tool for reading other agents' handbooks.
+			this.pi.registerTool({
+				name: "handbook", label: "Handbook",
+				description: "Read another agent's handbook (its purpose, the user's instructions and what it learned) with action read and agent. "
+					+ "A helper has no handbook of its own.",
+				parameters: Parameters, executionMode: "sequential",
+				execute: async (_id, params: Params, signal) => {
+					if (params.action !== "read" || !params.agent?.trim()) throw new Error("A helper has no handbook of its own: only read with agent works here.");
+					return { content: [{ type: "text" as const, text: await this.tool(params, signal) }], details: {} };
+				},
+				renderCall: (params, theme) => new Text(theme.fg("toolTitle", "Handbook ") + [params.action, params.agent].filter(Boolean).join(" · "), 0, 0),
+			});
+			return;
+		}
 		this.pi.registerTool({
 			name: "handbook", label: "Handbook",
 			description: "This conversation's handbook (shown in <conversation_handbook>): add the user's lasting instruction, quoted exactly, "
