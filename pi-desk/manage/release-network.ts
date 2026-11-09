@@ -15,6 +15,11 @@ function githubURL(address: string): URL {
 		throw new Error("Runtime downloads must come from GitHub.");
 	return url;
 }
+/** GitHub answered with a status other than the file or redirect asked for. */
+export class GitHubStatusError extends Error {
+	readonly status: number;
+	constructor(status: number, message: string) { super(message); this.status = status; }
+}
 /** Reuse the configured GitHub proxy without changing Git or account settings. */
 export async function githubProxy(source: string): Promise<string | undefined> {
 	try {
@@ -33,11 +38,12 @@ export class ReleaseNetwork {
 		const deadline = AbortSignal.timeout(timeout);
 		return this.signal ? AbortSignal.any([this.signal, deadline]) : deadline;
 	}
-	private async response(address: string, signal: AbortSignal, redirects = 0): Promise<IncomingMessage> {
+	/** file: the content itself, rather than the API's description of it. */
+	private async response(address: string, signal: AbortSignal, file: boolean, redirects = 0): Promise<IncomingMessage> {
 		const url = githubURL(address);
 		const response = await new Promise<IncomingMessage>((accept, reject) => {
 			const req = request(url, { agent: this.agent, signal, headers: {
-				"User-Agent": "Pi-Desk", Accept: url.hostname === "api.github.com" ? "application/vnd.github+json" : "application/octet-stream",
+				"User-Agent": "Pi-Desk", Accept: url.hostname === "api.github.com" && !file ? "application/vnd.github+json" : "application/octet-stream",
 				...(url.hostname === "api.github.com" ? { "X-GitHub-Api-Version": "2022-11-28" } : {}),
 			} }, accept);
 			req.once("error", error => {
@@ -50,11 +56,11 @@ export class ReleaseNetwork {
 			const location = response.headers.location;
 			response.destroy();
 			if (!location || redirects >= 4) throw new Error("GitHub download redirected too many times.");
-			return this.response(new URL(location, url).href, signal, redirects + 1);
+			return this.response(new URL(location, url).href, signal, file, redirects + 1);
 		}
 		if (response.statusCode !== 200) {
 			response.destroy();
-			throw new Error(response.headers["x-ratelimit-remaining"] === "0"
+			throw new GitHubStatusError(response.statusCode!, response.headers["x-ratelimit-remaining"] === "0"
 				? "GitHub release lookup is rate limited. Try again later."
 				: `GitHub returned HTTP ${response.statusCode}. The running release is unchanged.`);
 		}
@@ -77,8 +83,9 @@ export class ReleaseNetwork {
 			throw new Error(`GitHub returned HTTP ${response.statusCode} for the latest release. The running release is unchanged.`);
 		return new URL(location, url).href;
 	}
-	async json(address: string): Promise<unknown> {
-		const response = await this.response(address, this.deadline(30_000));
+	/** A JSON file, or with file false, a JSON description from GitHub's API. */
+	async json(address: string, file = true): Promise<unknown> {
+		const response = await this.response(address, this.deadline(30_000), file);
 		const chunks: Buffer[] = []; let bytes = 0;
 		for await (const chunk of response) {
 			if ((bytes += chunk.length) > 4 * 1024 * 1024) { response.destroy(); throw new Error("GitHub release metadata is too large."); }
@@ -88,7 +95,7 @@ export class ReleaseNetwork {
 		catch { throw new Error("GitHub returned invalid release metadata."); }
 	}
 	async download(address: string, file: string, size: number): Promise<void> {
-		const signal = this.deadline(10 * 60_000), response = await this.response(address, signal);
+		const signal = this.deadline(10 * 60_000), response = await this.response(address, signal, true);
 		let received = 0;
 		const limit = new Transform({ transform(chunk, _encoding, callback) {
 			received += chunk.length;
