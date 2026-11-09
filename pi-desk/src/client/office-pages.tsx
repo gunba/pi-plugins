@@ -3,13 +3,28 @@ import { api } from "./connection.ts";
 import { fileBlob } from "./file-view.tsx";
 import { useReferenceQuery } from "./reference-origin.tsx";
 import type { FileInfo, FileReference } from "../shared/files.ts";
+import { RELEASE } from "../shared/release.ts";
 
-/** The kinds of Office file drawn here, and the frame script that draws each (vite.config.ts). */
-const KINDS: { pattern: RegExp; kind: "docx" | "pptx" | "xlsx"; load: () => Promise<{ default: string }> }[] = [
-	{ pattern: /\.(docx|docm)$/i, kind: "docx", load: () => import("virtual:office-frame/docx") },
-	{ pattern: /\.(pptx|pptm)$/i, kind: "pptx", load: () => import("virtual:office-frame/pptx") },
-	{ pattern: /\.(xlsx|xlsm)$/i, kind: "xlsx", load: () => import("virtual:office-frame/xlsx") },
+/** The kinds of Office file drawn here; build.mjs bundles the script that draws each (src/office-frame). */
+const KINDS: { pattern: RegExp; kind: "docx" | "pptx" | "xlsx" }[] = [
+	{ pattern: /\.(docx|docm)$/i, kind: "docx" },
+	{ pattern: /\.(pptx|pptm)$/i, kind: "pptx" },
+	{ pattern: /\.(xlsx|xlsm)$/i, kind: "xlsx" },
 ];
+const scripts = new Map<string, Promise<string>>();
+/** A kind's drawing script, fetched once; it is written inside a script element, so no "</script" may end it early. */
+function frameScript(kind: string): Promise<string> {
+	let script = scripts.get(kind);
+	if (!script) {
+		script = fetch(`/assets/office-${kind}-${RELEASE.version}.js`).then(async response => {
+			if (!response.ok) throw new Error("Reload Desk to see this file.");
+			return (await response.text()).replace(/<\/script/gi, "<\\/script");
+		});
+		script.catch(() => scripts.delete(kind));
+		scripts.set(kind, script);
+	}
+	return script;
+}
 const STYLE = `html,body{margin:0;background:transparent;overflow:hidden}body{font:13px system-ui,sans-serif;color:#222}
 #office{pointer-events:none;user-select:none}
 .docx-wrapper{background:transparent!important;padding:0!important;gap:12px}.docx-wrapper>section.docx{box-shadow:0 1px 3px rgb(0 0 0/.18),0 0 0 1px rgb(0 0 0/.06);margin:0 auto 12px!important}
@@ -36,9 +51,9 @@ export function OfficePages({ session, file, large, auto = true }: { session: st
 		setReady(undefined); setDone(false); setError(""); written.current = false;
 		void (async () => {
 			const info = await api<FileInfo>(`/sessions/${session}/files/${file.id}?${origin}`);
-			const [blob, script] = await Promise.all([fileBlob(session, info, origin, controller.signal, () => {}), kind.load()]);
+			const [blob, script] = await Promise.all([fileBlob(session, info, origin, controller.signal, () => {}), frameScript(kind.kind)]);
 			if (controller.signal.aborted) return;
-			setReady({ html: `<!doctype html><meta charset="utf-8"><style>${STYLE}</style><div id="office"></div><script>${script.default}</script>`, bytes: await blob.arrayBuffer() });
+			setReady({ html: `<!doctype html><meta charset="utf-8"><style>${STYLE}</style><div id="office"></div><script>${script}</script>`, bytes: await blob.arrayBuffer() });
 		})().catch(failure => { if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : String(failure)); });
 		return () => controller.abort();
 	}, [session, file.id, origin, wanted, kind]);

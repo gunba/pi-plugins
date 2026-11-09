@@ -149,7 +149,8 @@ export function parseTime(text: string, now = Date.now()): number {
 		next.setHours(hours, minutes, 0, 0);
 		if (next.getTime() <= now) next.setDate(next.getDate() + 1);
 		at = next.getTime();
-	} else at = Date.parse(text);
+	// Date.parse also reads loose text ("output != '0'" is a date in 2000), so only ISO dates are taken.
+	} else at = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/i.test(text.trim()) ? Date.parse(text.trim()) : NaN;
 	if (!Number.isFinite(at)) throw new Error(`${text} is not a time: give a delay such as 5m, HH:MM or an ISO date and time.`);
 	if (at <= now) throw new Error(`${text} has passed.`);
 	return at;
@@ -174,6 +175,9 @@ export const clockTime = clock;
 /** A command's progress over its last readings: "14:02 80/500 · 14:03 120/500". */
 export const progressLine = (readings: { at: number; value: string }[]) => readings.length
 	? `Progress: ${readings.slice(-5).map(reading => `${clock(reading.at)} ${reading.value}`).join(" · ")}` : "";
+/** A change watch's latest change that did not meet its condition: "11:41 output 1 did not meet the condition". */
+export const declinedText = (declined: { at: number; output: string }) =>
+	`${clock(declined.at)} output ${JSON.stringify(declined.output.length > 60 ? `${declined.output.slice(0, 60)}…` : declined.output)} did not meet the condition`;
 /** How long a command has run: "45 s", "12 min", "2 h 5 min". */
 export function elapsed(ms: number): string {
 	const minutes = Math.floor(ms / 60_000);
@@ -192,10 +196,21 @@ export function pickClassifier<T extends { provider: string; id: string }>(model
 	return models.find(model => model.provider === "typesafe" && model.id === "jev-latest") ?? models.find(model => /jev/i.test(model.id)) ?? models[0];
 }
 
-/** What a classifier is asked to judge an event against wake_when. */
-export function judgement(spec: WatchSpec, condition: string, output: string): ClassifierContext {
+/**
+ * What a classifier is asked to judge an event against wake_when. A change watch's output is a reading, often a bare
+ * count or flag that means nothing on its own, so the condition is put beside it, with the reading before when known,
+ * and the question is whether the condition is true of it now: asked of "1" whether it shows "output != '0'", Jev gave
+ * about 0.3; asked this way, about 0.97.
+ */
+export function judgement(spec: WatchSpec, condition: string, output: string, previous?: string): ClassifierContext {
+	if (spec.mode === "change") return {
+		state: { [spec.program !== undefined ? "program" : "command"]: subject(spec), condition,
+			...(previous !== undefined ? { "previous output": clip(previous) } : {}), "output now": clip(output) },
+		questions: { wake: { type: "bool", instructions: "The agent is waiting for the condition to be true of this output. Is it true of the output now?",
+			criteria: { true: "The condition holds for the output now", false: "The condition does not hold for the output now" } } },
+	};
 	return {
-		state: { watching: spec.mode === "change" ? `The output of \`${subject(spec)}\`` : `New output of \`${subject(spec)}\``, event: clip(output) },
+		state: { watching: `New output of \`${subject(spec)}\``, event: clip(output) },
 		questions: { wake: { type: "bool", instructions: `An agent asked to be woken when: ${condition}. Does this event show that?`,
 			criteria: { true: "The event shows it", false: "The event does not show it" } } },
 	};

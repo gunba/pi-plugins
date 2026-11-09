@@ -13,8 +13,8 @@
 // - Once: output goes to the log file; when the command ends, its status goes to the exit file, which pi-watch reads
 //   instead of waiting on a process.
 // - Every `every` seconds: each run's output, with its exit status when that is not 0, is compared with the previous
-//   run's; a different output is written to the change file as the next numbered change, and the first run's output as
-//   change 1. At its end, the exit file says so. A change file deleted under it ends it: its conversation was removed.
+//   run's; a different output is written to the change file as the next numbered change, with the output before it, and
+//   the first run's output as change 1. At its end, the exit file says so. A change file deleted under it ends it: its conversation was removed.
 // At a command's end, if it has one, or when it is stopped, its whole process tree is stopped.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -81,8 +81,8 @@ function run(job, done) {
 		else setTimeout(() => end({ stopped: reason }), 2_000);
 	};
 	if (job.every) {
-		let previous, number = 0;
-		try { ({ hash: previous, number } = JSON.parse(readFileSync(job.change, "utf8"))); } catch { /* the first run */ }
+		let previous, number = 0, before;
+		try { ({ hash: previous, number, output: before } = JSON.parse(readFileSync(job.change, "utf8"))); } catch { /* the first run */ }
 		const once = () => new Promise(resolve => {
 			let output = "", late = false;
 			const child = current = start(job, "pipe");
@@ -108,8 +108,9 @@ function run(job, done) {
 				if (stopping) return;
 				const hash = createHash("sha256").update(output).digest("hex").slice(0, 16);
 				if (hash !== previous) {
-					atomic(job.change, { number: ++number, hash, output, first: previous === undefined, at: Date.now() });
-					previous = hash;
+					// The output before goes with it: a count or a flag is judged by how it changed (common.ts judgement).
+					atomic(job.change, { number: ++number, hash, output, before, first: previous === undefined, at: Date.now() });
+					previous = hash; before = output;
 				}
 				// Waits in steps of at most a minute: Node's timers stop while a computer sleeps.
 				const next = Date.now() + job.every * 1000;

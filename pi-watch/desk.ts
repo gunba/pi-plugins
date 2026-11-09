@@ -5,7 +5,7 @@ import { existsSync, readdirSync, statSync, watch as watchFolder, type FSWatcher
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { getPresentation } from "../pi-ui/index.ts";
-import { briefWatch, clockTime, describeWatch, elapsed, interval, launchRunner, message, pickClassifier, progressLine, runnerFolder, shellFor, stopCommand, watchEvent,
+import { briefWatch, clockTime, declinedText, describeWatch, elapsed, interval, launchRunner, message, pickClassifier, progressLine, runnerFolder, shellFor, stopCommand, watchEvent,
 	UNTOLD, when, type Shell, type WatchSpec } from "./common.ts";
 import { WATCH_SIGNAL, type KnownComputer, type WatchRow, type WatchStore } from "./store.ts";
 import { announceWatches, plannedWatch, RETRY_MS, startedText, WATCH_ENTRY, WATCH_MESSAGE, type Params, type WatchBackend, type WatchRecord } from "./tool.ts";
@@ -310,7 +310,7 @@ export class DeskClient implements WatchBackend {
 		if (!rows.length) return "No active watches.";
 		return `Active watches:\n${rows.map(row => {
 			const spec = row.spec, readings = row.progress.readings ?? [];
-			return `- ${row.name}: ${briefWatch({ ...spec, id: row.name })}${row.runs ? ` on ${spec.computer}` : ""}${spec.mode !== "time" && spec.expires ? `; ends ${when(spec.expires)}` : ""}${spec.keep ? "; keeps reporting" : ""}${spec.bash ? `; running ${elapsed(Date.now() - spec.bash.started)}${readings.length ? `; ${progressLine(readings)}` : ""}` : ""}${row.state === "new" ? "; starting" : row.state === "stopping" ? "; stopping" : ""}`;
+			return `- ${row.name}: ${briefWatch({ ...spec, id: row.name })}${row.runs ? ` on ${spec.computer}` : ""}${spec.mode !== "time" && spec.expires ? `; ends ${when(spec.expires)}` : ""}${spec.keep ? "; keeps reporting" : ""}${spec.bash ? `; running ${elapsed(Date.now() - spec.bash.started)}${readings.length ? `; ${progressLine(readings)}` : ""}` : ""}${row.progress.declined ? `; ${declinedText(row.progress.declined)}` : ""}${row.state === "new" ? "; starting" : row.state === "stopping" ? "; stopping" : ""}`;
 		}).join("\n")}`;
 	}
 
@@ -389,7 +389,7 @@ export class DeskClient implements WatchBackend {
 	private publish(force = false): void {
 		if (this.closed) return;
 		const rows = this.rows();
-		const signature = JSON.stringify([rows.map(row => [row.id, row.state, row.updated, row.progress.readings?.at(-1)]), this.closing]);
+		const signature = JSON.stringify([rows.map(row => [row.id, row.state, row.updated, row.progress.readings?.at(-1), row.progress.declined?.at]), this.closing]);
 		if (!force && signature === this.signature) return;
 		this.signature = signature;
 		const specs = rows.map(row => ({ ...row.spec, id: row.name }));
@@ -411,7 +411,7 @@ export class DeskClient implements WatchBackend {
 				return { id: row.name, title: spec.label ?? describeWatch(spec), ...(spec.mode === "time" ? { at: spec.at } : {}),
 					subtitle: [row.name, ...(row.runs ? [`on ${spec.computer}`] : []), ...(spec.label ? [describeWatch(spec)] : []),
 						...(spec.mode !== "time" && spec.expires ? [`ends ${when(spec.expires)}`] : []), ...(spec.keep ? ["keeps reporting"] : []),
-						...(spec.bash ? [`started ${clockTime(spec.bash.started)}`] : []), ...(reading(row) ? [`progress ${reading(row)}`] : []),
+						...(spec.bash ? [`started ${clockTime(spec.bash.started)}`] : []), ...(reading(row) ? [`progress ${reading(row)}`] : []), ...(row.progress.declined ? [declinedText(row.progress.declined)] : []),
 						...(row.state === "new" ? ["starting"] : row.state === "stopping" ? ["stopping"] : [])].join(" · "),
 					actions: [{ id: `stop:${row.name}`, label: "Stop", destructive: true }] };
 			}) },

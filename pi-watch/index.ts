@@ -7,7 +7,7 @@ import { getPresentation, type Presentation } from "../pi-ui/index.ts";
 import { callDescription } from "../pi-ui/tool-descriptions.ts";
 import { registerBash } from "./bash.ts";
 import { RUN_PROGRAM, type ProgramRun } from "../pi-tools/saved.ts";
-import { briefWatch, clockTime, describeWatch, elapsed, interval, judged, judgement, launchRunner, message, parseTime, pickClassifier,
+import { briefWatch, clockTime, declinedText, describeWatch, elapsed, interval, judged, judgement, launchRunner, message, parseTime, pickClassifier,
 	PROGRAM_LIMIT_MS, progressLine, runnerFolder, SHORT_WAIT_MS, shellFor, stopCommand, sweep, watchEvent, when, type Shell, type WatchEvent, type WatchSpec } from "./common.ts";
 import { WatchEngine } from "./engine.ts";
 import { DeskClient } from "./desk.ts";
@@ -80,10 +80,10 @@ export class Watches implements WatchBackend {
 				this.pi.appendEntry(WATCH_ENTRY, { op: "end", id: spec.id, reason } satisfies WatchRecord);
 				if (wake) this.send(spec, wake.text, wake.status, wake.output);
 			},
-			judge: async (spec, condition, output) => {
+			judge: async (spec, condition, output, previous) => {
 				const model = pickClassifier(await this.ctx.modelRegistry.getAvailableOfType("classifier"));
 				if (!model) throw new Error("no classifier model is signed in");
-				return judged(await this.ctx.modelRegistry.classify(model, judgement(spec, condition, output)));
+				return judged(await this.ctx.modelRegistry.classify(model, judgement(spec, condition, output, previous)));
 			},
 			program: async (spec, signal) => {
 				const ctx = this.toolContext;
@@ -220,8 +220,8 @@ export class Watches implements WatchBackend {
 		const specs = this.engine.specs();
 		if (!specs.length) return "No active watches.";
 		return `Active watches:\n${specs.map(spec => {
-			const readings = this.engine.readings(spec.id);
-			return `- ${spec.id}: ${briefWatch(spec)}${spec.mode !== "time" && spec.expires ? `; ends ${when(spec.expires)}` : ""}${spec.bash ? `; running ${elapsed(Date.now() - spec.bash.started)}${readings.length ? `; ${progressLine([...readings])}` : ""}` : ""}`;
+			const readings = this.engine.readings(spec.id), declined = this.engine.declined(spec.id);
+			return `- ${spec.id}: ${briefWatch(spec)}${spec.mode !== "time" && spec.expires ? `; ends ${when(spec.expires)}` : ""}${spec.bash ? `; running ${elapsed(Date.now() - spec.bash.started)}${readings.length ? `; ${progressLine([...readings])}` : ""}` : ""}${declined ? `; ${declinedText(declined)}` : ""}`;
 		}).join("\n")}`;
 	}
 

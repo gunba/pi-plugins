@@ -19,6 +19,11 @@ classifier model judges each event: TypeSafe's Jev when signed in (`/login types
 classifier. A watch with `wake_when` can't be started without one. If the classifier fails during a watch, the event
 wakes the agent anyway with a note; after three failures in a row the watch ends.
 
+A re-run command's output is judged as a reading: the classifier is asked whether the condition is true of the output
+now, given the output before it, since a bare count or flag shows nothing on its own. A change that doesn't meet the
+condition is listed with the watch ("11:41 output "1" did not meet the condition"), so a quiet watch shows why. Leave
+`wake_when` out when any change should wake the agent.
+
 ## Desk runs the watches
 
 Where Desk runs, it runs the computer's watches, not the conversations they wake (`pi-desk/src/host/watches.ts`). A

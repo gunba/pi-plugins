@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { alive, launchRunner, runnerFolder, stopCommand } from "../common.ts";
+import { alive, judgement, launchRunner, parseTime, runnerFolder, stopCommand } from "../common.ts";
 
 /** Commands are JavaScript run by Node, so they read the same on every platform. */
 const node = { shell: process.execPath, args: ["-e"] };
@@ -50,6 +50,31 @@ test("commands started by separate calls run in one runner process, and each sto
 		assert.equal((await exit(repeated)).stopped, "stopped");
 		assert.equal(alive(quick.pid), true, "the runner process waits for more jobs");
 	} finally { await remove(dir, quick.pid); }
+});
+
+test("a change carries the output before it, and the wake check puts both beside the condition", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-watch-runner-")), runners = runnerFolder(dir), folder = join(dir, "watch", "conversation");
+	const count = join(dir, "count");
+	writeFileSync(count, "0");
+	const watch = spec("w4", "change", `process.stdout.write(require("node:fs").readFileSync(${JSON.stringify(count)}, "utf8"))`, { every: 1 });
+	try {
+		await launchRunner(watch, folder, node, { runners });
+		await until(() => json(watch.change)?.number === 1, "w4's first change");
+		writeFileSync(count, "1");
+		const change = await until(() => { const next = json(watch.change); return next?.number === 2 && next; }, "w4's second change");
+		assert.deepEqual([change.output, change.before], ["1", "0"]);
+		// A bare count was judged on its own, without the condition beside it, and "1" failed "output != '0'".
+		assert.deepEqual(judgement(watch, "output != '0'", change.output, change.before).state,
+			{ command: watch.command, condition: "output != '0'", "previous output": "0", "output now": "1" });
+		stopCommand(watch);
+		await exit(watch);
+	} finally { await remove(dir, watch.pid); }
+});
+
+test("until refuses text that isn't a time rather than reading a date into it", () => {
+	assert.throws(() => parseTime("output != '0'"), /output != '0' is not a time/);
+	assert.equal(parseTime("2030-01-02T03:04:05Z"), Date.parse("2030-01-02T03:04:05Z"));
+	assert.equal(parseTime("5m", 1_000), 301_000);
 });
 
 test("each command runs once when several calls start runner processes at the same time", async () => {

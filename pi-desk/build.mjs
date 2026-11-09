@@ -56,6 +56,19 @@ await build({
 if (existsSync(resolve(root, "index.html"))) {
   const { build: buildClient } = await import("vite");
   await buildClient({ root, build: { outDir: "dist/client", emptyOutDir: true } });
+  // The scripts that draw Office files in Work. They run inside the sandboxed page, which loads nothing itself, so the
+  // app fetches one and writes it into the page (client/office-pages.tsx); the version in the name lets it be cached.
+  for (const kind of ["docx", "pptx", "xlsx"]) await build({
+    absWorkingDir: root,
+    entryPoints: [`src/office-frame/${kind}.ts`],
+    outfile: `dist/client/assets/office-${kind}-${manifest.version}.js`,
+    bundle: true,
+    format: "iife",
+    minify: true,
+    target: "es2022",
+    legalComments: "eof",
+    define: { "process.env.NODE_ENV": '"production"' },
+  });
 }
 // The account authority is a separate deployment from the opaque routing broker.
 await build({

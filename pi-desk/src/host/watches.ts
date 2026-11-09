@@ -147,7 +147,7 @@ export class WatchService {
 				}
 				this.retainPrograms();
 			},
-			judge: (spec, condition, output) => this.judge(spec, condition, output),
+			judge: (spec, condition, output, previous) => this.judge(spec, condition, output, previous),
 			program: (spec, signal) => this.programs.run(spec.cwd, spec.program!, signal),
 			changed: () => this.readings(),
 			failed: error => console.error(`Watches: ${errorText(error)}`),
@@ -377,10 +377,10 @@ export class WatchService {
 		return model ? { runtime, model } : undefined;
 	}
 
-	private async judge(spec: WatchSpec, condition: string, output: string): Promise<boolean> {
+	private async judge(spec: WatchSpec, condition: string, output: string, previous?: string): Promise<boolean> {
 		const found = await this.classifier();
 		if (!found) throw new Error("no classifier model is signed in on this computer");
-		return judged(await found.runtime.classify(found.model, judgement(spec, condition, output)));
+		return judged(await found.runtime.classify(found.model, judgement(spec, condition, output, previous)));
 	}
 
 	/** Whether the agent has watches, here or (its own) on another computer, that haven't ended. */

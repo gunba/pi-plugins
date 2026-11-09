@@ -14,6 +14,8 @@ export interface Progress {
 	run?: string;
 	/** When a program watch last ran. */
 	last?: number;
+	/** A change watch's latest change that did not meet its condition, so a watch that stays quiet shows why. */
+	declined?: { at: number; output: string };
 }
 
 /** What an engine needs from whoever owns its watches: a Pi process on its own, or Desk. */
@@ -33,8 +35,8 @@ export interface WatchOwner {
 	send(spec: WatchSpec, text: string, status: string, output?: string): void;
 	/** The watch ended for `reason`; `wake` is the agent's message saying so, when it is told. */
 	ended(spec: WatchSpec, reason: string, wake?: { text: string; status: string; output?: string }): void;
-	/** Whether `output` shows `condition`; throws when it can't be checked. */
-	judge(spec: WatchSpec, condition: string, output: string): Promise<boolean>;
+	/** Whether `output` shows `condition`, given a change watch's output before when known; throws when it can't be checked. */
+	judge(spec: WatchSpec, condition: string, output: string, previous?: string): Promise<boolean>;
 	/** One run of a program watch: its result, or undefined when it can't run yet (it is tried again shortly). */
 	program(spec: WatchSpec, signal: AbortSignal): Promise<string | undefined>;
 	/** A watch started, ended or has new readings. */
@@ -45,6 +47,7 @@ export interface WatchOwner {
 
 interface Active {
 	spec: WatchSpec;
+	declined?: { at: number; output: string };
 	abort: AbortController;
 	timers: NodeJS.Timeout[];
 	/** Events are judged one at a time, in order. */
@@ -92,6 +95,8 @@ export class WatchEngine {
 	has(key: string): boolean { return this.active.has(key); }
 	specs(): WatchSpec[] { return [...this.active.values()].map(active => active.spec); }
 	readings(key: string): readonly { at: number; value: string }[] { return this.active.get(key)?.readings ?? []; }
+	/** A change watch's latest change that did not meet its condition. */
+	declined(key: string): { at: number; output: string } | undefined { return this.active.get(key)?.declined; }
 
 	/** Stops following every watch. Their runners keep running, to be followed again from the owner's records. */
 	close(): void {
@@ -324,15 +329,15 @@ export class WatchEngine {
 		let judging = false;
 		const tick = () => this.guard(() => {
 			if (judging || this.active.get(keyOf(spec)) !== active) return;
-			let change: { number?: number; output?: string; first?: boolean } | undefined;
+			let change: { number?: number; output?: string; before?: string; first?: boolean } | undefined;
 			try { change = JSON.parse(readFileSync(spec.change!, "utf8")); } catch { /* none yet */ }
 			if (change && typeof change.number === "number" && change.number > active.offset) {
-				const { number, output = "", first } = change;
+				const { number, output = "", before, first } = change;
 				active.offset = number;
 				judging = true;
 				void this.chain(active, async () => {
 					// The first run only sets the baseline, unless a condition can already be true.
-					const woke = (!first || !!spec.wakeWhen) && await this.consider(active, output, first ? "checked:" : "changed:");
+					const woke = (!first || !!spec.wakeWhen) && await this.consider(active, output, first ? "checked:" : "changed:", before);
 					if (woke && !spec.keep) this.finishWith(active, "it woke you", { kill: true, tell: false });
 					else this.owner.progress(spec, { offset: number });
 				}).finally(() => { judging = false; });
@@ -388,22 +393,26 @@ export class WatchEngine {
 	private record(spec: WatchSpec, result: string): void {
 		const output = result.length > RUN_CHARS ? result.slice(-RUN_CHARS) : result;
 		const hash = createHash("sha256").update(output).digest("hex").slice(0, 16);
-		let previous: { number?: number; hash?: string } = {};
+		let previous: { number?: number; hash?: string; output?: string } = {};
 		try { previous = JSON.parse(readFileSync(spec.change!, "utf8")); } catch { /* the first run */ }
 		if (previous.hash === hash) return;
-		writeFileSync(`${spec.change}.tmp`, JSON.stringify({ number: (previous.number ?? 0) + 1, hash, output, first: previous.hash === undefined, at: Date.now() }));
+		writeFileSync(`${spec.change}.tmp`, JSON.stringify({ number: (previous.number ?? 0) + 1, hash, output, before: previous.output, first: previous.hash === undefined, at: Date.now() }));
 		renameSync(`${spec.change}.tmp`, spec.change!);
 	}
 
 	/** Wakes the agent with an event when it meets the watch's condition. True when it woke the agent. */
-	private async consider(active: Active, output: string, note: string): Promise<boolean> {
+	private async consider(active: Active, output: string, note: string, previous?: string): Promise<boolean> {
 		if (this.closed || this.active.get(keyOf(active.spec)) !== active) return false;
 		const condition = active.spec.wakeWhen;
 		if (!condition) { this.owner.send(active.spec, message(active.spec, note, output), note, output); return true; }
 		try {
-			const matched = await this.owner.judge(active.spec, condition, output);
+			const matched = await this.owner.judge(active.spec, condition, output, previous);
 			active.failures = 0;
 			if (matched && this.active.get(keyOf(active.spec)) === active) this.owner.send(active.spec, message(active.spec, note, output), note, output);
+			else if (!matched && active.spec.mode === "change") {
+				active.declined = { at: Date.now(), output: output.length > 200 ? `${output.slice(0, 200)}…` : output };
+				this.owner.progress(active.spec, { declined: active.declined });
+			}
 			return matched;
 		} catch (error) {
 			if (isStale(error) || this.closed) throw error;

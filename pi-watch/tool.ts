@@ -47,7 +47,7 @@ export const Parameters = Type.Object({
 	every: Type.Optional(Type.Integer({ minimum: 1, description: "Seconds between runs. Wakes you on a change, then ends, unless keep." })),
 	keep: Type.Optional(Type.Boolean({ description: "With every: keep watching after a result wakes you, waking you for each later one, until stopped or hours end." })),
 	until: Type.Optional(Type.String({ description: "Wake after a delay (90s, 5m, 2h), at HH:MM (local) or at an ISO time." })),
-	wake_when: Type.Optional(Type.String({ description: "Wake only for output showing this, in plain words." })),
+	wake_when: Type.Optional(Type.String({ description: "Wake only when this is true of the output, in plain words. Leave it out when any change (with every) or any new output should wake you." })),
 	hours: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
 	computer: Type.Optional(Type.String({ description: "Run the command or program on another of Jordan's computers, by name or ID as agent_list shows." })),
 	cwd: Type.Optional(Type.String({ description: "With computer: the folder to run it in there (default: its home folder)." })),
