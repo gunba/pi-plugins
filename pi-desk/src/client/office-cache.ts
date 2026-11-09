@@ -46,6 +46,9 @@ export function drawingKey(computer: string, path: string, version: string, desk
 	return { key: JSON.stringify([computer, path, version, desk]), file };
 }
 
+/** A drawing kept in memory, at once: none is read from storage. */
+export function heldDrawing(key: string): string | undefined { return memory.get(key); }
+
 /** A kept drawing, or undefined; one read from storage is kept in memory too. */
 export async function keptDrawing(key: string): Promise<string | undefined> {
 	const held = memory.get(key);

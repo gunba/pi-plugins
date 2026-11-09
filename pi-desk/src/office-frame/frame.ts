@@ -7,8 +7,7 @@
  */
 export function officeFrame(draw: (bytes: ArrayBuffer, root: HTMLElement) => Promise<void>): void {
 	const root = document.getElementById("office")!;
-	// Images in formats browsers can't draw (EMF and WMF, common in Word templates) are left out rather than shown broken.
-	document.addEventListener("error", event => { if (event.target instanceof HTMLImageElement) event.target.style.display = "none"; }, true);
+	hideBroken();
 	addEventListener("resize", fitMarked);
 	addEventListener("message", event => {
 		const data = event.data as { type?: unknown; bytes?: unknown } | null;
@@ -34,6 +33,16 @@ export function fitWidth(element: HTMLElement, content: () => number, least = 0,
 	fitMarked();
 }
 
+/**
+ * Leaves out pictures in formats browsers can't draw (EMF and WMF, common in Word templates) rather than showing them
+ * broken. A kept copy of the drawing runs its source, so it uses nothing outside itself.
+ */
+function hideBroken(): void {
+	const hide = (image: HTMLImageElement) => { image.style.display = "none"; };
+	document.addEventListener("error", event => { if (event.target instanceof HTMLImageElement) hide(event.target); }, true);
+	document.querySelectorAll("img").forEach(image => { if (image.complete && image.naturalWidth === 0) hide(image); });
+}
+
 /** Fits what fitWidth marked. A kept copy of the drawing runs its source, so it uses nothing outside itself. */
 function fitMarked(): void {
 	const width = document.documentElement.clientWidth - 2;
@@ -45,7 +54,8 @@ function fitMarked(): void {
 
 /**
  * The drawing as a page that shows it without the script that drew it, for Desk to write into a frame instead of
- * drawing the file again: canvases become pictures of what they show, and what fitWidth marked fits the new frame.
+ * drawing the file again: canvases become pictures of what they show, what fitWidth marked fits the new frame, and
+ * pictures the browser can't draw are left out there too.
  */
 function snapshot(): string {
 	const copy = document.documentElement.cloneNode(true) as HTMLElement, canvases = document.querySelectorAll("canvas");
@@ -59,7 +69,7 @@ function snapshot(): string {
 	});
 	copy.querySelectorAll("script").forEach(script => script.remove());
 	const fit = copy.ownerDocument.createElement("script");
-	fit.textContent = `(function(){var fit=${fitMarked.toString()};fit();addEventListener("resize",fit)})()`;
+	fit.textContent = `(${hideBroken.toString()})();(function(){var fit=${fitMarked.toString()};fit();addEventListener("resize",fit)})()`;
 	copy.querySelector("body")?.append(fit);
 	return `<!doctype html>${copy.outerHTML}`;
 }

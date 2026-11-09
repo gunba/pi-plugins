@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./connection.ts";
 import { fileBlob } from "./file-view.tsx";
-import { drawingKey, keepDrawing, keptDrawing } from "./office-cache.ts";
+import { drawingKey, heldDrawing, keepDrawing, keptDrawing } from "./office-cache.ts";
 import { useReferenceQuery } from "./reference-origin.tsx";
 import type { FileInfo, FileReference } from "../shared/files.ts";
 import { RELEASE } from "../shared/release.ts";
@@ -33,6 +33,9 @@ h2{font-size:13px;font-weight:600;margin:10px 2px 6px;color:#444}.sheet{overflow
 table{border-collapse:collapse;table-layout:fixed;font:12px Calibri,Carlito,system-ui,sans-serif}td,th{border:1px solid #e1e1e1;padding:2px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:18px}
 th{background:#f3f3f3;color:#666;font-weight:400;text-align:center}.sheet p{margin:6px 8px;color:#666}`;
 
+/** What each file showed last on this page, by computer, conversation and file: its drawing's key and height. */
+const shown = new Map<string, { key: string; file: string; height: number }>();
+
 /** Whether this file is drawn as a picture in Work: Word documents, slide decks and spreadsheets in their current formats. */
 export function drawsOffice(path: string): boolean { return KINDS.some(entry => entry.pattern.test(path)); }
 
@@ -43,18 +46,23 @@ export function drawsOffice(path: string): boolean { return KINDS.some(entry => 
  * same version, is shown from the copy kept of its drawing (office-cache.ts), without fetching or drawing it again.
  */
 export function OfficePages({ session, file, large, auto = true }: { session: string; file: FileReference; large?: boolean; auto?: boolean }) {
-	const origin = useReferenceQuery(), frame = useRef<HTMLIFrameElement>(null), written = useRef(false);
-	const kind = KINDS.find(entry => entry.pattern.test(file.name));
+	const origin = useReferenceQuery(), frame = useRef<HTMLIFrameElement>(null), written = useRef("");
+	const kind = KINDS.find(entry => entry.pattern.test(file.name)), place = `${origin}\n${session}\n${file.id}`;
 	const [wanted, setWanted] = useState(auto);
 	const [ready, setReady] = useState<{ html: string; bytes?: ArrayBuffer; key: string; file: string }>();
-	const [error, setError] = useState(""), [done, setDone] = useState(false), [height, setHeight] = useState(240);
+	const [error, setError] = useState(""), [doneKey, setDoneKey] = useState(""), [height, setHeight] = useState(() => shown.get(place)?.height ?? 240);
 	useEffect(() => {
 		if (!wanted || !kind) return;
-		const controller = new AbortController();
-		setReady(undefined); setDone(false); setError(""); written.current = false;
+		const controller = new AbortController(), last = shown.get(place), held = last && heldDrawing(last.key);
+		// What this file showed last is shown at once, then checked against the file's version.
+		setReady(current => held === undefined ? undefined : current?.key === last!.key ? current : { html: held, key: last!.key, file: last!.file });
+		setError("");
 		void (async () => {
 			const info = await api<FileInfo>(`/sessions/${session}/files/${file.id}?${origin}`);
-			const { key, file: path } = drawingKey(origin, info.path, info.version, RELEASE.version), kept = await keptDrawing(key);
+			const { key, file: path } = drawingKey(origin, info.path, info.version, RELEASE.version);
+			if (controller.signal.aborted || held !== undefined && key === last!.key) return;
+			shown.set(place, { key, file: path, height: shown.get(place)?.height ?? 240 });
+			const kept = await keptDrawing(key);
 			if (controller.signal.aborted) return;
 			if (kept !== undefined) { setReady({ html: kept, key, file: path }); return; }
 			const [blob, script] = await Promise.all([fileBlob(session, info, origin, controller.signal, () => {}), frameScript(kind.kind)]);
@@ -63,7 +71,7 @@ export function OfficePages({ session, file, large, auto = true }: { session: st
 				bytes: await blob.arrayBuffer(), key, file: path });
 		})().catch(failure => { if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : String(failure)); });
 		return () => controller.abort();
-	}, [session, file.id, origin, wanted, kind]);
+	}, [session, file.id, origin, wanted, kind, place]);
 	useEffect(() => {
 		if (!ready) return;
 		const listen = (event: MessageEvent) => {
@@ -71,29 +79,34 @@ export function OfficePages({ session, file, large, auto = true }: { session: st
 			if (!target || event.source !== target) return;
 			if (data?.type === "office-ready" && ready.bytes) target.postMessage({ type: "office", bytes: ready.bytes.slice(0) }, "*");
 			else if (data?.type === "office-done") {
-				setDone(true);
+				setDoneKey(ready.key);
 				if (typeof data.snapshot === "string") void keepDrawing(ready.key, ready.file, data.snapshot);
 			}
 			else if (data?.type === "office-error") setError(typeof data.error === "string" ? data.error : "This file could not be drawn.");
-			else if (data?.type === "height" && typeof data.height === "number" && Number.isFinite(data.height)) setHeight(Math.max(Math.ceil(data.height), 60));
+			else if (data?.type === "height" && typeof data.height === "number" && Number.isFinite(data.height)) {
+				const next = Math.max(Math.ceil(data.height), 60), entry = shown.get(place);
+				setHeight(next);
+				if (entry?.key === ready.key) entry.height = next;
+			}
 		};
 		addEventListener("message", listen);
 		return () => removeEventListener("message", listen);
-	}, [ready]);
+	}, [ready, place]);
+	const done = !!ready && doneKey === ready.key;
 	if (!kind) return <p className="office-pages-status muted">Desk shows Word, PowerPoint and Excel files in their current formats (.docx, .pptx, .xlsx). Open this one in its app.</p>;
 	if (!wanted) return <p className="office-pages-status"><button type="button" className="text-button" onClick={() => setWanted(true)}>Show pages</button></p>;
 	if (error) return <p className="office-pages-status error-text">{error}</p>;
 	return <div className={`office-pages${large ? " large" : ""}`}>
-		{!done && <p className="office-pages-status muted">Drawing the file…</p>}
-		{ready && <iframe ref={frame} className="office-frame" src="/sandbox.html" sandbox="allow-scripts" title={file.name} tabIndex={-1}
+		{!done && !(ready && !ready.bytes) && <p className="office-pages-status muted">Drawing the file…</p>}
+		{ready && <iframe key={ready.key} ref={frame} className="office-frame" src="/sandbox.html" sandbox="allow-scripts" title={file.name} tabIndex={-1}
 			style={{ height, visibility: done ? "visible" : "hidden" }}
 			onLoad={() => {
-				// Writing the page loads the frame again; it is written once.
-				if (written.current) return;
-				written.current = true;
+				// Writing the page loads the frame again; each drawing is written once.
+				if (written.current === ready.key) return;
+				written.current = ready.key;
 				frame.current?.contentWindow?.postMessage({ type: "render", html: ready.html }, "*");
 				// A kept drawing is the finished picture.
-				if (!ready.bytes) setDone(true);
+				if (!ready.bytes) setDoneKey(ready.key);
 			}} />}
 	</div>;
 }
