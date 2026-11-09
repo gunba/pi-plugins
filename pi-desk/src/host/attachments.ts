@@ -17,7 +17,10 @@ const imageType = (head: Buffer): string => {
 	return "application/octet-stream";
 };
 
-/** Files, not a second message store. Accepted paths remain usable from native Pi history. */
+/**
+ * Files, not a second message store. Accepted paths remain usable from native Pi history until newer files need the
+ * conversation's room (upload_begin).
+ */
 export class Attachments {
 	private readonly directory: string;
 	private readonly referenced: (id: string) => boolean;
@@ -54,6 +57,7 @@ export class Attachments {
 				throw new Error("Each attachment must be at most 8 MiB.");
 			mkdirSync(this.directory, { recursive: true, mode: 0o700 });
 			let reserved = 0, count = 0;
+			const sent: Stored[] = [];
 			for (const id of readdirSync(this.directory)) {
 				if (/^[a-f0-9]{64}\.staging$/.test(id)) {
 					const path = join(this.directory, id);
@@ -67,6 +71,15 @@ export class Attachments {
 					rmSync(this.folder(id), { recursive: true }); continue;
 				}
 				reserved += item.size; count++;
+				if (item.used && !this.referenced(id)) sent.push(item);
+			}
+			// A sent file went to the model with its message, which keeps any image in the conversation's history; only
+			// the copy its path names goes, oldest first. Kept for good, they filled a long conversation's room, and it
+			// could attach nothing more.
+			sent.sort((a, b) => a.created - b.created);
+			for (const old of sent) {
+				if (reserved + command.size <= SESSION_LIMIT && count < 256) break;
+				rmSync(this.folder(old.id), { recursive: true, force: true }); reserved -= old.size; count--;
 			}
 			if (reserved + command.size > SESSION_LIMIT || count >= 256) throw new Error("This conversation has reached its attachment storage limit (128 MiB or 256 files).");
 			const data: Stored = { id: randomBytes(32).toString("hex"), name: command.name, size: command.size,

@@ -19,6 +19,20 @@ const upload = (attachments, bytes, sha256) => {
 	return attachments.command({ kind: "upload_finish", id, ...(sha256 ? { sha256 } : {}) });
 };
 
+test("a conversation keeps attaching files once its room is full: the oldest sent files go", t => {
+	// A long conversation reached 128 MiB of screenshots it had already sent, and every new attachment was refused.
+	const dir = mkdtempSync(join(tmpdir(), "attachments-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
+	let pending;
+	const attachments = new Attachments(dir, "session", id => id === pending), image = png(), sent = [];
+	for (let n = 0; n < 256; n++) { const { id } = upload(attachments, image); attachments.retain([id]); sent.push(id); }
+	// One still waiting to go with a message is kept, even when it is the oldest.
+	pending = sent[0];
+	const latest = upload(attachments, image);
+	assert.equal(latest.mimeType, "image/png");
+	assert.equal(attachments.check([sent[0], sent[2], latest.id]).length, 3);
+	assert.throws(() => attachments.check([sent[1]]), /ENOENT/);
+});
+
 test("uploads are checked end to end, and damaged images are refused before they can reach a model", t => {
 	// A damaged screenshot made every later request in a conversation fail with "Could not process image".
 	const dir = mkdtempSync(join(tmpdir(), "attachments-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
