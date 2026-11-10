@@ -23,6 +23,11 @@ enable Pi's prose summarizer. An API model's published 1.05M capacity and
 Pi's configured window are different numbers. A larger window can use more
 quota, and an endpoint can still enforce a lower limit.
 
+A budget limits how large the conversation grows before it compacts, not how long a reply may be. Pi caps a
+reply's output at the room left in the model window, so for Claude models with a budget below their capacity the cap
+on a turn's request (`max_tokens`) is worked out again from the capacity, and compaction summaries are fitted to the
+capacity too. Without this, replies near the budget were cut off after a few thousand tokens of thinking.
+
 Pi Desk shows usage as a bar against the model capacity, with a marker for
 the selected budget. Click the bar or open Settings → Context capacity to
 adjust the slider or enter a token count, then apply it. Changes are not sent

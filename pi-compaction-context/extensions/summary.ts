@@ -2,6 +2,7 @@ import { convertToLlm, estimateTokens, type ExtensionAPI, type ExtensionContext,
 import type { Api, AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import { cacheExpired } from "../../pi-context-window/prompt-cache.ts";
 import { retryCompaction } from "../../pi-context-window/compaction.ts";
+import { modelCapacity } from "../../pi-context-window/config.ts";
 
 /**
  * Compaction as Claude Code does it: the model that ran the conversation writes a detailed summary of all of it,
@@ -156,6 +157,13 @@ type Thinking = ReturnType<ExtensionAPI["getThinkingLevel"]>;
 const reasoning = (thinking: Thinking) => thinking === "off" ? undefined : thinking;
 
 /**
+ * The model with the window it accepts rather than the conversation's context budget. Pi fits a request's output cap to
+ * the window, and a summary is asked for when the context is near the budget: with 486,000 of a 500,000 budget used,
+ * summaries were cut off at about 10,000 tokens and compaction stopped.
+ */
+const fullWindow = (model: Model<Api>): Model<Api> => ({ ...model, contextWindow: modelCapacity(model) });
+
+/**
  * The summary as the next turn of the conversation: the request it last sent, byte for byte, then what came after
  * it (the reply and its tool results, in the same provider format), then the summary request. The provider reads the
  * conversation from its prompt cache, and nothing new is cached.
@@ -167,17 +175,18 @@ export function summarizeFromCache(pi: ExtensionAPI, ctx: ExtensionContext, mode
 	const previous = base.messages;
 	// Pi converts the later messages and the summary request as it would for the conversation; only they are kept.
 	const context: Context = { systemPrompt: "", messages: [...convertToLlm(after), { role: "user", content: instruction, timestamp: Date.now() }] };
-	return request(pi, ctx, signal, () => ctx.modelRegistry.streamSimple(model, context, {
+	return request(pi, ctx, signal, () => ctx.modelRegistry.streamSimple(fullWindow(model), context, {
 		signal, sessionId: ctx.sessionManager.getSessionId(), cacheRetention: "none", reasoning: reasoning(thinking),
 		onPayload: built => {
-			const messages = (built as { messages?: unknown[] }).messages;
+			const { messages, max_tokens: limit } = built as { messages?: unknown[]; max_tokens?: unknown };
 			if (!Array.isArray(messages)) throw new Error("The summary request could not be built.");
 			// A request ends with a system message setting the thinking effort for its reply, where the conversation
 			// sent again puts the reply's own effort message; the converted reply starts with that message too.
 			const role = (message: unknown) => (message as { role?: unknown } | undefined)?.role;
 			let start = 0;
 			if (role(previous.at(-1)) === "system") while (role(messages[start]) === "system") start++;
-			return { ...base, messages: [...previous, ...messages.slice(start)] };
+			// The summary's own output cap, not the cap of the turn the request was recorded from.
+			return { ...base, ...typeof limit === "number" ? { max_tokens: limit } : {}, messages: [...previous, ...messages.slice(start)] };
 		},
 	}).result());
 }
@@ -225,7 +234,7 @@ export async function summarizeConversation(pi: ExtensionAPI, ctx: ExtensionCont
 	const window = model.contextWindow > 0 ? model.contextWindow - event.preparation.settings.reserveTokens : Infinity;
 	const fitted = fitMessages(projection.messages, (event.reason === "overflow" ? 0.7 : 1) * window - fixed);
 	const context: Context = { systemPrompt, tools, messages: [...convertToLlm(fitted.messages), { role: "user", content: instruction, timestamp: Date.now() }] };
-	const result = await request(pi, ctx, event.signal, () => ctx.modelRegistry.streamSimple(model, context, {
+	const result = await request(pi, ctx, event.signal, () => ctx.modelRegistry.streamSimple(fullWindow(model), context, {
 		signal: event.signal, sessionId: ctx.sessionManager.getSessionId(), cacheRetention: "none", reasoning: reasoning(thinking) }).result());
 	return { ...result, omittedResults: fitted.results, omittedMessages: fitted.dropped };
 }

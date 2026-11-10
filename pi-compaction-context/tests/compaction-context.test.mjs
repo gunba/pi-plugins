@@ -160,6 +160,30 @@ test('without a usable cached request the whole conversation is sent again, cut 
  assert.deepEqual({ request: compaction.details.request, reason: compaction.details.reason }, { request: 'full', reason: 'the context overflowed' });
 });
 
+test('a summary asked for near the context budget may be as long as the model allows', async () => {
+ // SavvyWise Bench: with 486,000 of a 500,000 budget used, summaries were cut off at about 10,000 tokens, and the turn
+ // whose request they reused had been allowed 4,900.
+ const branch = chain([
+  message('u1', { role: 'user', content: 'Go' }),
+  message('a1', { role: 'assistant', content: [call('t1', 'codemode', { code: '…' })], provider: 'anthropic', usage, stopReason: 'toolUse' }),
+  message('r1', result('t1', 'ok')),
+ ]);
+ const { hooks } = harness();
+ const { ctx } = context(branch, undefined, '/');
+ const requests = [];
+ ctx.modelRegistry.streamSimple = (model, context, options) => ({ result: async () => {
+  requests.push({ model, payload: await options.onPayload({ max_tokens: 128_000, messages: [] }) });
+  return reply('<summary>Summary</summary>');
+ } });
+ ctx.sessionManager.getLeafId = () => 'u1';
+ hooks.context_with_system({ messages: [] }, ctx);
+ hooks.before_provider_request({ payload: { model: 'claude-opus-5-5', max_tokens: 4_900, messages: [{ role: 'user', content: 'Go' }] } }, ctx);
+ const { compaction } = await hooks.session_before_compact(event(branch), ctx);
+ assert.equal(compaction.details.request, 'cache');
+ assert.equal(requests[0].model.contextWindow, 1_000_000, 'Pi fits the output to the window Opus accepts, not to the budget');
+ assert.equal(requests[0].payload.max_tokens, 128_000, "the summary's own cap, not the reused turn's");
+});
+
 test('a reply that is not a complete summary cancels the compaction and holds it, instead of saving it or falling back', async () => {
  const branch = chain([message('u1', { role: 'user', content: 'Go' }), message('a1', { role: 'assistant', content: [{ type: 'text', text: 'Done' }], provider: 'anthropic', usage, stopReason: 'stop' })]);
  for (const [answer, why] of [[{ ...reply('<summary>Half'), stopReason: 'length' }, /cut off at the model's output limit/],

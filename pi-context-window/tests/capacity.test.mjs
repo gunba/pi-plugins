@@ -32,3 +32,16 @@ test("a budget saved from another conversation applies to a running one when it 
 		rmSync(directory, { recursive: true, force: true });
 	}
 });
+
+test("a turn near its context budget may use the output the model's own window leaves", async () => {
+	// SavvyWise Bench: four Claude turns in a row stopped while thinking, at about 4,880 tokens, with 492,000 of a
+	// 500,000 budget used, on a model that accepts 1,000,000.
+	const { default: outputLimit } = await import("../output-limit.ts");
+	let hook;
+	outputLimit({ on: (name, handler) => { if (name === "before_provider_request") hook = handler; } });
+	const model = { provider: "anthropic", id: "claude-fable-5-2", api: "anthropic-messages", contextWindow: 500_000, maxTokens: 128_000 };
+	const ctx = { model, getContextUsage: () => ({ tokens: 492_000 }) };
+	assert.deepEqual(hook({ payload: { model: model.id, max_tokens: 3_904, messages: [] } }, ctx), { model: model.id, max_tokens: 128_000, messages: [] });
+	const full = { ...ctx, model: { ...model, contextWindow: 1_000_000 }, getContextUsage: () => ({ tokens: 990_000 }) };
+	assert.equal(hook({ payload: { model: model.id, max_tokens: 5_904 } }, full), undefined, "without a budget below the model's window, Pi's cap stays");
+});
