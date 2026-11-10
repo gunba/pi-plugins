@@ -278,6 +278,20 @@ results, compaction/branch summaries, native usage entries such as cache warming
 and deduplicated child receipts. The fast footer and SDK child outcomes use the
 same reducer. Recorded API costs are not subscription allowance measurements.
 
+## Waiting for a usage limit to reset
+
+A turn refused because a usage limit was reached ends in an error, and Pi leaves the conversation waiting for the
+user. `extensions/limit-wait.ts` waits for the limit to reset instead: it starts a time watch (pi-watch) for just
+after the reset, labelled with the limit, adds a hidden `pi-codex-wire/limit-note` message telling the agent why it
+will be woken, and notifies the user. When the watch wakes the agent, it carries on. The reset comes from the error
+where it says when (ChatGPT's "Try again in ~195 min", the API's "regain access on … UTC", or a retry delay longer
+than Pi waits). For Claude subscription limits it comes from the anthropic-ratelimit-unified headers of the
+conversation's last responses, or the last ones saved on this computer: the soonest reset of a window that refused
+requests, or else of one at least 90% used. Windows for some models only, such as Fable models' weekly allowance
+(`7d_oi`), count only for the model they were reported for. A rate limit with no known reset is tried again after 15
+minutes. A reply that goes through stops the watch; after eight waits in a row that met a limit again, the
+conversation waits for the user.
+
 ## Diagnostics and boundaries
 
 Logs are stored in `~/.pi/agent/codex-wire/logs/` (or under `PI_CODING_AGENT_DIR`). They contain counts, capability flags, timestamps, numerical allowance headers and keyed digests. They omit credentials, account IDs, prompts, tool arguments/results and opaque routing tokens. Digest keys remain in memory, so digests are comparable only within one logger lifetime.

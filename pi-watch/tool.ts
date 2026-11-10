@@ -11,6 +11,12 @@ export const WATCH_ENTRY = "pi-watch/v1";
 export const WATCH_MESSAGE = "pi-watch/event";
 /** Emitted on the extension event bus with `{ sessionId, count }` whenever a conversation's watches change. */
 export const WATCH_CHANGED = "pi-watch/changed";
+/**
+ * Emitted on the extension event bus by another extension to start or stop a watch in its conversation, as the agent's
+ * watch call would. pi-watch sets `result`: the watch tool's reply, and the ID of the watch it started.
+ */
+export const START_WATCH = "pi-watch/start";
+export type WatchRequest = { params: Omit<Params, "close">; ctx: ExtensionContext; label?: string; result?: Promise<{ text: string; id?: string }> };
 
 /** Undelivered wakes wait this long between attempts while the agent is busy or the host holds the conversation. */
 export const RETRY_MS = 2_000;

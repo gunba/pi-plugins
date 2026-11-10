@@ -132,6 +132,10 @@ would only cut short a command that can run on.
 
 ## Behaviour
 
+Other extensions start and stop watches as the agent would by emitting `START_WATCH` on the event bus with a
+`WatchRequest` (the watch tool's parameters, the context and a label); `result` resolves to the tool's reply and the
+watch's ID. pi-codex-wire uses this to wake a conversation when a usage limit resets.
+
 - **Output.** A background command's output arriving within 2 seconds is judged as one event, and a wake carries at
   most 4,000 characters of it. The full output stays in the log file named in the result, under
   `~/.pi/agent/watch/desk/` for a watch Desk started and `~/.pi/agent/watch/<session>/` otherwise. When the command ends, the agent is always woken with its exit status and last 20

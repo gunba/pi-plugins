@@ -12,11 +12,11 @@ import { briefWatch, clockTime, declinedText, describeWatch, elapsed, interval, 
 import { WatchEngine } from "./engine.ts";
 import { DeskClient } from "./desk.ts";
 import { WATCH_DB, WatchStore } from "./store.ts";
-import { activeWatches, announceWatches, Parameters, plannedWatch, RETRY_MS, startedText, WATCH_CHANGED, WATCH_ENTRY, WATCH_MESSAGE, watchList,
-	type Params, type WatchBackend, type WatchRecord } from "./tool.ts";
+import { activeWatches, announceWatches, Parameters, plannedWatch, RETRY_MS, START_WATCH, startedText, WATCH_CHANGED, WATCH_ENTRY, WATCH_MESSAGE, watchList,
+	type Params, type WatchBackend, type WatchRecord, type WatchRequest } from "./tool.ts";
 
-export { activeWatches, briefWatch, describeWatch, elapsed, interval, parseTime, WATCH_CHANGED, WATCH_ENTRY, WATCH_MESSAGE, watchList,
-	type WatchBackend, type WatchEvent, type WatchSpec };
+export { activeWatches, briefWatch, describeWatch, elapsed, interval, parseTime, START_WATCH, WATCH_CHANGED, WATCH_ENTRY, WATCH_MESSAGE, watchList,
+	type WatchBackend, type WatchEvent, type WatchRequest, type WatchSpec };
 
 /** A program's result as text, from pi-tools; a failure or a missing pi-tools is the text of what happened. */
 function runProgram(pi: ExtensionAPI, ctx: ExtensionToolContext, code: string, signal: AbortSignal): Promise<string> {
@@ -348,6 +348,13 @@ export default function watch(pi: ExtensionAPI): void {
 	pi.on("tool_call", event => {
 		const label = event.toolName === "watch" || event.toolName === "bash" ? callDescription(event.input) : undefined;
 		if (label) labels.set(event.toolCallId, label.slice(0, 200));
+	});
+	pi.events.on(START_WATCH, data => {
+		const request = data as WatchRequest;
+		request.result = watches && !background && watches.sessionId === request.ctx.sessionManager.getSessionId()
+			// The ID is the one startedText gives the agent.
+			? watches.call(request.params, request.ctx, request.label).then(text => ({ text, id: /^Watching as ([^:\s]+)/.exec(text)?.[1] }))
+			: Promise.reject(new Error("Watches are not ready in this conversation."));
 	});
 	registerBash(pi, () => watches, labels, background);
 	pi.registerTool({

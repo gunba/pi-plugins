@@ -19,6 +19,7 @@ import { requestCompression, requestRoutingHint } from "./compression.ts";
 import { WireTransport } from "./transport.ts";
 import { ALLOWANCE_EVENT } from "./allowance.ts";
 import codexUsage from "./usage.ts";
+import limitWaits from "./limit-wait.ts";
 import { Catalog } from "./catalog.ts";
 import { shapeModelBody, responseNormalizer } from "./model-shape.ts";
 import { readUserAgent, saveUserAgent, readClient, savedClient, saveClient, readPrewarm, savedPrewarm, savePrewarm,
@@ -52,6 +53,7 @@ function installationId(directory: string): string {
 
 export default function codexWire(pi: ExtensionAPI): void {
   codexUsage(pi);
+  limitWaits(pi);
   requestTracing(pi);
   pi.registerFlag("codex-wire-client", { type: "string", description: "Codex client identity: cli or desktop (overrides saved client)" });
   pi.registerFlag("codex-wire-version", { type: "string", description: "Explicit Codex core version override (default: latest official stable release)" });

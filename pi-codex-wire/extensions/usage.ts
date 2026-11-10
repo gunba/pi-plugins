@@ -8,14 +8,14 @@ import { getPresentation, type Presentation, type UiDetails } from "../../pi-ui/
 
 type HeaderMap = Record<string, unknown>;
 type JsonRecord = Record<string, unknown>;
-type UsageWindow = {
+export type UsageWindow = {
   label: string;
   windowMinutes?: number;
   usedPercent?: number;
   resetAtMs?: number;
   resetAfterSeconds?: number;
 };
-type UsageSource = "codex" | "claude";
+export type UsageSource = "codex" | "claude";
 type UsageSnapshot = {
   source: UsageSource;
   updatedAtMs: number;
@@ -230,6 +230,15 @@ function persistSnapshots(state: UsageState, sources: readonly UsageSource[]): v
   } catch {
     // The footer should keep working even when the state directory is unwritable.
   }
+}
+
+const usageDirectory = () => process.env.PI_CODEX_USAGE_DIR || join(getAgentDir(), "codex-wire");
+const snapshotFile = (directory: string, source: UsageSource) => join(directory, `${source === "codex" ? "usage" : "usage-claude"}.json`);
+
+/** The allowance windows of a source last recorded on this computer, by any conversation, that haven't reset yet. */
+export function savedUsageWindows(source: UsageSource): UsageWindow[] {
+  const snapshot = readPersistedSnapshots(snapshotFile(usageDirectory(), source))[source];
+  return [snapshot?.primary, snapshot?.secondary].filter((window): window is UsageWindow => !!window);
 }
 
 function snapshotForSource(state: UsageState, source: UsageSource | undefined, nowMs = Date.now()): UsageSnapshot | undefined {
@@ -484,7 +493,7 @@ function recordSnapshot(snapshot: UsageSnapshot, state: UsageState): void {
 }
 
 export default function codexUsage(pi: ExtensionAPI): void {
-  const directory = process.env.PI_CODEX_USAGE_DIR || join(getAgentDir(), "codex-wire");
+  const directory = usageDirectory();
   const state: UsageState = {
     directory,
     snapshotFiles: {},
@@ -504,7 +513,7 @@ export default function codexUsage(pi: ExtensionAPI): void {
   const loadSnapshots = () => {
     for (const source of USAGE_SOURCES) {
       if (state.snapshotFiles[source]) continue;
-      const file = join(directory, `${source === "codex" ? "usage" : "usage-claude"}.json`);
+      const file = snapshotFile(directory, source);
       state.snapshotFiles[source] = file;
       const snapshot = readPersistedSnapshots(file)[source];
       if (snapshot) state.snapshots[source] = snapshot;
