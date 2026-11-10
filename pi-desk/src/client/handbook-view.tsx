@@ -140,7 +140,7 @@ export function HandbookView({ view, invoke, disabled }: { view: ViewSnapshot; i
 	const learnings = live.filter(entry => entry.status === "active" && entry.kind === "learning" && !entry.flag);
 	const ended = data.entries.filter(entry => !live.includes(entry)).sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
 	const lastPass = data.passes.at(-1), status = data.status;
-	// The tidy-up's last change of the purpose, while it stands: shown with the wording it replaced, to restore.
+	// The last change of the purpose by the tidy-up or the agent, while it stands: shown with the wording it replaced, to restore.
 	const changed = data.purpose && data.purpose.by !== "user" ? data.log.find(item => item.was && item.at === data.purpose!.at) : undefined;
 	const restore = (was: string) => action("purpose-restore") && <button type="button" className="link-button" disabled={locked}
 		onClick={() => run("purpose-restore", was)}>Restore it</button>;
@@ -158,7 +158,7 @@ export function HandbookView({ view, invoke, disabled }: { view: ViewSnapshot; i
 		<div className="handbook-purpose">
 			<h3>Purpose</h3>
 			<p>{data.purpose?.text ?? "Not written yet. The tidy-up writes one from your messages, or you can."}</p>
-			{changed && <p className="handbook-was"><small>Changed by the tidy-up {localDateTime(changed.at, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+			{changed && <p className="handbook-was"><small>Changed by {by(changed.actor)} {localDateTime(changed.at, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
 				{changed.reason ? ": " + changed.reason : "."} It was: “{changed.was}” {restore(changed.was!)}</small></p>}
 			{data.proposedPurpose && <div className="handbook-proposal-box">
 				<p><b>Proposed</b> {data.proposedPurpose.text}{data.proposedPurpose.reason ? <small> {data.proposedPurpose.reason}</small> : null}</p>
