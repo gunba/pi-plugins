@@ -1733,6 +1733,7 @@ details[open] > summary:before {
 .resume-row strong, .resume-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .resume-row strong { font-size: 13px; font-weight: 550; }
 .resume-row small { grid-row: 2; color: var(--muted); font-size: 11px; }
+.resume-row small .session-model { display: inline-flex; align-items: center; gap: 4px; vertical-align: bottom; }
 .resume-row > span { font-size: 11px; color: var(--muted); grid-column: 2; grid-row: 1 / 3; align-self: center; }
 .resume-notice { color: var(--muted); font-size: 12px; }
 .resume-picker .dialog-actions { margin-top: 0; align-items: center; position: sticky; bottom: 0; background: var(--surface); z-index: 1; padding: 6px 0; }

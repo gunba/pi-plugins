@@ -7,6 +7,7 @@ import type { Computer, WorkspaceSession } from "./workspace.ts";
 import { savedProgressLabel, type SavedPage } from "../shared/catalog.ts";
 import type { SavedSession } from "../shared/protocol.ts";
 import { FolderField } from "./folder-picker.tsx";
+import { ProviderIcon } from "./icons.tsx";
 
 export const RESUME_NOTICE = "Resuming can deliver overdue reminders and restart queued child work. Goal continuation needs its own Resume action.";
 const scanning = (page?: SavedPage) => page && ["loading", "queued"].includes(page.progress.state);
@@ -74,7 +75,12 @@ function SessionList({ computer, cwd, online, query, named, selected, switchTo, 
 	const rows = virtual.getVirtualItems();
 	const active = items.findIndex(item => item.file === choice);
 	const models = sessions.find(session => (computer === undefined || session.computer === computer) && session.snapshot?.models.length)?.snapshot?.models;
-	const modelName = (model: SavedSession["model"]) => model && (models?.find(item => item.provider === model.provider && item.id === model.id)?.name ?? model.id);
+	/** A saved conversation's model as the sidebar shows one: its provider's mark and its name, without "Claude". */
+	const modelTag = (model: NonNullable<SavedSession["model"]>) => {
+		const name = models?.find(item => item.provider === model.provider && item.id === model.id)?.name ?? model.id;
+		return <><span aria-hidden="true"> · </span><span className="session-model" title={name}><ProviderIcon id={model.provider} title={name} />
+			<span>{model.provider === "anthropic" ? name.replace(/^Claude\s+/i, "") : name}</span></span></>;
+	};
 	useEffect(() => {
 		mounted.current = true;
 		return () => {
@@ -176,7 +182,7 @@ function SessionList({ computer, cwd, online, query, named, selected, switchTo, 
 						style={{ position: "absolute", height: row.size, transform: `translateY(${row.start}px)` }}
 						onClick={() => { setChoice(item.file); scroll.current?.focus(); }} onDoubleClick={() => void resume(item.file)}>
 						<strong>{item.name || item.firstMessage || "Untitled conversation"}</strong>
-						<small title={item.cwd}>{item.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? item.cwd}{item.model ? ` · ${modelName(item.model)}` : ""}</small>
+						<small title={item.cwd}>{item.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? item.cwd}{item.model && modelTag(item.model)}</small>
 						<span>{new Date(item.modified).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })} · {item.messageCount} {item.messageCount === 1 ? "message" : "messages"}</span>
 					</div>;
 				})}
