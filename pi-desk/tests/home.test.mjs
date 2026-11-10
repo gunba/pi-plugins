@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { installHome } from "../src/host/home-extension.ts";
 import { HomeStore } from "../src/host/home-store.ts";
+import { HostApi } from "../src/host/host-api.ts";
 import { Home, homeWork } from "../src/host/home.ts";
 import { InputLedger } from "../src/host/inputs.ts";
 import { HOME_MODEL } from "../src/shared/home.ts";
@@ -113,4 +114,16 @@ test("scheduled Home alerts use an explicit phone delivery path", async t => {
 	assert.deepEqual(notices, [{ title: "Daily roundup", body: "A useful new article.", tag: `home:${id}`, session: "home" }]);
 	assert.deepEqual(home.store.result(id), { value: { delivered: true, message: id } });
 	assert.equal(home.snapshot().messages.at(-1).text, "A useful new article.");
+});
+
+test("a message to Home through the API keeps the IDs of its attached files", async () => {
+	// Every message with an image was refused as "Invalid text field.": the API allowed IDs of 36 characters, and
+	// attached files have 64.
+	const received = [], file = "a".repeat(64), id = randomUUID();
+	const home = { message: async (...args) => { received.push(args); return { messages: [] }; } };
+	const api = new HostApi({ closing: false, held: false, restoringUpdate: false, origin: "http://127.0.0.1" },
+		{ access: () => ({ hasDevice: () => true }), account: {}, teleport: () => undefined, home: () => home });
+	const response = await api.handle("operator", { path: "/api/home/messages", method: "POST", body: { id, text: "What is this?", attachments: [file] } });
+	assert.equal(response.status, 200);
+	assert.deepEqual(received, [[id, "What is this?", [file]]]);
 });

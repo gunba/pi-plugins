@@ -151,7 +151,7 @@ export class HostApi {
 		if (url.pathname === "/api/home" && request.method === "GET") return reply(home.snapshot(url.searchParams.get("known") ?? undefined));
 		if (url.pathname === "/api/home/open" && request.method === "POST") return reply(await home.open());
 		if (url.pathname === "/api/home/messages" && request.method === "POST") return reply(await home.message(
-			string(data.id, 36), string(data.text, 32_000), Array.isArray(data.attachments) ? data.attachments.map(file => string(file, 36)) : undefined));
+			string(data.id, 36), string(data.text, 32_000), Array.isArray(data.attachments) ? data.attachments.map(file => string(file, 64)) : undefined));
 		if (url.pathname === "/api/home/page" && request.method === "POST") {
 			const saved = home.savePage(string(data.version, 64), string(data.text, 200_000));
 			return saved ? reply(saved) : reply({ error: "Home's page changed before your change was saved, so it wasn't. Make it again on the page as it is now." }, 409);
