@@ -281,7 +281,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 		// At an edge (including a short page), another gesture need not emit a scroll event.
 		if (earlier && viewport.scrollTop <= 1 && older) void load({ before: older }, anchor);
 		else if (earlier === false && !following.current && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 1)
-			void load(moreRecent ? { after: moreRecent } : {}, moreRecent ? anchor : "end");
+			void load(page?.after ? { after: page.after } : {}, page?.after ? anchor : "end");
 	};
 	return <DisclosureStates.Provider value={disclosures.current}><div className={`transcript-pane ${source ? "child-transcript" : "root-transcript"}`} aria-busy={!positioned}>
 		{loading && !positioned && <div className="history-status" role="status">Loading messages…</div>}
@@ -316,11 +316,13 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 				const end = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 80; setAtEnd(end);
 				if (manual && (!end || viewport.scrollTop < previous)) hold();
 				// A gesture marks only the first scroll event as manual, but smooth scrolling and the scrollbar keep moving the
-				// view after it, so reaching the end by moving down resumes the latest messages whatever moved it.
+				// view after it, so reaching the end by moving down resumes the latest messages whatever moved it. Only a window
+				// with saved messages after it reads on from its end; one that reaches the newest saved message goes to the
+				// latest, which alone has the reply under way: reading on from its end found nothing and never got there.
 				if ((manual || viewport.scrollTop > previous) && !loadingRef.current && connected) {
 					const anchor = capture.current();
 					if (manual && viewport.scrollTop < previous && viewport.scrollTop < 100 && older && anchor) void load({ before: older }, anchor);
-					else if (viewport.scrollTop > previous && end && !following.current) void load(moreRecent ? { after: moreRecent } : {}, moreRecent && anchor ? anchor : "end");
+					else if (viewport.scrollTop > previous && end && !following.current) void load(page?.after ? { after: page.after } : {}, page?.after && anchor ? anchor : "end");
 				}
 				clearTimeout(timer.current); timer.current = setTimeout(persist, 200);
 			}}>
