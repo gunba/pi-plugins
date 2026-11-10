@@ -1,5 +1,6 @@
 import { createContext, memo, useContext, useMemo, useState, type ComponentProps } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
+import { useConfirmation } from "./confirmation.tsx";
 import type { HomeWatch, HomeWork } from "../shared/home.ts";
 import { wakeLabel } from "./activity.ts";
 import { markdownPlugins, markdownUrl } from "./markdown-links.ts";
@@ -69,11 +70,51 @@ function Item({ node, children, className }: ComponentProps<"li"> & ExtraProps) 
 			aria-label="Delete" title="Delete" onClick={() => edit.save(edit.lines.filter((_, index) => index < first - 1 || index > last - 1))}>×</button>}
 	</li></ItemContext.Provider>;
 }
+/**
+ * The page's lines without the category whose heading is on file line `first`: the heading and the lines under it, up
+ * to the next heading, apart from the notes Home keeps in HTML comments. Also how many list items went with it.
+ */
+export function withoutCategory(lines: readonly string[], first: number): { lines: string[]; items: number } {
+	let end = first, fence = false;
+	for (; end < lines.length; end++) {
+		if (/^\s*(```|~~~)/.test(lines[end]!)) fence = !fence;
+		if (!fence && /^#{1,3}\s/.test(lines[end]!)) break;
+	}
+	const kept: string[] = [];
+	let items = 0, comment = false;
+	lines.forEach((text, index) => {
+		const note = comment || text.includes("<!--");
+		if (text.includes("<!--")) comment = !text.slice(text.lastIndexOf("<!--")).includes("-->");
+		else if (comment && text.includes("-->")) comment = false;
+		if (index < first - 1 || index >= end || note) { kept.push(text); return; }
+		if (/^\s*(?:[-*+]|\d+[.)])\s/.test(text)) items++;
+	});
+	return { lines: kept, items };
+}
+function Category({ node, children }: ComponentProps<"h3"> & ExtraProps) {
+	const edit = useContext(EditContext), line = useContext(LineContext);
+	const start = node?.position?.start.line, first = start === undefined ? undefined : line + start - 1;
+	const confirmation = useConfirmation(`home-category:${first}`);
+	const remove = async () => {
+		if (!edit || first === undefined) return;
+		const { lines, items } = withoutCategory(edit.lines, first), name = edit.lines[first - 1]!.replace(/^#+\s*/, "");
+		// An empty category goes at once; one with tasks only once Jordan has seen what goes with it.
+		if (items && !await confirmation.request({ title: "Delete this category?", context: name, accept: "Delete",
+			body: <p>Its {items === 1 ? "task goes" : `${items} tasks go`} with it.</p> })) return;
+		edit.save(lines);
+	};
+	return <h3>{children}
+		{edit && first !== undefined && <button type="button" className="home-item-delete" disabled={edit.busy}
+			aria-label="Delete category" title="Delete category" onClick={() => void remove()}>×</button>}
+		{confirmation.dialog}
+	</h3>;
+}
 // Constant, so React updates the rendered page in place rather than replacing elements whose component changed.
 const COMPONENTS: Components = {
 	a: ({ children, href }) => href ? <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> : <span>{children}</span>,
 	input: ({ type, checked }) => type === "checkbox" ? <TaskBox checked={!!checked} /> : null,
 	li: Item,
+	h3: Category,
 };
 const PLUGINS = markdownPlugins();
 const pageUrl = (url: string) => markdownUrl(undefined, url);
