@@ -133,6 +133,8 @@ export interface ArtifactPage { generation: string; text: string; offset: number
 export interface HistoryPage { messages: ChatMessage[]; before?: string; after?: string; revision: number; generation: string }
 export interface SavedSession {
 	id: string; file: string; cwd: string; name?: string; firstMessage: string; messageCount: number; modified: string;
+	/** The model the conversation last used or chose; null when it has none, absent in rows listed before this was kept. */
+	model?: { provider: string; id: string } | null;
 }
 /** brief: the worker writes "What do I need to know?" briefs (Desk 0.5.141 and later); briefReply: on any turn, not only the latest (0.5.224). */
 export interface WorkerRuntimeInfo { version: string; plugins: string; engine: string; runtime?: string; unattended?: boolean; sendNow?: boolean; queueNow?: boolean; queueCancel?: boolean; queueEdit?: boolean; brief?: boolean; briefReply?: boolean; learn?: boolean }

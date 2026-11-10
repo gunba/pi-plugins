@@ -802,7 +802,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           </SettingsLayout>
         </Inspector>
       )}
-      {resumeOpen && <ResumeConversation computers={host.computers} connected={transportConnected} cwd={host.cwd}
+      {resumeOpen && <ResumeConversation computers={host.computers} sessions={host.sessions} connected={transportConnected} cwd={host.cwd}
         current={session} close={() => setResumeOpen(false)} selected={key => {
           setSelected(key); setResumeOpen(false); setPanel(undefined); setSidebar(false);
         }} switchTo={resumeOpen === "switch" ? async file => { await command({ kind: "switch", file }); setResumeOpen(false); } : undefined} />}

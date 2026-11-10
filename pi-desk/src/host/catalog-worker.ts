@@ -1,6 +1,6 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { createReadStream } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { SavedSession } from "../shared/protocol.ts";
@@ -40,21 +40,49 @@ async function candidates(directory: string | undefined): Promise<{ files: strin
 	return { files: await sessionFiles(directory), filter: !!options.cwd && catalogPath(directory) !== catalogPath(defaultDirectory(options.cwd)) };
 }
 
+type ModelRef = NonNullable<SavedSession["model"]>;
+/** The model an entry says the session used (an assistant reply) or chose (a model change). */
+function modelOf(entry: { type?: unknown; provider?: unknown; modelId?: unknown; message?: { role?: unknown; provider?: unknown; model?: unknown } } | undefined): ModelRef | undefined {
+	if (entry?.type === "model_change" && typeof entry.provider === "string" && typeof entry.modelId === "string") return { provider: entry.provider, id: entry.modelId };
+	const message = entry?.type === "message" ? entry.message : undefined;
+	if (message?.role === "assistant" && typeof message.provider === "string" && typeof message.model === "string") return { provider: message.provider, id: message.model };
+}
+
+/**
+ * A session's last model from the end of its file, for a row listed before rows had models; null when the file has
+ * none. Undefined when the end read holds none but the file is longer, so the whole file must be read.
+ */
+async function lastModel(file: string, size: number): Promise<ModelRef | null | undefined> {
+	const length = Math.min(size, 256 * 1024), buffer = Buffer.alloc(length), handle = await open(file, "r");
+	try { await handle.read(buffer, 0, length, size - length); } finally { await handle.close(); }
+	const lines = buffer.toString("utf8").split("\n");
+	if (length < size) lines.shift();
+	for (let index = lines.length - 1; index >= 0; index--) {
+		let entry;
+		try { entry = JSON.parse(lines[index]!); } catch { continue; }
+		const model = modelOf(entry);
+		if (model) return model;
+	}
+	return length < size ? undefined : null;
+}
+
 /** One session's row, read as Pi's buildSessionInfo reads it. */
 async function read(file: string, stamp: string, mtime: Date): Promise<CatalogItem | undefined> {
 	type Header = { id?: unknown; cwd?: unknown; timestamp?: unknown };
 	let header: Header | undefined;
-	let name: string | undefined, firstMessage = "", messageCount = 0, last: number | undefined;
+	let name: string | undefined, firstMessage = "", messageCount = 0, last: number | undefined, model: ModelRef | undefined;
 	const lines = createInterface({ input: createReadStream(file, { encoding: "utf8" }), crlfDelay: Infinity });
 	for await (const line of lines) {
 		if (!line.trim()) continue;
-		let entry: { type?: unknown; name?: unknown; timestamp?: unknown; message?: { role?: unknown; content?: unknown; timestamp?: unknown } };
+		let entry: { type?: unknown; name?: unknown; timestamp?: unknown; provider?: unknown; modelId?: unknown;
+			message?: { role?: unknown; content?: unknown; timestamp?: unknown; provider?: unknown; model?: unknown } };
 		try { entry = JSON.parse(line); } catch { continue; }
 		if (!header) {
 			if (entry.type !== "session") { lines.close(); return undefined; }
 			header = entry as Header; continue;
 		}
 		if (entry.type === "session_info") name = typeof entry.name === "string" ? entry.name.trim() || undefined : undefined;
+		model = modelOf(entry) ?? model;
 		if (entry.type !== "message") continue;
 		messageCount++;
 		const message = entry.message;
@@ -71,7 +99,7 @@ async function read(file: string, stamp: string, mtime: Date): Promise<CatalogIt
 	const modified = last !== undefined && last > 0 ? new Date(last) : !Number.isNaN(created) ? new Date(created) : mtime;
 	return {
 		id: preview(header.id, 200), file, cwd: preview(header.cwd, 32768), name: preview(name, 300) || undefined,
-		firstMessage: preview(splitDictationNote(firstMessage || "(no messages)").text, 200), messageCount,
+		firstMessage: preview(splitDictationNote(firstMessage || "(no messages)").text, 200), messageCount, model: model ?? null,
 		modified: Number.isFinite(modified.getTime()) ? modified.toISOString() : new Date(0).toISOString(), stamp,
 	};
 }
@@ -90,13 +118,14 @@ try {
 		for (const file of files) if (!listed.has(catalogPath(file))) listed.set(catalogPath(file), { file, filter });
 	}
 	const include = (item: CatalogItem, filter: boolean) => !filter || (!!item.cwd && catalogPath(item.cwd) === catalogPath(options.cwd!));
-	const total = listed.size, unchanged: CatalogItem[] = [], changed: { file: string; filter: boolean; stamp: string; mtime: Date }[] = [];
+	const total = listed.size, unchanged: CatalogItem[] = [], changed: { file: string; filter: boolean; stamp: string; mtime: Date; size: number; known?: CatalogItem }[] = [];
 	await Promise.all([...listed].map(async ([key, { file, filter }]) => {
 		const stats = await stat(file).catch(() => undefined);
 		const stamp = stats ? `${stats.size}:${stats.mtimeMs}` : "";
 		const known = previous.get(key);
-		if (stats && known?.stamp === stamp) { if (include(known, filter)) unchanged.push(known); }
-		else changed.push({ file, filter, stamp, mtime: stats?.mtime ?? new Date(0) });
+		// A row listed before rows had models gets its model from the end of its file.
+		if (stats && known?.stamp === stamp && known.model !== undefined) { if (include(known, filter)) unchanged.push(known); }
+		else changed.push({ file, filter, stamp, mtime: stats?.mtime ?? new Date(0), size: stats?.size ?? 0, known: stats && known?.stamp === stamp ? known : undefined });
 	}));
 	let loaded = total - changed.length;
 	parentPort!.postMessage({ type: "progress", loaded, total, items: unchanged });
@@ -105,8 +134,9 @@ try {
 	let next = 0;
 	await Promise.all(Array.from({ length: 4 }, async () => {
 		while (next < changed.length) {
-			const { file, filter, stamp, mtime } = changed[next++];
-			const item = await read(file, stamp, mtime).catch(() => undefined);
+			const { file, filter, stamp, mtime, size, known } = changed[next++];
+			const model = known && await lastModel(file, size).catch(() => undefined);
+			const item = known && model !== undefined ? { ...known, model } : await read(file, stamp, mtime).catch(() => undefined);
 			loaded++;
 			parentPort!.postMessage({ type: "progress", loaded, total, items: item && include(item, filter) ? [item] : [] });
 		}

@@ -3,7 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { api, ApiError } from "./connection.ts";
 import { Modal } from "./surfaces.tsx";
 import { connectionLabel } from "./connection-state.ts";
-import type { Computer } from "./workspace.ts";
+import type { Computer, WorkspaceSession } from "./workspace.ts";
 import { savedProgressLabel, type SavedPage } from "../shared/catalog.ts";
 import type { SavedSession } from "../shared/protocol.ts";
 import { FolderField } from "./folder-picker.tsx";
@@ -11,8 +11,10 @@ import { FolderField } from "./folder-picker.tsx";
 export const RESUME_NOTICE = "Resuming can deliver overdue reminders and restart queued child work. Goal continuation needs its own Resume action.";
 const scanning = (page?: SavedPage) => page && ["loading", "queued"].includes(page.progress.state);
 
-export function ResumeConversation({ computers, connected, cwd, current, selected, close, switchTo }: {
+export function ResumeConversation({ computers, sessions, connected, cwd, current, selected, close, switchTo }: {
 	computers?: Computer[]; connected: boolean; cwd: string; current?: { computer?: string; cwd: string };
+	/** Open conversations, whose model lists name the models of saved ones. */
+	sessions: WorkspaceSession[];
 	selected: (key: string) => void; close: () => void;
 	/** From /resume: a session on the conversation's computer opens in its running Pi process, as in Pi. */
 	switchTo?: (file: string) => Promise<void>;
@@ -49,15 +51,15 @@ export function ResumeConversation({ computers, connected, cwd, current, selecte
 				<input className="search" aria-label="Search saved conversations" placeholder="Search titles, opening text or projects"
 					value={draft} maxLength={200} onChange={event => setDraft(event.target.value)} />
 				{(all || project) && <SessionList key={`${computer ?? "local"}:${all ? "*" : project}:${target?.epoch ?? 0}`}
-					computer={computer} cwd={all ? undefined : project} online={target?.connected ?? connected}
+					computer={computer} cwd={all ? undefined : project} online={target?.connected ?? connected} sessions={sessions}
 					query={query} named={named} selected={selected} switchTo={switchTo && computer === current?.computer ? switchTo : undefined} />}
 			</>}
 		</div>
 	</Modal>;
 }
 
-function SessionList({ computer, cwd, online, query, named, selected, switchTo }: {
-	computer?: string; cwd?: string; online: boolean; query: string; named: boolean; selected: (key: string) => void;
+function SessionList({ computer, cwd, online, query, named, selected, switchTo, sessions }: {
+	computer?: string; cwd?: string; online: boolean; query: string; named: boolean; selected: (key: string) => void; sessions: WorkspaceSession[];
 	switchTo?: (file: string) => Promise<void>;
 }) {
 	const [page, setPage] = useState<SavedPage>(), [items, setItems] = useState<SavedSession[]>([]);
@@ -71,6 +73,8 @@ function SessionList({ computer, cwd, online, query, named, selected, switchTo }
 	const virtual = useVirtualizer({ count: items.length, getScrollElement: () => scroll.current, estimateSize: () => 66, overscan: 6 });
 	const rows = virtual.getVirtualItems();
 	const active = items.findIndex(item => item.file === choice);
+	const models = sessions.find(session => (computer === undefined || session.computer === computer) && session.snapshot?.models.length)?.snapshot?.models;
+	const modelName = (model: SavedSession["model"]) => model && (models?.find(item => item.provider === model.provider && item.id === model.id)?.name ?? model.id);
 	useEffect(() => {
 		mounted.current = true;
 		return () => {
@@ -172,7 +176,7 @@ function SessionList({ computer, cwd, online, query, named, selected, switchTo }
 						style={{ position: "absolute", height: row.size, transform: `translateY(${row.start}px)` }}
 						onClick={() => { setChoice(item.file); scroll.current?.focus(); }} onDoubleClick={() => void resume(item.file)}>
 						<strong>{item.name || item.firstMessage || "Untitled conversation"}</strong>
-						<small title={item.cwd}>{item.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? item.cwd}</small>
+						<small title={item.cwd}>{item.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? item.cwd}{item.model ? ` · ${modelName(item.model)}` : ""}</small>
 						<span>{new Date(item.modified).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })} · {item.messageCount} {item.messageCount === 1 ? "message" : "messages"}</span>
 					</div>;
 				})}
