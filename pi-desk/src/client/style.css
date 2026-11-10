@@ -2522,6 +2522,7 @@ details[open] > summary:before {
 .handbook-section small { font-weight:400; color:var(--muted); margin-left:6px; }
 .handbook-proposal-box { margin-top:10px; padding-top:10px; border-top:1px dashed var(--border); }
 .handbook-proposal-box small { color:var(--muted); }
+.handbook-purpose p.handbook-was { margin-top:6px; color:var(--muted); }
 .handbook-chart { margin:0 0 8px; }
 .handbook-chart svg { width:100%; height:auto; display:block; }
 .handbook-chart-empty { margin:0 0 8px; }

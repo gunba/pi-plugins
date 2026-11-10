@@ -222,9 +222,9 @@ class Handbook {
 		if (params.action === "read") return fullText(state);
 		if (params.action === "purpose") {
 			if (!text) throw new Error("Give the purpose as text.");
-			if (!state.purpose) { this.write("agent", [{ op: "purpose", text }]); return "Purpose saved."; }
-			this.write("agent", [{ op: "propose-purpose", text }]);
-			return "The purpose is set; your wording is offered to the user, who decides.";
+			const had = !!state.purpose;
+			this.write("agent", [{ op: "purpose", text }]);
+			return had ? "Purpose changed. The user can restore the earlier wording from the Handbook view." : "Purpose saved.";
 		}
 		if (params.action === "flag") {
 			const entry = params.id ? state.entries.get(params.id.trim()) : undefined;
@@ -282,6 +282,7 @@ class Handbook {
 			{ id: "tidy", label: "Tidy up now" }, { id: "add", label: "Add an instruction" }, { id: "purpose", label: "Edit the purpose" },
 			...(data.status.unread ? [{ id: "history", label: "Read earlier messages" }] : []),
 			...(state.proposedPurpose ? [{ id: "purpose-accept", label: "Use the proposed purpose" }, { id: "purpose-dismiss", label: "Keep the purpose" }] : []),
+			...(state.log.some(item => item.was) ? [{ id: "purpose-restore", label: "Restore an earlier purpose" }] : []),
 			{ id: "entry", label: "Change an entry" },
 		];
 		const view: UiView = { kind: "handbook", title: "Handbook", data: data as unknown as UiValue, actions,
@@ -295,6 +296,7 @@ class Handbook {
 			tidy: () => { void this.tidy(true); },
 			add: () => this.act(ctx, "add"), purpose: () => this.act(ctx, "purpose"), history: () => this.act(ctx, "history"),
 			"purpose-accept": () => this.act(ctx, "purpose-accept"), "purpose-dismiss": () => this.act(ctx, "purpose-dismiss"),
+			"purpose-restore": value => this.act(ctx, "purpose-restore", value),
 			entry: value => this.act(ctx, "entry", value),
 		});
 	}
@@ -312,6 +314,11 @@ class Handbook {
 		} else if (action === "purpose-accept") {
 			if (state.proposedPurpose) save([{ op: "purpose", text: state.proposedPurpose.text }]);
 		} else if (action === "purpose-dismiss") save([{ op: "dismiss-purpose" }]);
+		else if (action === "purpose-restore") {
+			// Only a wording the purpose once had: the view sends the one beside the change that replaced it.
+			const text = typeof value === "string" ? value.trim() : "";
+			if (text && state.log.some(item => item.was === text)) save([{ op: "purpose", text, reason: "Restored an earlier wording" }]);
+		}
 		else if (action === "history") {
 			const branch = ctx.sessionManager.getBranch(), end = typeof state.from === "string" ? branch.findIndex(entry => entry.id === state.from) : branch.length;
 			let chars = 0, count = 0;

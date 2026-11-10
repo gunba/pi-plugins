@@ -79,7 +79,8 @@ export type Op = Body & { reason?: string };
 export interface Change { v: 1; at: number; actor: Actor; ops: Op[] }
 
 export interface Pass { at: number; model: string; cost: number; messages: number; more?: boolean; error?: string }
-export interface LogItem { at: number; actor: Actor; id?: string; text: string; reason?: string }
+/** A change, in words. `was` is the purpose a change of purpose replaced, which the user can restore. */
+export interface LogItem { at: number; actor: Actor; id?: string; text: string; reason?: string; was?: string }
 export interface State {
 	/** Where reading began: null from the start, an entry ID when the handbook arrived in an existing conversation. */
 	from?: string | null;
@@ -156,8 +157,8 @@ function decode(data: unknown): Change | undefined {
 export function applyChange(state: State, change: Change): void {
 	const { at, actor } = change;
 	let counted = 0;
-	const log = (text: string, op: Op, id?: string) => {
-		state.log.push({ at, actor, ...(id ? { id } : {}), text, ...(op.reason ? { reason: op.reason } : {}) });
+	const log = (text: string, op: Op, id?: string, was?: string) => {
+		state.log.push({ at, actor, ...(id ? { id } : {}), text, ...(op.reason ? { reason: op.reason } : {}), ...(was ? { was } : {}) });
 		counted++;
 	};
 	for (const op of change.ops) {
@@ -228,12 +229,14 @@ export function applyChange(state: State, change: Change): void {
 				if (op.misled) entry.misled++;
 				if (op.repeated) entry.repeated++;
 				break;
-			case "purpose":
-				if (!op.text.trim()) break;
-				state.purpose = { text: op.text.trim(), at, by: actor };
+			case "purpose": {
+				const text = op.text.trim(), was = state.purpose?.text;
+				if (!text || text === was) break;
+				state.purpose = { text, at, by: actor };
 				delete state.proposedPurpose;
-				log(actor === "user" ? "Set the purpose" : "Wrote the purpose", op);
+				log(actor === "user" ? "Set the purpose" : was ? "Changed the purpose" : "Wrote the purpose", op, undefined, was);
 				break;
+			}
 			case "propose-purpose":
 				if (!op.text.trim()) break;
 				state.proposedPurpose = { text: op.text.trim(), at, by: actor, ...(op.reason ? { reason: op.reason } : {}) };

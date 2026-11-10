@@ -118,7 +118,7 @@ export function viewData(state: State, status: ViewStatus, cwd: string) {
 		entries: [...[...state.entries.values()].filter(live).sort((a, b) => (order.get(a.id) ?? order.size) - (order.get(b.id) ?? order.size)),
 			...[...state.entries.values()].filter(item => !live(item))
 			.sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0)).slice(0, 100)].map(entry),
-		log: state.log.slice(-300).reverse().map(item => ({ at: item.at, actor: item.actor, id: item.id ?? null, text: item.text, reason: item.reason ?? null })),
+		log: state.log.slice(-300).reverse().map(item => ({ at: item.at, actor: item.actor, id: item.id ?? null, text: item.text, reason: item.reason ?? null, was: item.was ?? null })),
 		days: [...days.values()].filter(row => row.day <= today).sort((a, b) => a.day.localeCompare(b.day)).slice(-120),
 		passes: state.passes.slice(-10).map(pass => ({ at: pass.at, model: pass.model, cost: pass.cost, messages: pass.messages, error: pass.error ?? null })),
 		status: { running: status.running ?? null, error: status.error ?? null, nextPass: status.nextPass ?? null, model: status.model ?? null,

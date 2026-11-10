@@ -34,7 +34,7 @@ the section the model last had until then.
   takes several passes in a row. A pass adds at most one new entry for every ten messages it reads, and never more
   than six, the most important first; replacing and merging entries don't count.
 - **The user**, in Desk's Handbook view: add an instruction, edit, pin or remove an entry, accept or dismiss a
-  flag, edit the purpose.
+  flag, edit the purpose or restore an earlier one.
 
 The tidy-up returns changes to single entries as JSON, and code applies them after checking each:
 
@@ -44,7 +44,9 @@ The tidy-up returns changes to single entries as JSON, and code applies them aft
 - an instruction leaves the handbook only when the user's newer words replace it, or when the user accepts the
   tidy-up's flag; a learning is retired with a reason when the work it concerned is finished;
 - a replaced or retired entry stays in the change log with the reason;
-- the tidy-up can write the purpose only when there is none; after that it proposes, and the user decides;
+- the tidy-up writes the purpose, and rewrites it when the work has clearly moved on, giving the reason; the
+  Handbook view shows the wording it replaced, which the user can restore (and the tidy-up then leaves it alone
+  for a pass);
 - a learning that has not come up in 30 days of use is retired (days on which the user wrote in the
   conversation, so a quiet month changes nothing).
 
