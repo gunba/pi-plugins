@@ -29,10 +29,17 @@ const controls: Record<string, (session: AgentSession, runtime: AgentSessionRunt
 		const path = pathArgument(args) || undefined;
 		return { path: path?.toLowerCase().endsWith(".jsonl") ? session.exportToJsonl(path) : await session.exportToHtml(path) };
 	},
-	// A fresh session in this process, as in Pi; the previous one stays in history.
-	new: async (_session, runtime, args) => {
+	// A fresh session in this process, as in Pi; the previous one stays in history. It keeps this one's model and
+	// reasoning: Pi would take them from settings, which a conversation's model changes in Desk leave alone.
+	new: async (session, runtime, args) => {
 		noArguments("new", args);
-		return runtime.newSession();
+		const model = session.model, thinking = session.thinkingLevel;
+		const result = await runtime.newSession();
+		if (!result.cancelled && model) {
+			await runtime.session.setModel(model, { persist: false });
+			runtime.session.setThinkingLevel(thinking, { persist: false });
+		}
+		return result;
 	},
 	clone: async (session, runtime, args) => {
 		noArguments("clone", args);

@@ -227,7 +227,9 @@ export function App({ account }: { account?: BrowserAccount }) {
   const accountPanel = (args: string) => { setProviderHint(args || undefined); setSettingsSection("accounts"); setPanel("settings"); };
   const commandHandlers = deskCommandHandlers({ session, key: selected, command, delivery: deliveryMode,
     openSettings: section => { setSettingsSection(section); setPanel("settings"); },
-    newConversation: folder => newConversation.open(undefined, folder), resume: setResumeOpen,
+    // /new from a conversation starts the next one with its model and reasoning.
+    newConversation: folder => newConversation.open(undefined, folder, session?.snapshot?.model
+      ? { model: `${session.snapshot.model.provider}/${session.snapshot.model.id}`, reasoning: session.snapshot.thinking ?? "" } : undefined), resume: setResumeOpen,
     editTitle: () => titleControl.current?.edit(), accounts: accountPanel,
     show: (title, text) => setCommandOutput({ title, text }) });
   const completion = useCommandCompletion(draft, deskCommandCatalog(session?.snapshot?.commands ?? [], commandHandlers), text => {

@@ -8,8 +8,8 @@ import type { Computer, WorkspaceSession, WorkspaceState } from "./workspace.ts"
 
 /**
  * "New conversation": its dialog and state. `open` starts on a computer (by default the current conversation's, or
- * the first connected one) in a folder (by default the current conversation's on that computer, or the computer's).
- * Ctrl+T opens it too.
+ * the first connected one) in a folder (by default the current conversation's on that computer, or the computer's),
+ * with a model (by default the last one chosen on that computer). Ctrl+T opens it too.
  */
 export function useNewConversation({ host, session, current, created }: {
   host?: WorkspaceState; session?: WorkspaceSession; current?: Computer;
@@ -39,12 +39,12 @@ export function useNewConversation({ host, session, current, created }: {
       if (request === createRequest.current) setCreateError(error instanceof Error ? error.message : String(error));
     } finally { if (request === createRequest.current) setCreating(false); }
   }
-  function open(computerId?: string, folder?: string) {
+  function open(computerId?: string, folder?: string, model?: ModelChoice) {
     const computer = computerId ? host?.computers?.find(computer => computer.id === computerId)
       : current?.connected ? current : host?.computers?.find(computer => computer.connected);
     createRequest.current++; setCreateError(""); setCreating(false);
     setNewComputer(computer?.id);
-    setNewModel(rememberedModel(computer?.id));
+    setNewModel(model ?? rememberedModel(computer?.id));
     setCwd(folder ?? (session && session.computer === computer?.id ? session.cwd : computer?.cwd ?? host?.cwd ?? ""));
     setShown(true);
   }
