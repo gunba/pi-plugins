@@ -45,3 +45,30 @@ test("a turn near its context budget may use the output the model's own window l
 	const full = { ...ctx, model: { ...model, contextWindow: 1_000_000 }, getContextUsage: () => ({ tokens: 990_000 }) };
 	assert.equal(hook({ payload: { model: model.id, max_tokens: 5_904 } }, full), undefined, "without a budget below the model's window, Pi's cap stays");
 });
+
+test("a reply cut off at the model's output limit is continued, a few times in a row at most", async () => {
+	// An Opus turn thought for 128,000 tokens, the model's limit, and the conversation waited until "Continue" was typed.
+	const { default: outputLimit, CONTINUATIONS, OUTPUT_LIMIT_MESSAGE } = await import("../output-limit.ts");
+	const handlers = {}, sent = [], notices = [];
+	outputLimit({ on: (name, handler) => { handlers[name] = handler; }, sendMessage: (message, options) => sent.push({ message, options }) });
+	const model = { provider: "anthropic", id: "claude-opus-5-5", api: "anthropic-messages", contextWindow: 500_000, maxTokens: 128_000 };
+	const ctx = { model, isIdle: () => true, hasPendingMessages: () => false, ui: { notify: text => notices.push(text) } };
+	const end = output => {
+		handlers.agent_end({ messages: [{ role: "assistant", stopReason: "length", provider: "anthropic", model: model.id, usage: { output } }] }, ctx);
+		handlers.agent_settled({}, ctx);
+	};
+	end(128_000);
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0].message.customType, OUTPUT_LIMIT_MESSAGE);
+	assert.equal(sent[0].message.display, false);
+	assert.match(sent[0].message.content, /^Your last reply reached the model's output limit of 128,000 tokens and was cut off\./);
+	assert.deepEqual(sent[0].options, { deliverAs: "followUp", triggerTurn: true });
+	for (let reply = 1; reply <= CONTINUATIONS; reply++) end(128_000);
+	assert.equal(sent.length, CONTINUATIONS, "the next cut in a row waits for the user");
+	assert.match(notices[0], /replies in a row reached the model's output limit/);
+	handlers.input({ text: "Go on" }, ctx);
+	end(128_000);
+	assert.equal(sent.length, CONTINUATIONS + 1, "a message from the user starts the count again");
+	end(4_880);
+	assert.equal(sent.length, CONTINUATIONS + 1, "a reply cut short by the context window is left to Pi, which compacts and tries again");
+});

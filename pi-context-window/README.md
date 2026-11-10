@@ -28,6 +28,11 @@ reply's output at the room left in the model window, so for Claude models with a
 on a turn's request (`max_tokens`) is worked out again from the capacity, and compaction summaries are fitted to the
 capacity too. Without this, replies near the budget were cut off after a few thousand tokens of thinking.
 
+A reply that reaches the model's own output limit (`maxTokens`) ends Pi's turn with nothing more to do. What it wrote,
+thinking included, stays in the conversation, so a hidden `pi-context-window/output-limit` message asks the model to
+carry on from where it stopped. After three such replies in a row the conversation waits for the user; a message from
+the user starts the count again.
+
 Pi Desk shows usage as a bar against the model capacity, with a marker for
 the selected budget. Click the bar or open Settings → Context capacity to
 adjust the slider or enter a token count, then apply it. Changes are not sent
