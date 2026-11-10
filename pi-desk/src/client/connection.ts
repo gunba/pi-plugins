@@ -267,10 +267,15 @@ async function pictureBlob(session: string, version: string): Promise<Blob> {
 	})().catch(() => {});
 	return blob;
 }
-const pictureBlobs = new BlobPool(4);
+// Banners stay loaded for a while after their rows go, as when a folded section is opened again; each is about 70 KB.
+const pictureBlobs = new BlobPool(4, 64);
 /** A conversation's banner picture (SessionView.picture); the URL lasts until every lease on it is released. */
 export function acquirePicture(session: string, version: string): BlobLease {
 	return pictureBlobs.acquire(`${session}/${version}`, () => pictureBlob(session, version));
+}
+/** A banner picture already loaded, and when it loaded (performance.now()). */
+export function loadedPicture(session: string, version: string): { url: string; at: number } | undefined {
+	return pictureBlobs.peek(`${session}/${version}`);
 }
 export function subscribe(events: (batch: WorkspaceEvent[]) => void, connection: (connected: boolean) => void): () => void {
 	if (!mode) { connection(false); return () => {}; }

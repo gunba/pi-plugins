@@ -29,3 +29,20 @@ test("closed queued previews do not start and simultaneous blob transfers stay b
 	await Promise.all([first.loaded, next.loaded, rejected]);
 	first.release(); next.release();
 });
+
+test("the last released blobs stay loaded for their next consumer, as many as the pool keeps", async () => {
+	// Banners loaded and faded in again each time a folded sidebar section opened, because their rows' release dropped them.
+	const pool = new BlobPool(2, 1);
+	let requests = 0;
+	const load = name => async () => { requests++; return new Blob([name]); };
+	const first = pool.acquire("first", load("first")), url = await first.loaded;
+	first.release();
+	assert.equal(pool.peek("first")?.url, url);
+	const again = pool.acquire("first", load("first"));
+	assert.equal(await again.loaded, url); assert.equal(requests, 1);
+	again.release();
+	const second = pool.acquire("second", load("second")); await second.loaded; second.release();
+	assert.equal(pool.peek("first"), undefined);
+	await assert.rejects(fetch(url));
+	assert.equal(await (await fetch(pool.peek("second").url)).text(), "second");
+});

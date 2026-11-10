@@ -504,7 +504,7 @@ details[open] > summary:before {
    is in its right third, which shows most. */
 .session-row:has(.session-picture) { margin:3px 0; }
 .session-item:has(> .session-picture) { position:relative; isolation:isolate; overflow:hidden; border-radius:8px; }
-.session-picture { position:absolute; inset:0; z-index:-1; border-radius:inherit; background:right center / cover no-repeat; pointer-events:none; animation:picture-in .4s ease-out; }
+.session-picture { position:absolute; inset:0; z-index:-1; border-radius:inherit; background:right center / cover no-repeat; pointer-events:none; }
 .session-picture::after { content:""; position:absolute; inset:0; border-radius:inherit; transition:opacity .15s;
   background:linear-gradient(90deg, var(--sidebar) 0%, color-mix(in srgb, var(--sidebar) 90%, transparent) 34%, color-mix(in srgb, var(--sidebar) 50%, transparent) 66%, color-mix(in srgb, var(--sidebar) 12%, transparent) 100%); }
 :root:not([data-theme="dark"]) .session-picture::after {
@@ -522,8 +522,10 @@ details[open] > summary:before {
 .session-row:hover .session-item:has(> .session-picture) .session-model { display:inline-flex; }
 .session-row:has(.session-picture) :is(.session-close, .session-rename) { background:color-mix(in srgb, var(--sidebar) 72%, transparent); }
 .session-row:has(.session-picture) :is(.session-close, .session-rename):hover:not(:disabled) { background:var(--surface); }
+/* Only a banner that has just loaded fades in (picture.tsx). */
+.picture-arriving { animation:picture-in .4s ease-out; }
 @keyframes picture-in { from { opacity:0; } }
-@media (prefers-reduced-motion: reduce) { .session-picture, .topbar-picture { animation:none; } }
+@media (prefers-reduced-motion: reduce) { .picture-arriving { animation:none; } }
 .status-dot {
   --status-color: var(--muted);
   position:relative; display:inline-grid; place-items:center; flex:none;
@@ -612,7 +614,7 @@ details[open] > summary:before {
 }
 /* The open conversation's banner (picture.tsx) behind the top bar, faded under its title and buttons. */
 .topbar > :not(.topbar-picture) { position:relative; }
-.topbar-picture { position:absolute; inset:0; background:right 30% / cover no-repeat; pointer-events:none; animation:picture-in .4s ease-out; }
+.topbar-picture { position:absolute; inset:0; background:right 30% / cover no-repeat; pointer-events:none; }
 .topbar-picture::after { content:""; position:absolute; inset:0;
   background:linear-gradient(90deg, var(--bg) 0%, color-mix(in srgb, var(--bg) 85%, transparent) 45%, color-mix(in srgb, var(--bg) 30%, transparent) 100%); }
 :root:not([data-theme="dark"]) .topbar-picture::after {
