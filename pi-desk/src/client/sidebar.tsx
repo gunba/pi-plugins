@@ -49,7 +49,7 @@ function SidebarRename({ title, rename, close }: { title: string; rename: (name:
  * The conversation list: Home, then each computer's conversations, with copies of an off computer's
  * conversations to move elsewhere; a drawer on phones.
  */
-export function Sidebar({ open, close, host, connected, transportConnected, selected, sending, select, newConversation, resume, openSettings, move, report, closed }: {
+export function Sidebar({ open, close, host, connected, transportConnected, selected, sending, select, newConversation, resume, openSettings, move, moves, report, closed }: {
   open: boolean; close: () => void; host: WorkspaceState; connected: boolean;
   /** This browser's own connection, for a workspace without separate computers. */
   transportConnected: boolean;
@@ -58,6 +58,8 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
   select: (key: string) => void;
   newConversation: (computer?: string) => void; resume: () => void; openSettings: (section: string) => void;
   move: (request: MoveRequest) => void; report: (error: string) => void;
+  /** Conversations on their way to a computer, by that computer's id. */
+  moves: { id: string; title: string; computer: string }[];
   /** A conversation was closed from its row. */
   closed: (key: string) => void;
 }) {
@@ -174,6 +176,8 @@ export function Sidebar({ open, close, host, connected, transportConnected, sele
         };
         return <>
           {rows.filter(item => sidebarGroup(item) === 0).map(item => sessionRow(item, computer))}
+          {moves.filter(item => item.computer === computer.id).map(item => <div className="session-row kept-copy" key={item.id} role="status">
+            <span className="kept-copy-name"><strong>{item.title}</strong><small>Moving here…</small></span></div>)}
           {group(1, waitingShown.has(id), () => toggleWaiting(id), "Waiting", "conversations a watch or timer will wake")}
           {group(2, closedRowsShown.has(id), () => toggleClosedRows(id), "Closed", "closed conversations")}
         </>;

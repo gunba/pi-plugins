@@ -11,8 +11,8 @@ function FolderIcon() {
 	</svg>;
 }
 
-export function FolderField({ value, onChange, computer, disabled = false }: {
-	value: string; onChange: (path: string) => void; computer?: string; disabled?: boolean;
+export function FolderField({ value, onChange, computer, disabled = false, label: title = "Project folder" }: {
+	value: string; onChange: (path: string) => void; computer?: string; disabled?: boolean; label?: string;
 }) {
 	const [open, setOpen] = useState(false), label = useId();
 	// The computer's most recently used project folders, one click each; the browser covers everything else.
@@ -23,7 +23,7 @@ export function FolderField({ value, onChange, computer, disabled = false }: {
 		return () => { alive = false; };
 	}, [computer]);
 	return <div className="folder-field">
-		<span id={label}>Project folder</span>
+		<span id={label}>{title}</span>
 		<button type="button" aria-labelledby={label} disabled={disabled} onClick={() => setOpen(true)} title={value}>
 			<FolderIcon />
 			<span><strong>{value ? nameFor(value) : "Choose a folder"}</strong>{value && <small>{value}</small>}</span>

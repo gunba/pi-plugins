@@ -264,8 +264,19 @@ export function App({ account }: { account?: BrowserAccount }) {
   // "What do I need to know?": written in the background, so the conversation stays usable; it opens beside the
   // conversation when it is ready, and stays there for its reply. Kept by conversation and reply.
   const [briefs, setBriefs] = useState<Record<string, BriefState>>({});
-  // "Move to another computer" (teleport): the conversation being moved, while its window is open.
+  // "Move to another computer" (teleport): the conversation being moved, while its window is open, and the moves
+  // under way, each shown under the computer it is going to until it arrives.
   const [moving, setMoving] = useState<MoveRequest>();
+  const [moves, setMoves] = useState<{ id: string; title: string; computer: string }[]>([]);
+  const startMove = (request: MoveRequest, target: string, folder: string) => {
+    const id = crypto.randomUUID(), from = selectedRef.current;
+    setMoving(undefined); setMoves(list => [...list, { id, title: request.title, computer: target }]);
+    void api<{ key: string }>("/teleport/move", { computer: request.source.id, session: request.session, cwd: folder }, target).then(result => {
+      // The moved conversation is shown only if the one it moved from still is: meanwhile Jordan may have gone elsewhere.
+      if (selectedRef.current === from) { setSelected(sessionKey(target, result.key)); setPanel(undefined); setSidebar(false); }
+    }, failure => setMoving({ ...request, target, folder, error: `It did not move: ${errorText(failure)}` }))
+      .finally(() => setMoves(list => list.filter(item => item.id !== id)));
+  };
   const briefSlot = (reply: string) => `${selected}\n${reply}`;
   const briefWork = (state: BriefState): WorkItem | undefined => state.brief ? { id: `brief:${state.reply}`, at: state.brief.created, message: state.reply,
     block: { type: "brief", brief: state.brief, working: state.working, rewrite: () => writeBrief(state.reply, true) } } : undefined;
@@ -556,7 +567,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         selected={selected} sending={sending} select={key => { setSelected(key); setSidebar(false); setPanel(undefined); }}
         newConversation={newConversation.open} resume={() => { setResumeOpen(true); setSidebar(false); }}
         openSettings={section => { setSettingsSection(section); setPanel("settings"); setSidebar(false); }}
-        move={setMoving} report={setError} closed={key => { if (selectedRef.current === key) setPanel(undefined); }} />
+        move={setMoving} moves={moves} report={setError} closed={key => { if (selectedRef.current === key) setPanel(undefined); }} />
       <main className={`main${homeSelected ? " main-home" : ""}`} data-primary-focus tabIndex={-1}>
         {homeSelected ? <Home host={host} connected={connected} openNavigation={() => setSidebar(true)}
           openConversation={(key, view) => { setSelected(key); setSidebar(false); setPanel(view ? "view" : undefined); if (view) setFocusedView(view); }} /> : <>
@@ -798,7 +809,7 @@ export function App({ account }: { account?: BrowserAccount }) {
         close={() => { void command({ kind: "answer", id: settingsForm.id, answer: null }).catch(() => undefined); }}
         answer={answer => command({ kind: "answer", id: settingsForm.id, answer })} />}
       {moving && <MoveConversation request={moving} computers={state.host?.computers ?? []} close={() => setMoving(undefined)}
-        moved={(computer, key) => { setSelected(sessionKey(computer, key)); setPanel(undefined); setSidebar(false); }} />}
+        start={(target, folder) => startMove(moving, target, folder)} />}
       {commandOutput && <Modal title={commandOutput.title} close={() => setCommandOutput(undefined)}>
         <pre className="command-output">{commandOutput.text}</pre>
       </Modal>}
