@@ -272,8 +272,9 @@ export function App({ account }: { account?: BrowserAccount }) {
     const id = crypto.randomUUID(), from = selectedRef.current;
     setMoving(undefined); setMoves(list => [...list, { id, title: request.title, computer: target }]);
     void api<{ key: string }>("/teleport/move", { computer: request.source.id, session: request.session, cwd: folder }, target).then(result => {
-      // The moved conversation is shown only if the one it moved from still is: meanwhile Jordan may have gone elsewhere.
-      if (selectedRef.current === from) { setSelected(sessionKey(target, result.key)); setPanel(undefined); setSidebar(false); }
+      // The moved conversation is shown if the one it moved from still is, or was until it stopped there (which leaves
+      // nothing selected); not if Jordan went elsewhere meanwhile.
+      if (selectedRef.current === from || !selectedRef.current) { setSelected(sessionKey(target, result.key)); setPanel(undefined); setSidebar(false); }
     }, failure => setMoving({ ...request, target, folder, error: `It did not move: ${errorText(failure)}` }))
       .finally(() => setMoves(list => list.filter(item => item.id !== id)));
   };
