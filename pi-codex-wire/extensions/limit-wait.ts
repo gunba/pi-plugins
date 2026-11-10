@@ -60,7 +60,7 @@ function windowName(window: LimitWindow, modelName: string | undefined): string 
 export function limitWait(error: string, windows: readonly LimitWindow[], model?: { id: string; name?: string }, now = Date.now()): LimitWait | undefined {
 	// "You have hit your ChatGPT usage limit (pro plan). Try again in ~195 min."
 	const minutes = /usage limit\b[\s\S]*?try again in ~?\s*(\d+)\s*min/i.exec(error);
-	if (minutes) return { at: now + Number(minutes[1]) * 60_000 + MARGIN_MS, limit: "the ChatGPT usage limit" };
+	if (minutes) return { at: now + Number(minutes[1]) * 60_000 + MARGIN_MS, limit: /ChatGPT/i.test(error) ? "the ChatGPT usage limit" : "the usage limit" };
 	// "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC."
 	const regain = /regain access on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2}) UTC/i.exec(error);
 	if (regain) return { at: Math.max(Date.parse(`${regain[1]}T${regain[2]}:00Z`), now) + MARGIN_MS, limit: "the API usage limit" };
