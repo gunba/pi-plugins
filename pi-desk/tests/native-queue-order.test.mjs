@@ -10,7 +10,7 @@ import { promoteFollowUp } from "../src/host/native-queue-order.ts";
 
 const model = { id: "offline", name: "Offline", api: "openai-completions", reasoning: false, input: ["text", "image"], contextWindow: 100000, maxTokens: 2048, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-const image = { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" };
+const image = { type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNYkKIBAALUAS0ACLPLAAAAAElFTkSuQmCC", mimeType: "image/png" };
 
 test("Send now on a queued follow-up delivers it, with its image, before earlier follow-ups", { timeout: 5000 }, async t => {
 	const dir = mkdtempSync(join(tmpdir(), "desk-queue-order-")), contexts = [];
@@ -43,7 +43,9 @@ test("Send now on a queued follow-up delivers it, with its image, before earlier
 	await session.abort(); await running;
 	await session.sendCustomMessage({ customType: "desk-steering-resume", content: "Process the pending steering messages.", display: false }, { triggerTurn: true });
 	await session.waitForIdle();
-	assert.match(contexts[1], /Look at this/); assert.match(contexts[1], /iVBORw0KGgo=/);
+	assert.match(contexts[1], /Look at this/);
+	const delivered = JSON.parse(contexts[1]).find(message => message.role === "user" && message.content.some(block => block.text === "Look at this"));
+	assert.deepEqual(delivered.content.find(block => block.type === "image"), image);
 	assert.doesNotMatch(contexts[1], /Earlier follow-up/);
 	assert.match(contexts.at(-1), /Earlier follow-up/);
 	assert.deepEqual([session.getSteeringMessages(), session.getFollowUpMessages()], [[], []]);

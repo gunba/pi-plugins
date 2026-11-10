@@ -11,8 +11,8 @@ import { inheritProviderRuntime } from "../../pi-agents/subagents/subagents.ts";
 import { bindChildProvider } from "../../pi-agents/subagents/pi-sdk-driver.ts";
 import nativeCompaction from "../../pi-codex-wire/extensions/native-compaction.ts";
 
-function response(toolName, model) {
-	const events = [{ type: "message_start", message: { id: "msg_fixture", type: "message", role: "assistant", model,
+function response(toolName, model, messageId) {
+	const events = [{ type: "message_start", message: { id: messageId, type: "message", role: "assistant", model,
 		content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 11, output_tokens: 0 } } }];
 	if (toolName) events.push(
 		{ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_fixture", name: toolName, input: {} } },
@@ -27,18 +27,38 @@ function response(toolName, model) {
 		{ headers: { "content-type": "text/event-stream" } });
 }
 
-test("packaged Claude OAuth shaping survives tool turns, child login inheritance and native compaction", async () => {
+for (const messageThreads of ["default", "unsupported"]) test(`packaged Claude OAuth shaping survives tool turns, child login inheritance and native compaction (threads ${messageThreads})`, async () => {
 	const root = mkdtempSync(join(tmpdir(), "desk-claude-oauth-"));
-	const id = randomUUID(), requests = [], sessions = [];
+	const id = randomUUID(), requests = [], attempts = [], sessions = [], threadReplies = new Map();
 	const oldFetch = globalThis.fetch, oldDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = root;
 	let toolExecutions = 0;
 	globalThis.fetch = async (url, init) => {
 		assert.equal(new URL(String(url)).origin, "https://api.anthropic.com");
 		assert.equal(new URL(String(url)).pathname, "/v1/messages");
-		const body = JSON.parse(init.body), headers = new Headers(init.headers);
-		requests.push({ body, headers });
-		return response(requests.length === 1 ? body.tools.find(tool => tool.name === "Read")?.name : undefined, body.model);
+		const wire = JSON.parse(init.body), headers = new Headers(init.headers);
+		attempts.push(wire);
+		if (messageThreads === "unsupported" && wire.thread) return Response.json({ type: "error", error: {
+			type: "invalid_request_error", message: "This endpoint does not support threads.", details: { error_code: "thread_unsupported_request" },
+		} }, { status: 400 });
+		// Assertions inspect the full request the server sees, including retained thread context.
+		let body = wire;
+		if (wire.thread?.type === "continue") {
+			const previous = threadReplies.get(wire.thread.previous_message_id);
+			assert.ok(previous, "a continuation must name an existing server reply");
+			assert.equal(wire.system, undefined);
+			assert.equal(wire.tools, undefined);
+			assert.ok(wire.messages.length > 0);
+			body = { ...previous, ...wire, system: previous.system, tools: previous.tools,
+				messages: [...previous.messages, ...wire.messages] };
+		} else if (wire.thread) assert.deepEqual(wire.thread, { type: "create" });
+		const messageId = `msg_fixture_${requests.length + 1}`;
+		requests.push({ body, wire, headers, messageId });
+		const toolName = requests.length === 1 ? body.tools.find(tool => tool.name === "Read")?.name : undefined;
+		const content = toolName ? [{ type: "tool_use", id: "toolu_fixture", name: toolName, input: { value: "fixture" } }]
+			: [{ type: "text", text: "Completed fixture work." }];
+		threadReplies.set(messageId, { ...body, messages: [...body.messages, { role: "assistant", content }] });
+		return response(toolName, body.model, messageId);
 	};
 	try {
 		const login = JSON.stringify({ anthropic: { type: "oauth", access: `sk-ant-oat01-fixture-${id}`, refresh: "fixture", expires: Date.now() + 3600000 } });
@@ -85,6 +105,7 @@ test("packaged Claude OAuth shaping survives tool turns, child login inheritance
 		assert.ok(first.body.tools.some(tool => tool.name === "Read"));
 		assert.deepEqual(first.body.tools, second.body.tools);
 		assert.deepEqual(first.body.system, second.body.system);
+		if (first.wire.thread) assert.deepEqual(second.wire.thread, { type: "continue", previous_message_id: first.messageId });
 		assert.ok(first.body.tools.at(-1).cache_control);
 		assert.ok(first.body.system.some(block => block.cache_control));
 		assert.ok(first.body.messages.at(-1).content.at(-1).cache_control);
@@ -103,9 +124,11 @@ test("packaged Claude OAuth shaping survives tool turns, child login inheritance
 		const childSession = await open(childRuntime, childManager);
 		await childSession.prompt("Report fixture status.");
 		assert.equal(requests.at(-1).headers.get("authorization"), `Bearer sk-ant-oat01-fixture-${id}`);
+		if (first.wire.thread) assert.deepEqual(requests.at(-1).wire.thread, { type: "create" });
 
 		const before = readFileSync(parentManager.getSessionFile());
 		await parent.prompt("Additional fixture context. " + "x".repeat(500));
+		if (first.wire.thread) assert.deepEqual(requests.at(-1).wire.thread, { type: "continue", previous_message_id: second.messageId });
 		const compact = await parent.compact();
 		assert.equal(compact.summary, "Completed fixture work.");
 		assert.equal(parent.model.provider, "anthropic");
@@ -114,6 +137,16 @@ test("packaged Claude OAuth shaping survives tool turns, child login inheritance
 		assert.equal(requests.length, 5);
 		assert.ok(requests.every(request => request.body.system.filter(block => block.text.startsWith("x-anthropic-billing-header:")).length === 1),
 			"root, child without its own plugin load, and compaction each need one OAuth compatibility block");
+		if (messageThreads === "unsupported") {
+			assert.deepEqual(requests.map(request => request.wire.thread), [undefined, undefined, undefined, undefined, undefined]);
+			if (attempts[0].thread) {
+				assert.deepEqual(attempts[0].thread, { type: "create" });
+				assert.equal(attempts[1].thread, undefined);
+				assert.deepEqual(attempts[1].messages, attempts[0].messages);
+				assert.deepEqual(attempts[1].system, attempts[0].system);
+				assert.deepEqual(attempts[1].tools, attempts[0].tools);
+			}
+		}
 	} finally {
 		for (const session of sessions) {
 			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" });

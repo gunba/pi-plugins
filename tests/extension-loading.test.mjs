@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
@@ -37,7 +37,12 @@ test('the host SDK loads every bundled extension and Codex Wire', async t => {
   assert.ok(result.extensions.some(extension => extension.commands.has('context-window')));
   assert.equal(result.extensions.filter(extension => extension.commands.has('work')).length, 1);
   const links = result.extensions.find(extension => extension.path.replaceAll('\\', '/').endsWith('/pi-local-links/extensions/local-links.ts'));
-  assert.equal(typeof links?.markdownTransformer, 'function');
+  const registration = links?.markdownTransformer;
+  const transform = typeof registration === 'function' ? registration : registration?.transformer;
+  assert.equal(typeof transform, 'function');
+  const file = join(directory, 'fixture.txt'), markdown = `[fixture](<${file.replaceAll('\\', '/')}>)`;
+  assert.equal(transform(markdown, { messageType: 'user', isStreaming: false }), markdown);
+  assert.equal(transform(markdown, { messageType: 'assistant', isStreaming: false }), `[fixture](<${pathToFileURL(file).href}>)`);
 });
 
 test('the package exposes Image 2.5 through native image models without restoring image_gen', async t => {
