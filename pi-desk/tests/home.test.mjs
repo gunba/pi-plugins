@@ -10,6 +10,7 @@ import { Home, homeWork } from "../src/host/home.ts";
 import { InputLedger } from "../src/host/inputs.ts";
 import { HOME_MODEL } from "../src/shared/home.ts";
 import { SessionCatalog } from "../src/host/session-files.ts";
+import { settle, unseen } from "../src/shared/attention.ts";
 
 const fixture = t => {
 	const directory = mkdtempSync(join(tmpdir(), "desk-home-"));
@@ -54,7 +55,7 @@ function controller(t, notify) {
 		createSession(cwd, file, existing) {
 			sessions.set(existing.view.key, { view: { ...existing.view, state: "ready", activation: "activation", snapshot: { model: HOME_MODEL, thinking: "low", activity: "idle" } },
 				worker: { generation: "generation", command: async () => {} } }); return existing.view.key;
-		}, waitForSession: async key => sessions.get(key), inputEvent() {}, drainInputs: managed => admitted.push(inputs.next(managed.view.key)), attachments: () => ({ check: ids => ids.map(id => `${id}.png`) }) };
+		}, waitForSession: async key => sessions.get(key), inputEvent() {}, emit() {}, persistEvent() {}, drainInputs: managed => admitted.push(inputs.next(managed.view.key)), attachments: () => ({ check: ids => ids.map(id => `${id}.png`) }) };
 	let enabled = true;
 	const work = [], home = new Home(core, () => enabled, () => work, notify); home.startsAlone = () => true;
 	t.after(() => { home.close(); inputs.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -84,6 +85,25 @@ test("Home gives browsers the activation its uploads need and keeps the names of
 	assert.equal(opened.activation, core.sessions.get(opened.session).view.activation);
 	await home.message(randomUUID(), "What is this rash?", ["photo"]);
 	assert.deepEqual(home.snapshot().messages.at(-1).files, ["photo.png"]);
+});
+
+test("Home's newest reply or update marks it new until it is seen, though a watch is always set", async t => {
+	// Home always has a watch for its scheduled jobs, so it was never marked finished and the Home button never showed news.
+	const { home, core } = controller(t, async () => {});
+	const opened = await home.open(), managed = core.sessions.get(opened.session);
+	managed.view = { ...managed.view, watching: true, wakes: Date.now() + 3_600_000 };
+	const id = randomUUID(); home.store.request(id, { action: "notify", title: "Morning", text: "Rain at noon." });
+	await home.tick();
+	const at = home.snapshot().messages.at(-1).at;
+	assert.equal(core.sessions.get(opened.session).view.finished, at);
+	assert.equal(unseen(core.sessions.get(opened.session).view), true);
+	// A turn running doesn't take the mark away, as it does for other conversations.
+	managed.view = { ...core.sessions.get(opened.session).view, snapshot: { ...managed.view.snapshot, activity: "running" } };
+	settle(managed);
+	assert.equal(managed.view.finished, at);
+	managed.view = { ...managed.view, seen: at + 1 };
+	await home.tick();
+	assert.equal(unseen(managed.view), false);
 });
 
 test("scheduled Home alerts use an explicit phone delivery path", async t => {

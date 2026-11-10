@@ -50,7 +50,8 @@ export function waitsForUser(view: SessionView): boolean {
  */
 export function settle(managed: { view: SessionView; settling?: boolean }, now = Date.now()): void {
 	const { view } = managed;
-	if (view.state !== "ready") return;
+	// Home's mark is its newest reply (host/home.ts markNews).
+	if (view.state !== "ready" || view.home) return;
 	if (view.snapshot?.activity === "running" || view.snapshot?.activity === "waiting") {
 		managed.settling = true;
 		if (view.finished) managed.view = { ...view, finished: undefined };

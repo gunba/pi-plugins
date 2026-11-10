@@ -165,9 +165,22 @@ export class Home {
 			}
 			// On the workspace server Home starts by itself, so its scheduled jobs run without anyone opening it.
 			if (!this.store.get("session") && this.startsAlone()) await this.ensure();
+			this.markNews();
 		} catch (error) {
 			this.error = error instanceof Error ? error.message : String(error);
 		} finally { this.ticking = false; if (this.closeWhenIdle) this.store.close(); }
+	}
+	/**
+	 * Marks Home finished at its newest reply or update, so the Home button shows there is something new until Jordan
+	 * has looked (shared/attention.ts unseen). Other conversations are marked when a turn ends waiting for him alone,
+	 * which Home's never do: it always has a watch set for its scheduled jobs.
+	 */
+	private markNews(): void {
+		const managed = this.current(), latest = this.store.latestReply();
+		if (!managed || !latest || (managed.view.finished ?? 0) >= latest) return;
+		managed.view = { ...managed.view, finished: latest };
+		this.core.emit({ type: "session", session: managed.view });
+		this.core.persistEvent();
 	}
 	close(): void { this.closed = true; clearInterval(this.timer); if (this.ticking) this.closeWhenIdle = true; else this.store.close(); }
 }

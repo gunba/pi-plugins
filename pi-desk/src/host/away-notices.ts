@@ -89,7 +89,8 @@ export class AwayNotices {
 		}
 		for (const id of this.questions.keys()) if (id.startsWith(prefix) && !live.has(id)) { this.questions.delete(id); this.sent.delete(id); }
 		// A turn that ends with a watch, a wake or agents still working is not finished: the conversation goes on by itself.
-		if (!view.finished || view.finished < this.started || this.finished.get(view.key) === view.finished) return;
+		// Home sends its own updates to the phone (home_notify), so its mark sends nothing more.
+		if (view.home || !view.finished || view.finished < this.started || this.finished.get(view.key) === view.finished) return;
 		this.finished.set(view.key, view.finished);
 		if (!this.sending) return;
 		const activity = view.snapshot?.activity;

@@ -22,6 +22,11 @@ export class HomeStore {
 	set(key: string, value: unknown): void { this.db.prepare("INSERT OR REPLACE INTO home_values VALUES (?,?)").run(key, JSON.stringify(value)); }
 	message(message: HomeMessage): void { this.db.prepare("INSERT OR IGNORE INTO home_messages VALUES (?,?,?)").run(message.id, JSON.stringify(message), message.at); }
 	messages(): HomeMessage[] { return (this.db.prepare("SELECT value FROM home_messages ORDER BY at DESC, rowid DESC LIMIT 80").all() as { value: string }[]).reverse().map(row => JSON.parse(row.value)); }
+	/** When Home last said something: its newest reply or update. */
+	latestReply(): number | undefined {
+		const row = this.db.prepare("SELECT max(at) AS at FROM home_messages WHERE json_extract(value,'$.role')='assistant'").get() as { at: number | null } | undefined;
+		return row?.at ?? undefined;
+	}
 	run(run: HomeRun): void { this.set("run", run); }
 	request(id: string, command: HomeRequest): void {
 		const existing = this.db.prepare("SELECT command FROM home_requests WHERE id=?").get(id) as { command: string } | undefined;
