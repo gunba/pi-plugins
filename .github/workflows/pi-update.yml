@@ -3,9 +3,15 @@ name: Pi update
 # Desk follows each release of Pi and of the Claude sign-in extension (@gotgenes/pi-anthropic-auth), which must keep
 # up with changes on Anthropic's side: pin the new versions, pass the same checks as any release, then publish. Hosts
 # with automatic updates install the result within the hour. A failure opens an issue instead of releasing.
+# GitHub skips many scheduled runs when it is busy, so the check also runs after each push to main passes CI: a fix
+# pushed for a failed update is then published without anyone starting this workflow by hand.
 on:
   schedule:
     - cron: "23 * * * *"
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -19,6 +25,8 @@ permissions:
 
 jobs:
   update:
+    # The CI this workflow starts for its own commit runs as a dispatch, so only CI for pushes is followed.
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
