@@ -46,7 +46,7 @@ import { AgentOperations, applyModelChoice } from "./agent-operations.ts";
 import { ConversationMoves } from "./conversation-moves.ts";
 import { EfficiencyReports } from "./efficiency.ts";
 import { HostApi } from "./host-api.ts";
-import type { HostCore, HostOptions, ManagedSession } from "./host-core.ts";
+import { chooseConversation, sameFile, type HostCore, type HostOptions, type ManagedSession } from "./host-core.ts";
 import { HostEvents } from "./host-events.ts";
 import { HostHttp } from "./host-http.ts";
 import { HostUpdates } from "./host-updates.ts";
@@ -587,8 +587,7 @@ export class DeskHost {
 
 	/** What the watch service needs of the host: who is running, reopening conversations, and the other computers. */
 	private watchHost(directory: string): ConstructorParameters<typeof WatchService>[0] {
-		const conversation = (agent: string) => [...this.sessions.values()].filter(item => item.view.agentId === agent)
-			.sort((a, b) => Number(!!b.worker) - Number(!!a.worker) || Number(!b.view.moved) - Number(!a.view.moved) || b.view.created - a.view.created)[0];
+		const conversation = (agent: string) => chooseConversation([...this.sessions.values()].filter(item => item.view.agentId === agent));
 		let changed: ReturnType<typeof setTimeout> | undefined;
 		return {
 			agentDir: this.options.agentDir, sessionDir: this.options.sessionDir, deskDirectory: directory,
@@ -950,7 +949,7 @@ export class DeskHost {
 			if (moved) throw new Error(`This conversation moved to ${this.account.network?.computers().find(computer => computer.id === moved.to)?.name ?? "another computer"} on ${new Date(moved.at).toLocaleString()}.`);
 			if (this.teleport?.superseded(headerId, sessionFile)) throw new Error("This conversation went to another computer and came back; it continues in the copy that came back.");
 			const active = [...this.sessions.values()].find(item => item.worker && item.view.state !== "failed"
-				&& (item.view.snapshot?.file ?? item.view.file) === sessionFile);
+				&& sameFile(item.view.snapshot?.file ?? item.view.file, sessionFile!));
 			if (active) {
 				if (adopt && active !== existing) throw new WorkerConnectionError("This native conversation is already attached elsewhere.");
 				return active.view.key;

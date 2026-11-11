@@ -1,5 +1,6 @@
 import type { ApiResponse } from "../shared/relay-protocol.ts";
 import type { HostEvent, HostState, SessionView } from "../shared/protocol.ts";
+import { isOpenSession } from "../shared/workspace.ts";
 import type { Attachments } from "./attachments.ts";
 import type { InputLedger } from "./inputs.ts";
 import type { SessionWorker } from "./worker-client.ts";
@@ -27,6 +28,21 @@ export interface ManagedSession { view: SessionView; worker?: SessionWorker; ini
 	resumeRunning?: boolean;
 	/** The keys of kept questions whose answers are on their way to the agent (server.ts deliverAnswers). */
 	answering?: Set<string> }
+
+/**
+ * The row Desk acts on for a conversation it lists more than once, as when a removed one was resumed again under another
+ * spelling of its file's path: the running row, then one still listed, then one that didn't move away, then the newest.
+ * A removed row must not stand in for a listed one, which would then never hear its watches' news.
+ */
+export function chooseConversation(rows: Iterable<ManagedSession>): ManagedSession | undefined {
+	return [...rows].sort((a, b) => Number(!!b.worker) - Number(!!a.worker) || Number(isOpenSession(b.view)) - Number(isOpenSession(a.view))
+		|| Number(!b.view.moved) - Number(!a.view.moved) || b.view.created - a.view.created)[0];
+}
+
+/** Whether a row's saved path names `file`: Windows paths name the same file in any letter case. */
+export function sameFile(path: string | undefined, file: string): boolean {
+	return path !== undefined && (process.platform === "win32" ? path.toLowerCase() === file.toLowerCase() : path === file);
+}
 
 /** The host's conversations and the operations on them that its other parts use; DeskHost (server.ts) provides it. */
 export interface HostCore {

@@ -104,6 +104,25 @@ test("watch news for a helper agent waits for its next turn instead of opening i
 	} finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("a removed row for the same conversation doesn't take the news of the sleeping one listed", async () => {
+	// A conversation removed and later resumed under another letter case of its file's path was listed twice. Its watch's
+	// news went to the newer, removed row, which has no one to tell, so the sleeping conversation was never woken.
+	const dir = mkdtempSync(join(tmpdir(), "desk-workspace-"));
+	const host = new DeskHost({ cwd: dir, agentDir: dir, dataDir: dir, port: 0 });
+	try {
+		await host.start();
+		const agent = randomUUID(), file = join(dir, "native.jsonl"), listed = randomUUID(), removed = randomUUID();
+		host.sessions.set(listed, { view: { key: listed, activation: randomUUID(), cwd: dir, created: 1, state: "closed", kept: true, agentId: agent, file } });
+		host.sessions.set(removed, { view: { key: removed, activation: randomUUID(), cwd: dir, created: 2, state: "closed", agentId: agent, file } });
+		const reopened = [];
+		host.createSession = (_cwd, _file, existing) => { reopened.push(existing.view.key); return existing.view.key; };
+		host.watches.store.addEvent({ id: randomUUID(), watch: "", agent, home: "", name: "w1", text: "Watch w1: it's 3:01 am, the time you set.", created: Date.now(), state: "pending" });
+		host.watches.scan();
+		assert.deepEqual(reopened, [listed]);
+		assert.deepEqual(host.watches.store.events(agent, "pending").map(event => event.name), ["w1"]);
+	} finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("removing a conversation ends its helper agents' watches with its own", async () => {
 	// A helper runs only in its conversation's process; once that was removed, the helper's watches ran on unheard.
 	const dir = mkdtempSync(join(tmpdir(), "desk-workspace-"));

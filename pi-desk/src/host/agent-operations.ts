@@ -9,7 +9,7 @@ import { readHandbookFile } from "../../../pi-handbook/src/file.ts";
 import { RELEASE } from "../shared/release.ts";
 import type { ConversationSearch } from "./conversation-search.ts";
 import type { ConversationMoves } from "./conversation-moves.ts";
-import type { HostCore, ManagedSession, ModelChoice } from "./host-core.ts";
+import { chooseConversation, type HostCore, type ManagedSession, type ModelChoice } from "./host-core.ts";
 import type { Parties } from "./parties.ts";
 import type { PartyNetwork } from "./party-network.ts";
 import { configuredSessionDirectory } from "./session-directories.ts";
@@ -127,7 +127,7 @@ export class AgentOperations {
 
 	/** A conversation's handbook, read from its history, when an agent on any computer asks. */
 	private async handbook(session: string): Promise<NonNullable<OperationResult["result"]>> {
-		const managed = [...this.core.sessions.values()].find(item => item.view.agentId === session);
+		const managed = chooseConversation([...this.core.sessions.values()].filter(item => item.view.agentId === session));
 		const file = managed?.view.file ?? this.host.parties().store.sessionFile(session);
 		if (!file) throw Error("This conversation's history is not on this computer.");
 		const text = await readHandbookFile(file);
@@ -136,7 +136,7 @@ export class AgentOperations {
 
 	/** Reopen a conversation by its agent id, when an agent asks. One that is already running is left as it is. */
 	private async resume(session: string, wait?: number): Promise<NonNullable<OperationResult["result"]>> {
-		const store = this.host.parties().store, managed = [...this.core.sessions.values()].find(item => item.view.agentId === session);
+		const store = this.host.parties().store, managed = chooseConversation([...this.core.sessions.values()].filter(item => item.view.agentId === session));
 		if (managed?.worker && (managed.view.state === "ready" || managed.view.state === "starting")) return { session, state: "running", key: managed.view.key };
 		if (managed?.worker) throw Error("This conversation is still stopping. Try again in a moment.");
 		const member = store.member(session);

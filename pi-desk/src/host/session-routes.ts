@@ -4,7 +4,7 @@ import type { InputSubmission } from "../shared/inputs.ts";
 import type { WorkerCommand } from "../shared/protocol.ts";
 import type { ApiRequest, ApiResponse } from "../shared/relay-protocol.ts";
 import { commandFrom, string, workerCommandFrom } from "./commands.ts";
-import { reply, type HostCore } from "./host-core.ts";
+import { chooseConversation, reply, sameFile, type HostCore } from "./host-core.ts";
 import type { SavedSessionIndex } from "./saved-sessions.ts";
 import { REMOVED } from "./watches.ts";
 import { StaleGeneration } from "./worker-errors.ts";
@@ -31,7 +31,7 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 	}
 	if (url.pathname === "/api/resume" && request.method === "POST") {
 		const file = realpathSync(string(data.file, 4000));
-		const old = [...core.sessions.values()].find(item => (item.view.snapshot?.file ?? item.view.file) === file);
+		const old = chooseConversation([...core.sessions.values()].filter(item => sameFile(item.view.snapshot?.file ?? item.view.file, file)));
 		return reply({ key: core.createSession(core.options.cwd, file, old, data.takeover === true) }, 202);
 	}
 	const inputRoute = /^\/api\/sessions\/([a-f0-9-]+)\/(inputs|uploads|restart)(?:\/([a-f0-9-]+)(?:\/(cancel|dismiss))?)?$/.exec(url.pathname);
