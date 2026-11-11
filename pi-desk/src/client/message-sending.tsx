@@ -19,7 +19,11 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : S
  * many sent earlier were still on their way.
  */
 export interface Outgoing { id: string; session: string; message: ChatMessage; draft: string; after: number; queued: number; ahead: number; receipt?: string }
-const queuedCount = (session: SessionView | undefined) => (session?.snapshot?.queue.steering.count ?? 0) + (session?.snapshot?.queue.followUp.count ?? 0);
+/** Messages sent into Pi's queue that are still waiting there, counted as sent though steering joins them into one. */
+const queuedCount = (session: SessionView | undefined) => {
+  const queue = session?.snapshot?.queue;
+  return (queue?.steering.sent ?? queue?.steering.count ?? 0) + (queue?.followUp.sent ?? queue?.followUp.count ?? 0);
+};
 const newest = (messages: readonly ChatMessage[]) => messages.reduce((order, message) => Math.max(order, message.order), -Infinity);
 /**
  * Whether the conversation now shows the message, or its pending-message card does: it failed or was cancelled, or it

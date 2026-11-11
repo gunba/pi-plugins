@@ -4,13 +4,50 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 interface PendingQueue { messages: unknown[] }
 interface QueueInternals {
 	_steeringMessages: string[]; _followUpMessages: string[]; _emitQueueUpdate(): void;
+	/** Waiting messages whose images Pi resizes as they are delivered. */
+	_queuedMessagesWithImages?: WeakSet<object>;
 	agent: { steeringQueue: PendingQueue; followUpQueue: PendingQueue };
 }
+type QueuedMessage = { role?: string; content: { type: string; text?: string }[] };
 
 const queuedText = (message: unknown): string | undefined => {
 	const value = message as { role?: string; content?: { type?: string; text?: string }[] };
 	return value?.role === "user" && Array.isArray(value.content) && value.content[0]?.type === "text" ? value.content[0].text : undefined;
 };
+
+/** How many sent messages a waiting message holds, once combineSteering joined several into it. */
+const combined = new WeakMap<object, number>();
+
+/** How many messages sent into a queue are still waiting, counting each that combineSteering joined into another. */
+export function sentWaiting(session: AgentSession, queue: "steering" | "followUp"): number {
+	const native = session as unknown as QueueInternals;
+	const pending = queue === "steering" ? native.agent?.steeringQueue : native.agent?.followUpQueue;
+	const texts = queue === "steering" ? session.getSteeringMessages() : session.getFollowUpMessages();
+	return texts.length + (pending?.messages ?? []).reduce<number>((sum, message) => sum + (combined.get(message as object) ?? 1) - 1, 0);
+}
+
+/**
+ * Joins the steering messages waiting in Pi into one, so several sent while the agent works reach it, and wait, as one
+ * message: their texts in the order sent, a paragraph apart, then their images. Leaves the queue alone unless Pi's two
+ * lists of it agree, as they don't while Pi is taking it or while an extension's own message waits in it.
+ */
+export function combineSteering(session: AgentSession): void {
+	const native = session as unknown as QueueInternals;
+	const pending = native.agent?.steeringQueue, texts = native._steeringMessages;
+	if (!Array.isArray(texts) || texts.length < 2 || !Array.isArray(pending?.messages) || typeof native._emitQueueUpdate !== "function") return;
+	const messages = pending.messages as QueuedMessage[];
+	if (messages.length !== texts.length || messages.some((message, index) => queuedText(message) !== texts[index]
+		|| message.content.slice(1).some(block => block.type === "text"))) return;
+	const first = messages[0]!, text = texts.filter(value => value.trim()).join("\n\n");
+	const parts = messages.reduce((sum, message) => sum + (combined.get(message) ?? 1), 0);
+	const images = messages.some(message => native._queuedMessagesWithImages?.has(message));
+	first.content = [{ ...first.content[0]!, text }, ...messages.flatMap(message => message.content.slice(1))];
+	combined.set(first, parts);
+	if (images) native._queuedMessagesWithImages?.add(first);
+	pending.messages = [first];
+	native._steeringMessages = [text];
+	native._emitQueueUpdate();
+}
 
 const messageIds = new WeakMap<object, string>();
 function messageId(message: object): string {

@@ -53,7 +53,7 @@ import { NativeContext } from "./context.ts";
 import { toolInventory } from "./tool-inventory.ts";
 import { resourceInventory } from "../../../pi-ui/resources.ts";
 import { NativeQueueGuard } from "../../../pi-work-coordination/native-queue.ts";
-import { promoteFollowUp, cancelQueued, queuedMessageIds, editQueued } from "./native-queue-order.ts";
+import { promoteFollowUp, cancelQueued, queuedMessageIds, editQueued, combineSteering, sentWaiting } from "./native-queue-order.ts";
 import { LearnMode } from "./learn.ts";
 import { ServiceUsage } from "../../../pi-service-usage/index.ts";
 import { trackServiceModels } from "../../../pi-service-usage/models.ts";
@@ -518,8 +518,9 @@ export class DeskEngine {
 				const reference = this.transcript.files.observePath(file.path, session.sessionManager.getCwd(), file.name);
 				return reference ? [reference] : [];
 			}));
+			const sent = sentWaiting(session, queue);
 			return { count: messages.length, previews: messages.map(queuePreview), ids: queuedMessageIds(session, queue),
-				...(files.some(list => list.length) ? { files } : {}) };
+				...(files.some(list => list.length) ? { files } : {}), ...(sent !== messages.length ? { sent } : {}) };
 		};
 		const manager = session.sessionManager, leaf = manager.getLeafId();
 		if (this.opening?.manager !== manager || !this.opening.text)
@@ -832,7 +833,12 @@ export class DeskEngine {
 					void session.prompt(command.text + attached.text, {
 						images: attached.images.length ? attached.images : undefined,
 						source: "interactive", streamingBehavior: command.behavior === "now" ? undefined : command.behavior,
-						preflightResult: success => { if (success) accept(); },
+						preflightResult: disposition => {
+							if (!disposition) return;
+							// Steering sent while the agent works joins the steering already waiting, as one message.
+							if (disposition === "queued" && command.behavior === "steer") combineSteering(session);
+							accept();
+						},
 					}).then(() => { if (!admitted) accept(); }).catch(error => {
 						if (!admitted) reject(error);
 						else this.presentation.notify(error instanceof Error ? error.message : String(error), "error");

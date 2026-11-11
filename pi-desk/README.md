@@ -460,7 +460,9 @@ assistant text/thinking, tool cards, images and complete-output links. Finished
 agents remain available through **Include finished**. A new active collection
 can open the desktop pane when no other panel or text editor is in use.
 
-Pending steering and follow-ups remain visible above the composer. **Stop**
+Pending steering and follow-ups remain visible above the composer. Steering sent
+while some is already waiting joins it as one message, its texts a paragraph
+apart, so it is edited, cancelled and delivered as one. **Stop**
 interrupts the current reply and starts the next native turn when steering is
 waiting; it does not invent another prompt when that queue is empty.
 

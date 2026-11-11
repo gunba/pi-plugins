@@ -45,7 +45,9 @@ export interface PresentationSnapshot {
 	editorId: string;
 	title: string;
 }
-export interface QueueGroup { count: number; previews: string[]; ids?: (string | null)[]; files?: FileReference[][] }
+export interface QueueGroup { count: number; previews: string[]; ids?: (string | null)[]; files?: FileReference[][];
+	/** Messages sent into this queue that are still waiting, when some were joined into one waiting message; count is the waiting messages. */
+	sent?: number }
 export interface SessionSnapshot {
 	id: string;
 	file?: string;
