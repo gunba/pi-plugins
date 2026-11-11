@@ -81,7 +81,7 @@ test("native SDK queues and a pending tool question survive a public host handof
 	await worker.command({ kind: "prompt", text: "Steering one", behavior: "steer" });
 	await worker.command({ kind: "prompt", text: "Steering two", behavior: "steer" });
 	await worker.command({ kind: "prompt", text: "Later follow-up", behavior: "followUp" });
-	const queued = await waitSnapshot(worker, state => state.queue.steering.count === 2 && state.queue.followUp.count === 1);
+	const queued = await waitSnapshot(worker, state => state.queue.steering.count === 1 && state.queue.steering.sent === 2 && state.queue.followUp.count === 1);
 	const child = JSON.parse(readFileSync(join(root, "child.json")));
 	const before = readFileSync(snapshot.file), generation = worker.generation;
 	await assertFixtureJobMembers([process.pid, child.pid, child.owner], "native-before");
@@ -108,8 +108,8 @@ test("native SDK queues and a pending tool question survive a public host handof
 	await waitSnapshot(adopted.worker, state => state.activity === "idle" && !state.ui.interactions.length && !state.queue.steering.count && !state.queue.followUp.count);
 	assert.equal(JSON.parse(readFileSync(join(root, "answer.json"))).answer, "Confirmed");
 	const calls = JSON.parse(readFileSync(join(root, "model-calls.json")));
-	assert.deepEqual(calls, [["Start offline fixture"], ["Start offline fixture", "Steering one", "Steering two"],
-		["Start offline fixture", "Steering one", "Steering two", "Later follow-up"]]);
+	assert.deepEqual(calls, [["Start offline fixture"], ["Start offline fixture", "Steering one\n\nSteering two"],
+		["Start offline fixture", "Steering one\n\nSteering two", "Later follow-up"]]);
 	assert.equal(next.inputs.checkpoint().state, "complete");
 });
 

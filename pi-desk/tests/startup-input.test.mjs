@@ -113,8 +113,8 @@ test("startup messages reach native Pi at the next tool boundary rather than wai
 		await Promise.race([firstRequested.promise, session.waitForIdle()]);
 		assert.equal(typeof releaseFirst, "function", JSON.stringify(session.messages.filter(message => message.role === "assistant").map(message => message.errorMessage)));
 		releaseFirst(); await session.waitForIdle();
-		assert.deepEqual(requests[1], ["Start the fixture task", "Use the revised outline", "Include the key dates"],
-			"ordinary startup input must be visible on the next native turn, not held behind continuing tool work");
+		assert.deepEqual(requests[1], ["Start the fixture task", "Use the revised outline\n\nInclude the key dates"],
+			"ordinary startup input must be visible on the next native turn, as one message, not held behind continuing tool work");
 		assert.deepEqual(requests[2], [...requests[1], "Do the later task"], "explicit Queue still waits until current work finishes");
 		assert.equal(requests.length, 3, "no extra task or duplicate delivery");
 		assert.deepEqual(session.getSteeringMessages(), []);
@@ -137,12 +137,12 @@ test("startup messages reach native Pi at the next tool boundary rather than wai
 		assert.equal((await f.request("inputs", force)).body.input.state, "accepted");
 		assert.equal(f.calls.filter(call => call.id === force.id).length, 1, "duplicate delivery receipts cannot interrupt twice");
 		assert.equal(requests.length, 6, "the interrupted stream is replaced without an extra queue-resume turn");
-		for (const text of ["Earlier accepted steer", "Another accepted steer", "New direction"]) assert.ok(requests[4].includes(text));
+		for (const text of ["Earlier accepted steer\n\nAnother accepted steer", "New direction"]) assert.ok(requests[4].includes(text));
 		assert.ok(!requests[4].includes("Retained follow-up"));
 		assert.ok(requests[5].includes("Retained follow-up"));
 		const userTexts = session.messages.filter(message => message.role === "user").flatMap(message =>
 			typeof message.content === "string" ? [message.content] : message.content.filter(block => block.type === "text").map(block => block.text));
-		for (const text of ["Earlier accepted steer", "Another accepted steer", "New direction", "Retained follow-up"]) {
+		for (const text of ["Earlier accepted steer\n\nAnother accepted steer", "New direction", "Retained follow-up"]) {
 			assert.equal(userTexts.filter(value => value === text).length, 1, "accepted native input is not rebuilt or replayed");
 		}
 		assert.deepEqual(session.getSteeringMessages(), []);

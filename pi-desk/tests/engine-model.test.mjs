@@ -43,14 +43,13 @@ test("queued Desk steering reaches one native model turn without rewriting termi
 		for (const message of ["First steering", "Second steering"]) {
 			assert.deepEqual(await engine.command(engine.presentation.generation, { kind: "prompt", text: message, behavior: "steer" }), { accepted: true });
 		}
-		assert.deepEqual(session.getSteeringMessages(), ["First steering", "Second steering"]);
+		assert.deepEqual(session.getSteeringMessages(), ["First steering\n\nSecond steering"], "steering sent while some waits joins it");
 		finish(); finish = undefined;
 		await running;
-		assert.deepEqual(requests, [["Original task"], ["Original task", "First steering", "Second steering"]],
+		assert.deepEqual(requests, [["Original task"], ["Original task", "First steering\n\nSecond steering"]],
 			"both queued instructions must be in the next request, not separated by another assistant turn");
 		const inputs = session.sessionManager.getBranch().filter(entry => entry.type === "message" && entry.message.role === "user");
-		assert.deepEqual(inputs.map(entry => text(entry.message)), ["Original task", "First steering", "Second steering"]);
-		assert.equal(new Set(inputs.map(entry => entry.id)).size, 3, "batching must not merge or replace native message identities");
+		assert.deepEqual(inputs.map(entry => text(entry.message)), ["Original task", "First steering\n\nSecond steering"]);
 		await engine.reload();
 		assert.equal(session.steeringMode, "all", "resource reload must retain Desk's batching policy");
 		assert.equal(readFileSync(settingsFile, "utf8"), baseline, "Desk's runtime policy must not change terminal preferences");
