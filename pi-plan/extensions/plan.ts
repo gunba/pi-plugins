@@ -6,10 +6,10 @@ import { ensureWorkUi, safeWorkText, type WorkUiSource } from "../../pi-work-ui/
 import { planWorkSection } from "../../pi-work-ui/sections.ts";
 import { getPresentation, type Presentation, type UiDetails } from "../../pi-ui/index.ts";
 import { PlanStore, PlanStateError } from "../src/store.ts";
-import { DEFAULT_BLOCKED_AFTER_ROUNDS, DEFAULT_MAX_PLAN_ROUNDS, PLAN_COMMAND_ENTRY, PLAN_ROUND_MESSAGE } from "../src/constants.ts";
+import { DEFAULT_BLOCKED_AFTER_ROUNDS, DEFAULT_MAX_PLAN_ROUNDS, PLAN_CHANGE_ENTRY, PLAN_COMMAND_ENTRY, PLAN_ROUND_MESSAGE } from "../src/constants.ts";
 import { type PlanRef, type PlanRoundIdentity, type PlanView } from "../src/domain.ts";
 import { branchContainsRound, decodePlanRoundDetails } from "../src/replay.ts";
-import { PLAN_CHECK_EVERY, renderDroppedSteps, renderPlanCheck, renderPlanGuidance, renderPlanRoundPrompt, renderPlanWrapup, renderStepNotes } from "../src/prompt.ts";
+import { PLAN_CHECK_EVERY, renderDroppedSteps, renderPlanCheck, renderPlanGuidance, renderPlanRoundPrompt, renderPlanWrapup, renderRefusedCalls, renderStepNotes } from "../src/prompt.ts";
 import { CreateParameters, UpdateParameters, definition, preparePlanArguments, type CreateParams, type UpdateParams } from "../src/tools.ts";
 import { planControls, planPresentation } from "../src/presentation.ts";
 import { STEP_STATUSES, currentSteps, stepSummary } from "../src/steps.ts";
@@ -27,13 +27,24 @@ const PLAN_TOOL_NAMES = new Set(["create_plan", "update_plan"]);
 /** Tools whose results showed the model the plan, including get_plan in earlier histories. */
 const PLAN_SHOWN_BY = new Set(["get_plan", "create_plan", "update_plan"]);
 
-/** The plan the model last saw in a plan tool's result, in this branch. */
+/**
+ * The plan the model last saw in a plan tool's result, in this branch. A program's plan call returns the plan to the
+ * program: Pi records the call on the program's result, not the plan, which is then the one the latest change before
+ * that result left.
+ */
 function lastShownPlan(branch: readonly SessionEntry[]): string {
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index]!;
-		if (entry.type !== "message" || entry.message.role !== "toolResult" || !PLAN_SHOWN_BY.has(entry.message.toolName)) continue;
-		const plan = (entry.message.details as { plan?: { id: string; revision: number } | null } | undefined)?.plan;
-		if (plan !== undefined) return seenKey(plan);
+		if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
+		const details = entry.message.details as { plan?: { id: string; revision: number } | null; calls?: unknown } | undefined;
+		if (PLAN_SHOWN_BY.has(entry.message.toolName)) { if (details?.plan !== undefined) return seenKey(details.plan); continue; }
+		const calls = Array.isArray(details?.calls) ? details.calls as { name?: unknown; status?: unknown }[] : [];
+		if (!calls.some(call => typeof call?.name === "string" && PLAN_SHOWN_BY.has(call.name) && call.status === "ok")) continue;
+		for (let at = index - 1; at >= 0; at--) {
+			const change = branch[at]!;
+			if (change.type === "custom" && change.customType === PLAN_CHANGE_ENTRY) return seenKey((change.data as { plan?: { id: string; revision: number } | null } | undefined)?.plan);
+		}
+		return "";
 	}
 	return "";
 }
@@ -85,6 +96,8 @@ class PlanController {
 	private noted = "";
 	/** Unfinished steps the model's last update left out, to tell it about on its next result. */
 	private dropped: string[] = [];
+	/** Plan calls a program made that failed, to tell the model with the program's result: the program may not pass them on. */
+	private refused: { tool: string; reason: string }[] = [];
 	private seen = "";
 	/** The plan revision the model last saw, as seenKey gives it; "" when it has seen none. */
 	private modelSeen = "";
@@ -196,6 +209,14 @@ class PlanController {
 			throw new Error(`The plan changed since you last saw it, so nothing was applied. It is now:\n${planText(current)}\n`
 				+ "Send the update again if it still applies.");
 		}
+		if (current.phase === "complete") {
+			// A completed plan takes its steps' final states, not new work: edited on, it would look current to the model
+			// while everyone else sees a finished plan.
+			if (params.objective !== undefined || params.steps?.some(step => typeof step === "string" || step.status !== "completed"))
+				throw new Error("The plan is complete, so it no longer tracks work. For new work, create_plan with its objective and steps.");
+			// Completing it again changes nothing.
+			if (params.action === "complete") return this.control({ ...params, action: "edit" }, ref(current));
+		}
 		return this.control(params, ref(current));
 	}
 	/** The plan a tool returns to the model, which has now seen it. */
@@ -247,7 +268,9 @@ class PlanController {
 		});
 		this.pi.registerTool({
 			name: "update_plan", label: "Update Plan", description: "Change the plan (edit replaces the fields given) or its state.",
-			promptGuidelines: guidance, parameters: UpdateParameters, prepareArguments: preparePlanArguments, executionMode: "sequential",
+			// An update that names no action is an edit.
+			promptGuidelines: guidance, parameters: UpdateParameters, executionMode: "sequential",
+			prepareArguments: value => preparePlanArguments(value && typeof value === "object" && !Array.isArray(value) && !("action" in value) ? { action: "edit", ...value } : value),
 			execute: async (_id, params: UpdateParams, _signal, _update, ctx) => this.run(ctx, () => this.shown(this.update(params))),
 			renderCall: (params, theme) => call("Update plan", params, theme),
 			renderResult: renderer,
@@ -325,20 +348,27 @@ class PlanController {
 		// In long conversations the plan falls behind the work: nothing but the model's own earlier plan calls shows it
 		// the plan, and those recede. An active or completed plan untouched for PLAN_CHECK_EVERY of the model's own tool
 		// calls gets a short reminder at the end of the next result, and again every PLAN_CHECK_EVERY calls while it stays
-		// untouched: a completed one, because the model has gone on working without a plan. A paused or blocked plan waits
-		// for the user. Only that new result changes, so earlier context and the prompt cache are left as they were.
+		// untouched: a completed one, because the model has gone on working without a plan, and a paused or blocked one,
+		// because the model working again has left it behind (1,867 calls under paused plans in two weeks, none checked).
+		// Only that new result changes, so earlier context and the prompt cache are left as they were.
 		this.pi.on("tool_result", event => {
-			// Calls a script made (codemode) go back to the script, not the model.
-			if (event.parentToolCallId || this.stopping) return;
-			const plan = this.current(), key = plan?.phase === "active" || plan?.phase === "complete" ? `${plan.id}:${plan.revision}` : "";
+			if (this.stopping) return;
+			// Calls a script made (codemode) go back to the script, not the model, and a script seldom passes on a plan
+			// call's failure: 23 updates in three days were refused unseen.
+			if (event.parentToolCallId) {
+				if (PLAN_TOOL_NAMES.has(event.toolName) && event.isError) this.refused.push({ tool: event.toolName,
+					reason: event.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim() });
+				return;
+			}
+			const plan = this.current(), key = plan ? `${plan.id}:${plan.revision}` : "";
 			// A plan changed some other way (Desk's plan controls, say) counts from that change; this call is the first since.
 			if (key !== this.seen) { this.seen = key; this.sinceUpdate = 0; }
 			// A step's notes come up once, when the model reaches it: a plan tool's own result shows them, and from a
 			// program, the program's result does.
 			const notes = plan && key ? renderStepNotes(plan) : "", fresh = notes !== this.noted ? notes : "";
 			this.noted = notes;
-			const dropped = this.dropped.length ? renderDroppedSteps(this.dropped) : "";
-			this.dropped = [];
+			const dropped = [this.refused.length ? renderRefusedCalls(this.refused) : "", this.dropped.length ? renderDroppedSteps(this.dropped) : ""].filter(Boolean).join("\n");
+			this.dropped = []; this.refused = [];
 			let text = dropped;
 			if (!plan || !key || PLAN_TOOL_NAMES.has(event.toolName)) this.sinceUpdate = 0;
 			// A check repeats the notes.

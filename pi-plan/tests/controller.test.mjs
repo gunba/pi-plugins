@@ -134,13 +134,16 @@ test("complete records open steps; definition fields apply with any action; crea
 
 test("an update whose action is refused saves none of its fields", async () => {
 	// complete with the final steps, sent for a plan already complete, failed with "plan is already complete" yet saved
-	// the steps, so the model was told nothing had changed when it had.
+	// the steps, so the model was told nothing had changed when it had. It now succeeds: the steps' final states are
+	// taken and the plan stays complete. New work sent the same way is refused whole.
 	const h = createExtensionHarness({ persistSentMessages: false }); await h.start();
 	const done = [{ content: "Build", status: "completed" }, { content: "Release", status: "completed" }];
 	await create(h, { auto_continue: false, steps: [{ content: "Build", status: "in_progress" }, { content: "Release", status: "pending" }] });
 	await update(h, { action: "complete" });
+	const again = (await update(h, { action: "complete", steps: done })).details.plan;
+	assert.deepEqual([again.phase, ...again.steps.map(step => step.status)], ["complete", "completed", "completed"]);
 	let before = await read(h);
-	await assert.rejects(update(h, { action: "complete", steps: done }), /plan is already complete/);
+	await assert.rejects(update(h, { action: "complete", steps: [...done, { content: "More", status: "pending" }] }), /The plan is complete, so it no longer tracks work/);
 	assert.deepEqual(await read(h), before);
 	await create(h, { auto_continue: false, steps: [{ content: "Build", status: "in_progress" }] });
 	await update(h, { action: "pause" });
@@ -183,9 +186,14 @@ test("a plan untouched for 25 of the model's tool calls is recalled in the next 
 	assert.match((await call()).content[1].text, /^\n\[Plan check\] 25 tool calls .* 1 of 2 steps are marked done; current: "Release it"/);
 	for (let index = 1; index < 25; index++) await call();
 	assert.match((await call()).content[1].text, /^\n\[Plan check\] 50 tool calls/);
-	// A paused plan is not recalled.
+	// A paused plan is recalled too: the model working again has left it behind.
 	await update(h, { action: "pause" });
-	for (let index = 0; index < 30; index++) assert.equal(await call(), undefined);
+	for (let index = 1; index < 25; index++) assert.equal(await call(), undefined);
+	assert.equal((await call()).content[1].text, '\n[Plan check] 25 tool calls while the plan "Ship the fix" is paused. 1 of 2 steps are marked done; current: "Release it". '
+		+ 'It still takes edits: if you are working on it, update it now with update_plan (action "edit"), marking what is done and adding the work you are on, or resume it (action "resume"). '
+		+ "If this is other work with more than one step, create_plan for it now.");
+	await update(h, { action: "edit", steps: [{ content: "Test it", status: "completed" }, { content: "Release it", status: "completed" }] });
+	assert.equal((await read(h)).phase, "paused", "an edit leaves it paused");
 	// Work after a completed plan is work in no plan.
 	await update(h, { action: "complete" });
 	for (let index = 1; index < 25; index++) assert.equal(await call(), undefined);
@@ -208,6 +216,40 @@ test("an update that leaves out unfinished steps says so in the next result, sin
 	await update(h, { action: "edit", steps: ["Sidebar", "Release"] });
 	assert.equal(await call(), undefined);
 	await h.emit("session_shutdown");
+});
+
+test("a plan call a program made that was refused is told to the model with the program's result", async () => {
+	// Programs seldom pass on a plan call's failure, and codemode's own line cuts it short: 23 updates in three days were
+	// refused without the model learning why, most after a restart, which forgot that the model had seen the plan.
+	const h = createExtensionHarness(); await h.start();
+	await executeTool(h, "create_plan", { objective: "Ship", steps: [{ content: "Build", status: "in_progress" }] });
+	await update(h, { action: "complete" });
+	const refusal = "The plan is complete, so it no longer tracks work. For new work, create_plan with its objective and steps.";
+	await assert.rejects(update(h, { action: "edit", steps: [{ content: "Build", status: "completed" }, "Next thing"] }), new RegExp(refusal.slice(0, 40)));
+	assert.equal((await update(h, { action: "edit", steps: [{ content: "Build", status: "completed" }] })).details.plan.phase, "complete", "final states are taken");
+	assert.equal((await update(h, { action: "complete" })).details.plan.phase, "complete", "completing again changes nothing");
+	await h.emit("tool_result", { toolName: "update_plan", toolCallId: "p/1", parentToolCallId: "p", content: [{ type: "text", text: refusal }], isError: true });
+	const told = (await h.emit("tool_result", { toolName: "codemode", toolCallId: "p", content: [{ type: "text", text: "ok" }], isError: false })).find(result => result !== undefined);
+	assert.equal(told.content[1].text, `\n[Plan] Your update_plan call changed nothing: ${refusal}`);
+	assert.equal((await h.emit("tool_result", { toolName: "codemode", toolCallId: "q", content: [{ type: "text", text: "ok" }], isError: false })).find(result => result !== undefined), undefined, "told once");
+	await h.emit("session_shutdown");
+});
+
+test("after a restart the model is taken to have seen the plan its last program call returned", async () => {
+	const first = createExtensionHarness(); await first.start();
+	await executeTool(first, "create_plan", { objective: "Ship", steps: [{ content: "Build", status: "in_progress" }] });
+	// As Pi records a program's result: the calls it made, without their results.
+	const program = { type: "message", message: { role: "toolResult", toolName: "codemode", toolCallId: "p", content: [{ type: "text", text: "ok" }], isError: false,
+		details: { calls: [{ id: "p/1", name: "create_plan", args: "{}", status: "ok", durationMs: 1 }] } } };
+	const restarted = createExtensionHarness({ branch: [...first.branch, program] }); await restarted.start();
+	const prepared = restarted.tools.get("update_plan").prepareArguments({ steps: [{ content: "Build", status: "completed" }, "Release"] });
+	assert.equal(prepared.action, "edit", "an update that names no action is an edit");
+	assert.equal((await update(restarted, prepared)).details.plan.steps.length, 2);
+	// A change the model has not seen still holds one update back.
+	await restarted.commands.get("plan").handler("pause", restarted.ctx);
+	const later = createExtensionHarness({ branch: restarted.branch }); await later.start();
+	await assert.rejects(update(later, { action: "edit", steps: ["Release"] }), /changed since you last saw it/);
+	await first.emit("session_shutdown"); await restarted.emit("session_shutdown"); await later.emit("session_shutdown");
 });
 
 test("steps and actions written in agents' usual words are read, and other step fields are dropped", async () => {

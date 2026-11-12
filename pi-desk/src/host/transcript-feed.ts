@@ -281,7 +281,9 @@ export class TranscriptFeed {
 			page.messages.push(...this.tools.values());
 			const current = new Map([...this.parts.values()].map(part => [part.message.id, part.message]));
 			page.messages = page.messages.map(message => { const latest = current.get(message.id); current.delete(message.id); return latest ?? message; });
-			page.messages.push(...current.values());
+			// The Work pane lists every named part, so the latest page carries those shown before its messages. A window
+			// read from a place in the conversation holds only what is at that place, even when it reaches the end.
+			if (!position.after && !position.from) page.messages.push(...[...current.values()].map(message => ({ ...message, carried: true })));
 		}
 		return { ...page, generation: this.generation(), revision: this.revision,
 			messages: page.messages.map(message => ({ ...message, revision: this.revision })) };

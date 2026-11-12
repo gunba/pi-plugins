@@ -119,6 +119,11 @@ export interface ChatMessage {
 	toolCallId?: string;
 	/** Selected edit/write/bash activity, persisted separately from the complete execution log. */
 	work?: { description: string };
+	/**
+	 * A named part shown before the latest page's messages, sent with that page so the Work pane lists it. Its place in
+	 * the conversation is outside the page, so the conversation doesn't list it there.
+	 */
+	carried?: boolean;
 	isError?: boolean;
 	complete?: boolean;
 	tool?: { state: "running" | "done" | "error" | "interrupted"; seconds?: number; exitCode?: number; processId?: number; processRunning?: boolean };

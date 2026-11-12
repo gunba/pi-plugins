@@ -13,6 +13,14 @@ export function renderPlanCheck(plan: PlanSnapshot, calls: number): string {
 	// After 48 of 139 completed plans in two weeks, models went on for 25 or more calls with no plan, after 23 for over 100.
 	if (plan.phase === "complete")
 		return `[Plan check] ${calls} tool calls since the plan ${short(plan.objective)} was completed; the work since is in no plan. If it has more than one step, create_plan for it now.`;
+	if (plan.phase === "paused" || plan.phase === "blocked") {
+		const progress = summary.total ? ` ${summary.completed} of ${summary.total} steps are marked done${summary.current ? `; current: ${short(summary.current)}` : ""}.` : "";
+		// Resuming an automatic plan sets it continuing by itself again, which whoever stopped it may not want.
+		const how = plan.phase === "blocked" ? `If it is no longer blocked and you are working on it, resume it with update_plan (action "resume") and bring its steps up to date`
+			: `It still takes edits: if you are working on it, update it now with update_plan (action "edit"), marking what is done and adding the work you are on${
+				plan.autoContinue ? "; resume it only if the user wants it to carry on by itself again" : ', or resume it (action "resume")'}`;
+		return `[Plan check] ${calls} tool calls while the plan ${short(plan.objective)} is ${plan.phase === "blocked" ? `blocked (${short(plan.blockedReason.message)})` : "paused"}.${progress} ${how}. If this is other work with more than one step, create_plan for it now.`;
+	}
 	// An instruction naming the cases, not a remark: asked whether the plan was "out of date" or "behind", models
 	// answered about half the checks, and seldom when the user had since asked for something else.
 	const where = !summary.total ? `Objective: ${short(plan.objective)}. If that is not what you are working on now, update the plan now with update_plan`
@@ -30,6 +38,14 @@ export function renderDroppedSteps(steps: readonly string[]): string {
 	const names = steps.map(step => JSON.stringify(step.length > 80 ? `${step.slice(0, 77)}…` : step)).join("; ");
 	return `[Plan] Your last plan update removed ${steps.length === 1 ? "an unfinished step" : `${steps.length} unfinished steps`}: ${names}. `
 		+ "steps replaces the whole list; if you meant to keep them, update the plan again with every step.";
+}
+
+/**
+ * Told after plan calls a program made were refused: the program gets the refusal, and the model sees it only if the
+ * program returns it, and then often cut short.
+ */
+export function renderRefusedCalls(calls: readonly { tool: string; reason: string }[]): string {
+	return calls.map(call => `[Plan] Your ${call.tool} call changed nothing: ${call.reason.length > 3000 ? `${call.reason.slice(0, 2999)}…` : call.reason}`).join("\n");
 }
 
 /** The notes the model wrote for the steps it is on, which it is shown when it reaches them; empty when there are none. */

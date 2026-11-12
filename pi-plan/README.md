@@ -25,9 +25,17 @@ Model tools:
   applied first, in the same call, and not at all if the action is refused. An
   update that would replace the objective or steps is refused once, with the
   current plan, when the plan changed since the model last saw it (in Desk, say),
-  so it can't overwrite a change it hasn't seen. An update that leaves out
+  so it can't overwrite a change it hasn't seen. After a restart the model is
+  taken to have seen the plan its last plan call returned, including one a
+  program made. An update that leaves out
   unfinished steps says so at the end of the next result, naming them, since a
   model that sends only its new steps would otherwise lose the rest unnoticed.
+  A plan call a program made that was refused is told the same way, in full: the
+  program gets the refusal and seldom passes it on. An update that names no
+  action is an edit.
+- A completed plan takes its steps' final states and nothing else: new work
+  sent to it is refused with a pointer to `create_plan`, so the model can't keep
+  a finished plan looking current to itself. Completing it again changes nothing.
 
 Both return the plan. Other plugins read it by emitting `pi-plan/read-v1` on the
 extension event bus with a probe object, whose `plan` is then set.
@@ -43,10 +51,12 @@ text); `""` removes it. Desk shows the notes under the step.
 A model calling the tool directly rather than from a program has no schema for it,
 so a list sent as JSON text is parsed as the list.
 A plan check comes at the end of a tool result once the model has made 25 tool
-calls without changing an active or completed plan, and every 25 calls after:
+calls without changing the plan, and every 25 calls after:
 for an active plan, where it stands and what to update when the work has moved
-on; for a completed one, that the work since is in no plan. Paused and blocked
-plans are not checked.
+on; for a completed one, that the work since is in no plan. A paused or blocked
+plan is checked too, once the model is working again: it is told that the plan
+still takes edits, and that resuming an automatic plan sets it continuing by
+itself again.
 A plan can complete with steps still open; they keep their recorded states.
 Finishing every step does not by itself prove the objective complete.
 `create_plan` while a plan is unfinished completes that plan, as it stands, and

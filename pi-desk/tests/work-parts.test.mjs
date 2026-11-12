@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { updatePart, restoredParts } from "../../pi-show/extensions/parts.ts";
 import { SHOWN_ENTRY } from "../../pi-show/extensions/types.ts";
 import { visibleWorkItems } from "../src/client/work-items.ts";
+import { placedMessages } from "../src/client/state.ts";
 import { catalogValidator, validateChart } from "../../pi-ui/agent-catalog.ts";
 import { validateSpec } from "../../pi-ui/agent-ui.ts";
 import { Transcript } from "../src/host/transcript.ts";
@@ -74,6 +75,26 @@ test("current parts survive transcript pagination and selected bash keeps output
 	assert.equal(visibleWorkItems([activity]).length, 1);
 	assert.equal(activity.blocks[0].shown.items[0].path, "results.txt");
 	assert.equal(activity.blocks[0].shown.spec.elements.output.props.text, "All passed");
+});
+
+test("a part shown long ago isn't listed after the newest messages of a reading window", () => {
+	// Returning to a conversation left a little above its end listed every named part after the newest message: a page
+	// read from a place in the conversation got them as the latest page does, and the conversation showed them there.
+	const branch = [{ type: "custom", id: "part", timestamp: new Date(1).toISOString(), customType: SHOWN_ENTRY, data: { id: "job", title: "Job", items: [], spec: spec() } }];
+	for (let i = 0; i < 300; i++) branch.push({ type: "message", id: `m${i}`, timestamp: new Date(i + 2).toISOString(), message: { role: "user", content: "later", timestamp: i + 2 } });
+	const feed = new TranscriptFeed(new Transcript(), () => branch, () => "generation", () => {}, () => process.cwd());
+	try {
+		const reading = feed.history({ from: "m290" }), latest = feed.history();
+		assert.deepEqual(reading.messages.map(message => message.id), Array.from({ length: 10 }, (_item, i) => `entry:m${290 + i}`));
+		assert.equal(reading.after, undefined);
+		assert.deepEqual(feed.history({ after: "m290" }).messages.map(message => message.id), Array.from({ length: 9 }, (_item, i) => `entry:m${291 + i}`));
+		assert.deepEqual(latest.messages.filter(message => message.carried).map(message => message.id), ["entry:part"]);
+		assert.deepEqual(placedMessages(latest.messages).map(message => message.id), latest.messages.filter(message => message.id !== "entry:part").map(message => message.id));
+		assert.equal(visibleWorkItems(latest.messages).some(item => item.id === "part:job"), true);
+		// A worker from before this fix sends the part unmarked, after the window.
+		const old = [...reading.messages, { ...latest.messages.at(-1), carried: undefined }];
+		assert.deepEqual(placedMessages(old).map(message => message.id), reading.messages.map(message => message.id));
+	} finally { feed.close(); }
 });
 
 test("history does not start progress pipes for recorded complete samples", t => {

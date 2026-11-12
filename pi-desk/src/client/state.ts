@@ -53,6 +53,19 @@ export function mergeMessages(current: CachedMessage[], updates: CachedMessage[]
 	}
 	return [...result.values()].sort((a, b) => a.order - b.order);
 }
+/**
+ * The messages of a window that are at their place in the conversation, in the order given. A named part the latest
+ * page carries for the Work pane is left out, as is one that follows newer messages: workers before Desk 0.5.373 put
+ * every named part after a reading window that reached the end.
+ */
+export function placedMessages<T extends ChatMessage>(values: readonly T[]): T[] {
+	let newest = -Infinity;
+	return values.filter(message => {
+		if (message.carried || message.order < newest && message.blocks.some(block => block?.type === "shown" && !!block.shown.id)) return false;
+		newest = Math.max(newest, message.order);
+		return true;
+	});
+}
 export function reconcileHistory(current: CachedMessage[], page: HistoryPage): CachedMessage[] {
 	return mergeMessages(current.filter(message => !message.id.startsWith("live:")
 		|| message.revision > page.revision || page.messages.some(value => value.id === message.id)), page.messages);
@@ -78,8 +91,9 @@ export function reduceEvents(state: ClientState, events: HostEvent[]): ClientSta
 			const generation = host?.sessions.find(item => item.key === event.key)?.ui?.generation;
 			if ((message.type === "chat" || message.type === "delta" || message.type === "block") && message.generation !== generation) continue;
 			const key = transcriptKey(event.key, source);
-			if (message.type === "chat") cacheTranscript(messages, key,
-				mergeMessages(messages[key] ?? [], [{ ...message.message, replaces: message.replaces }]));
+			// A part the latest page carried stays out of the conversation's list when its progress updates it.
+			if (message.type === "chat") cacheTranscript(messages, key, mergeMessages(messages[key] ?? [], [{ ...message.message, replaces: message.replaces,
+				...(messages[key]?.some(item => item.id === message.message.id && item.carried) ? { carried: true } : {}) }]));
 			if (message.type === "delta" || message.type === "block") cacheTranscript(messages, key, (messages[key] ?? []).map(item => {
 				if (item.id !== message.id || item.revision >= message.revision || message.index >= 128) return item;
 				const blocks = [...item.blocks], old = blocks[message.index];

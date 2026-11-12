@@ -4,7 +4,7 @@ import type { ChatMessage, HistoryPage } from "../shared/protocol.ts";
 import { HISTORY_CHARACTERS, HISTORY_COUNT, type HistoryPosition } from "../shared/history.ts";
 import { api } from "./connection.ts";
 import { reportDeskError } from "./desk-status.ts";
-import { mergeMessages, recentMessages, transcriptKey, type CachedMessage } from "./state.ts";
+import { mergeMessages, placedMessages, recentMessages, transcriptKey, type CachedMessage } from "./state.ts";
 import { transcriptRows } from "./transcript-rows.ts";
 import { DisclosureStates } from "./disclosure.tsx";
 interface ReadingPosition {
@@ -53,8 +53,8 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 	const disclosures = useRef(new Map<string, boolean>());
 	const mountedRows = useRef(new WeakSet<HTMLDivElement>());
 	const nativeMessages = useMemo(() => live
-		? recentMessages(mergeMessages(page?.messages ?? [], messages), HISTORY_COUNT, HISTORY_CHARACTERS)
-		: page?.messages ?? [], [page, messages, live]);
+		? recentMessages(placedMessages(mergeMessages(placedMessages(page?.messages ?? []), messages)), HISTORY_COUNT, HISTORY_CHARACTERS)
+		: placedMessages(page?.messages ?? []), [page, messages, live]);
 	const rows = useMemo(() => transcriptRows(nativeMessages), [nativeMessages]);
 	const visible = useMemo(() => rows.map(row => row.message), [rows]);
 	const newest = messages.at(-1);
@@ -110,7 +110,7 @@ export function TranscriptView({ session, source, generation, connected, epoch, 
 			if (moved && page?.generation === generation && !position.before && !position.after) return;
 			if (moved) restore = capture.current() ?? restore;
 			if ((position.before || position.after) && typeof restore === "object") {
-				const combined = mergeMessages(nativeMessages, data.messages);
+				const combined = mergeMessages(nativeMessages, placedMessages(data.messages));
 				const window = position.before
 					? recentMessages([...combined].reverse(), HISTORY_COUNT * 2, HISTORY_CHARACTERS * 2).reverse()
 					: recentMessages(combined, HISTORY_COUNT * 2, HISTORY_CHARACTERS * 2);
