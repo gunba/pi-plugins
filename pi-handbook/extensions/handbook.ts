@@ -116,6 +116,7 @@ class Handbook {
 		this.startLeaf = ctx.sessionManager.getLeafId() ?? null;
 		this.refresh();
 		this.schedule(IDLE_MS);
+		if (this.state.proposedPurpose) setTimeout(() => this.settlePurpose(), NEXT_CHUNK_MS).unref?.();
 	}
 
 	private stop(): void {
@@ -160,28 +161,43 @@ class Handbook {
 		return this.state.covered !== undefined ? this.state.covered : this.fresh ? null : this.startLeaf;
 	}
 
+	/**
+	 * Applies a purpose an older tidy-up left as a proposal for the user to accept; a pass applies its own. The proposal
+	 * is dropped where the user has set the purpose since. Does nothing until the conversation is idle.
+	 */
+	private settlePurpose(): void {
+		const ctx = this.ctx, proposed = this.state.proposedPurpose, purpose = this.state.purpose;
+		if (!ctx || !proposed || this.stopping || !ctx.isIdle() || ctx.hasPendingMessages()) return;
+		const stands = !!purpose && (normal(purpose.text) === normal(proposed.text) || purpose.by === "user" && purpose.at > proposed.at);
+		try {
+			this.write("tidy", [stands ? { op: "dismiss-purpose" } : { op: "purpose", text: proposed.text, ...(proposed.reason ? { reason: proposed.reason } : {}) }]);
+		} catch (error) { this.error = "Handbook: " + message(error); this.refresh(); }
+	}
+
 	/** Reads the user's messages since the last pass and applies what the model proposes, checked. */
 	private async tidy(force: boolean): Promise<void> {
 		const ctx = this.ctx, epoch = this.epoch;
 		if (!ctx || this.stopping || this.running || !this.topLevel || this.remote?.suspended) return;
+		this.settlePurpose();
 		if (!force && (!ctx.isIdle() || ctx.hasPendingMessages() || Date.now() - this.failedAt < RETRY_MS)) return;
 		const model = ctx.model;
 		if (!model) { if (force) { this.error = "This conversation has no model to tidy up with."; this.refresh(); } return; }
 		const last = this.state.passes.at(-1);
 		if (!force && last && Date.now() - last.at < PASS_EVERY_MS && !last.more) return;
 		const window = collectWindow(ctx.sessionManager.getBranch() as never, this.covered(), entry => this.full(entry as SessionEntry) as never);
-		const waiting = [...this.state.entries.values()].some(entry => live(entry) && (entry.status === "pending" || !entry.reviewed));
+		const waiting = [...this.state.entries.values()].some(entry => live(entry) && (entry.status === "pending" || !entry.reviewed || !!entry.flag));
 		if (!window.messages.length && !waiting) { if (force) { this.error = "Nothing new to read since the last tidy-up."; this.refresh(); } return; }
 		const abort = this.abort = new AbortController();
 		this.running = "Reading " + window.messages.length + " message" + (window.messages.length === 1 ? "" : "s"); this.error = undefined;
 		this.refresh();
+		const asked = Date.now();
 		try {
 			const result = await ctx.modelRegistry.complete(model, { systemPrompt: TIDY_SYSTEM,
 				messages: [{ role: "user", content: tidyRequest(this.state, window, ctx.cwd), timestamp: Date.now() }] },
 				{ signal: abort.signal, headers: { [SIDE_REQUEST_HEADER]: "1" }, maxTokens: 16_000 } as never);
 			if (epoch !== this.epoch || this.stopping || abort.signal.aborted) return;
 			if (result.stopReason === "error" || result.stopReason === "aborted") throw new Error(result.errorMessage || "The model request failed.");
-			const plan = planReply(this.state, window, parseReply(textOf(result.content)), ctx.cwd);
+			const plan = planReply(this.state, window, parseReply(textOf(result.content)), ctx.cwd, asked);
 			this.queued = { epoch, ops: [...plan.ops, ...(window.through ? [{ op: "cover", through: window.through } as Op] : []),
 				{ op: "pass", model: result.provider + "/" + result.model, cost: result.usage?.cost?.total ?? 0, messages: window.messages.length,
 					...(window.more ? { more: true } : {}), ...(plan.refused.length ? { reason: refusals(plan.refused) } : {}) }] };
@@ -231,7 +247,7 @@ class Handbook {
 			if (!entry || !live(entry)) throw new Error("No current entry " + JSON.stringify(params.id ?? "") + ".");
 			if (!text) throw new Error("Say in text why the entry is wrong or out of date.");
 			this.write("agent", [{ op: "flag", id: entry.id, reason: text }]);
-			return "Flagged " + entry.id + " for review.";
+			return "Flagged " + entry.id + ". The next tidy-up rewords or retires it; until then the handbook shows it with your reason.";
 		}
 		const extra = { ...(params.holds_while?.trim() ? { holdsWhile: params.holds_while.trim() } : {}),
 			...(params.points_to?.length ? { pointsTo: params.points_to.map(item => item.trim()).filter(Boolean).slice(0, 8) } : {}) };
@@ -281,7 +297,6 @@ class Handbook {
 		const actions: UiAction[] = [
 			{ id: "tidy", label: "Tidy up now" }, { id: "add", label: "Add an instruction" }, { id: "purpose", label: "Edit the purpose" },
 			...(data.status.unread ? [{ id: "history", label: "Read earlier messages" }] : []),
-			...(state.proposedPurpose ? [{ id: "purpose-accept", label: "Use the proposed purpose" }, { id: "purpose-dismiss", label: "Keep the purpose" }] : []),
 			...(state.log.some(item => item.was) ? [{ id: "purpose-restore", label: "Restore an earlier purpose" }] : []),
 			{ id: "entry", label: "Change an entry" },
 		];
@@ -295,7 +310,6 @@ class Handbook {
 		this.remote.publish("handbook", view, {
 			tidy: () => { void this.tidy(true); },
 			add: () => this.act(ctx, "add"), purpose: () => this.act(ctx, "purpose"), history: () => this.act(ctx, "history"),
-			"purpose-accept": () => this.act(ctx, "purpose-accept"), "purpose-dismiss": () => this.act(ctx, "purpose-dismiss"),
 			"purpose-restore": value => this.act(ctx, "purpose-restore", value),
 			entry: value => this.act(ctx, "entry", value),
 		});
@@ -311,10 +325,7 @@ class Handbook {
 		} else if (action === "purpose") {
 			const text = (await ctx.ui.editor("What this conversation is for, and what it is not for", state.purpose?.text ?? ""))?.trim();
 			if (text) save([{ op: "purpose", text }]);
-		} else if (action === "purpose-accept") {
-			if (state.proposedPurpose) save([{ op: "purpose", text: state.proposedPurpose.text }]);
-		} else if (action === "purpose-dismiss") save([{ op: "dismiss-purpose" }]);
-		else if (action === "purpose-restore") {
+		} else if (action === "purpose-restore") {
 			// Only a wording the purpose once had: the view sends the one beside the change that replaced it.
 			const text = typeof value === "string" ? value.trim() : "";
 			if (text && state.log.some(item => item.was === text)) save([{ op: "purpose", text, reason: "Restored an earlier wording" }]);
@@ -351,6 +362,7 @@ class Handbook {
 				case "admit": save([{ op: "admit", id }]); break;
 				case "reject": save([{ op: "end", id, status: "rejected" }]); break;
 				case "keep": save([{ op: "unflag", id }]); break;
+				// Older Desk pages offer this beside a flag.
 				case "accept": {
 					const proposal = entry.flag?.proposal;
 					if (proposal) save([{ op: "add", id: "+1", entry: proposal, status: "active" }, { op: "end", id, status: "replaced", by: "+1" }]);
@@ -423,7 +435,7 @@ class Handbook {
 			// Where reading begins is saved after the first turn: a new conversation's first message, or where the handbook
 			// arrived in an existing one, so a restart before the first tidy-up neither rereads nor skips messages.
 			if (this.state.from === undefined) this.write("tidy", []);
-			this.commit(); this.schedule(IDLE_MS);
+			this.settlePurpose(); this.commit(); this.schedule(IDLE_MS);
 		}));
 	}
 }

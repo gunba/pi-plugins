@@ -18,7 +18,6 @@ type Actor = "agent" | "tidy" | "user";
 type Day = { day: string; messages: number; instructions: number; corrections: number; repeats: number; changes: number };
 type Data = {
 	purpose: { text: string; at: number; by: Actor } | null;
-	proposedPurpose: { text: string; at: number; reason: string | null } | null;
 	entries: Entry[];
 	/** `was`: the purpose that a change of purpose replaced. */
 	log: { at: number; actor: Actor; id: string | null; text: string; reason: string | null; was: string | null }[];
@@ -89,12 +88,11 @@ function EntryCard({ entry, act, disabled }: { entry: Entry; act: (id: string, c
 	const use = entry.cameUp ? "Came up " + times(entry.cameUp) + (entry.lastUse ? ", last " + date(entry.lastUse) : "") : "Hasn't come up yet";
 	const actions: UiAction[] = live ? [
 		...(entry.status === "pending" ? [{ id: "admit", label: "Admit" }, { id: "reject", label: "Turn down" }] : []),
-		...(entry.flag ? [{ id: "keep", label: "Keep as it is" }, { id: "accept", label: entry.flag.proposal ? "Use the new wording" : entry.kind === "instruction" ? "Remove it" : "Retire it" }] : []),
+		...(entry.flag ? [{ id: "keep", label: "Clear the flag" }] : []),
 		{ id: entry.pinned ? "unpin" : "pin", label: entry.pinned ? "Unpin" : "Pin" }, { id: "edit", label: "Edit" },
 		{ id: "remove", label: "Remove", destructive: true },
 	] : [];
-	const primary = actions.filter(action => ["admit", "reject", "keep", "accept"].includes(action.id));
-	return <li className={"handbook-entry handbook-" + entry.kind + (live ? "" : " ended") + (entry.flag ? " flagged" : "")}>
+	return <li className={"handbook-entry handbook-" + entry.kind + (live ? "" : " ended")}>
 		<div className="handbook-entry-main">
 			<span className="handbook-id" title={entry.kind}>{entry.id}</span>
 			<div className="handbook-entry-body">
@@ -105,7 +103,8 @@ function EntryCard({ entry, act, disabled }: { entry: Entry; act: (id: string, c
 				{entry.holdsWhile && <p className="handbook-condition"><b>Holds while</b> {entry.holdsWhile}</p>}
 				{entry.pointsTo.length > 0 && <p className="handbook-pointers"><b>Points to</b> {entry.pointsTo.map(pointer =>
 					<code key={pointer} className={entry.missing.includes(pointer) ? "missing" : undefined} title={entry.missing.includes(pointer) ? "This file no longer exists." : undefined}>{pointer}</code>)}</p>}
-				{entry.flag && <p className="handbook-flag"><Icon name="warning" /><span>{who(entry.flag.by)} flagged it{entry.flag.reason ? ": " + entry.flag.reason : "."}</span></p>}
+				{entry.flag && <p className="handbook-flag"><Icon name="warning" /><span>{who(entry.flag.by)} flagged it{entry.flag.reason ? ": " + entry.flag.reason : "."}
+					{" "}<small>The next tidy-up {entry.flag.proposal ? "puts the new wording in its place" : "rewords, retires or keeps it"}.</small></span></p>}
 				{entry.flag?.proposal && <p className="handbook-proposal">New wording: “{entry.flag.proposal}”</p>}
 				<p className="handbook-meta">
 					<span>{origin}</span>
@@ -119,10 +118,8 @@ function EntryCard({ entry, act, disabled }: { entry: Entry; act: (id: string, c
 					{!entry.reviewed && live && <span className="handbook-tag">Not yet reviewed</span>}
 				</p>
 			</div>
-			{live && <ActionMenu actions={actions.filter(action => !primary.includes(action))} invoke={action => act(entry.id, action.id)} disabled={disabled} label={"Actions for " + entry.id} />}
+			{live && <ActionMenu actions={actions} invoke={action => act(entry.id, action.id)} disabled={disabled} label={"Actions for " + entry.id} />}
 		</div>
-		{primary.length > 0 && <div className="handbook-entry-actions">{primary.map(action =>
-			<button type="button" key={action.id} className="quiet-action" disabled={disabled} onClick={() => act(entry.id, action.id)}>{action.label}</button>)}</div>}
 	</li>;
 }
 
@@ -135,9 +132,10 @@ export function HandbookView({ view, invoke, disabled }: { view: ViewSnapshot; i
 	const locked = !!disabled || !!view.working;
 	const act = (id: string, change: string) => run("entry", { id, act: change });
 	const live = data.entries.filter(entry => entry.status === "active" || entry.status === "pending");
-	const review = live.filter(entry => entry.status === "pending" || entry.flag);
-	const instructions = live.filter(entry => entry.status === "active" && entry.kind === "instruction" && !entry.flag);
-	const learnings = live.filter(entry => entry.status === "active" && entry.kind === "learning" && !entry.flag);
+	// Learnings the agent noted, which the next tidy-up admits or turns down; nothing in the handbook waits for the user.
+	const waiting = live.filter(entry => entry.status === "pending");
+	const instructions = live.filter(entry => entry.status === "active" && entry.kind === "instruction");
+	const learnings = live.filter(entry => entry.status === "active" && entry.kind === "learning");
 	const ended = data.entries.filter(entry => !live.includes(entry)).sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
 	const lastPass = data.passes.at(-1), status = data.status;
 	// The last change of the purpose by the tidy-up or the agent, while it stands: shown with the wording it replaced, to restore.
@@ -147,7 +145,7 @@ export function HandbookView({ view, invoke, disabled }: { view: ViewSnapshot; i
 	const list = (entries: Entry[]) => <ul className="handbook-entries">{entries.map(entry => <EntryCard key={entry.id} entry={entry} act={act} disabled={locked} />)}</ul>;
 	return <section className="handbook-view" aria-label="Handbook">
 		<header className="handbook-heading">
-			<span>{plural(instructions.length + learnings.length, "entry", "entries")}{review.length ? " · " + review.length + " to review" : ""}</span>
+			<span>{plural(instructions.length + learnings.length, "entry", "entries")}{waiting.length ? " · " + waiting.length + " waiting for the tidy-up" : ""}</span>
 			<div className="handbook-controls">
 				{action("tidy") && <button type="button" className="quiet-action" disabled={locked || !!status.running} onClick={() => run("tidy")}><Icon name="refresh" />Tidy up now</button>}
 				<ActionMenu actions={actions.filter(item => ["add", "purpose", "history"].includes(item.id))} invoke={item => run(item.id)} disabled={locked} label="Handbook actions" />
@@ -160,13 +158,6 @@ export function HandbookView({ view, invoke, disabled }: { view: ViewSnapshot; i
 			<p>{data.purpose?.text ?? "Not written yet. The tidy-up writes one from your messages, or you can."}</p>
 			{changed && <p className="handbook-was"><small>Changed by {by(changed.actor)} {localDateTime(changed.at, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
 				{changed.reason ? ": " + changed.reason : "."} It was: “{changed.was}” {restore(changed.was!)}</small></p>}
-			{data.proposedPurpose && <div className="handbook-proposal-box">
-				<p><b>Proposed</b> {data.proposedPurpose.text}{data.proposedPurpose.reason ? <small> {data.proposedPurpose.reason}</small> : null}</p>
-				<div className="panel-actions">
-					<button type="button" disabled={locked} onClick={() => run("purpose-accept")}>Use it</button>
-					<button type="button" disabled={locked} onClick={() => run("purpose-dismiss")}>Keep the current one</button>
-				</div>
-			</div>}
 		</div>
 		<Chart days={data.days} />
 		<p className="handbook-status muted">
@@ -176,11 +167,11 @@ export function HandbookView({ view, invoke, disabled }: { view: ViewSnapshot; i
 			{" "}Its prompt section is {status.sectionChars.toLocaleString()} of {status.sectionLimit.toLocaleString()} characters.
 			{status.unread && <> Messages from before the handbook arrived are unread{action("history") ? <> (<button type="button" className="link-button" disabled={locked} onClick={() => run("history")}>read them</button>)</> : null}.</>}
 		</p>
-		{review.length > 0 && <><h3 className="handbook-section">To review</h3>{list(review)}</>}
 		<h3 className="handbook-section">Instructions <small>your words, by date</small></h3>
 		{instructions.length ? list(instructions) : <p className="muted">None yet.</p>}
 		<h3 className="handbook-section">Learnings <small>what this conversation found out</small></h3>
 		{learnings.length ? list(learnings) : <p className="muted">None yet.</p>}
+		{waiting.length > 0 && <><h3 className="handbook-section">Waiting for the tidy-up <small>noted by the agent; its next pass admits or turns them down</small></h3>{list(waiting)}</>}
 		{ended.length > 0 && <details className="handbook-past" open={past} onToggle={event => setPast(event.currentTarget.open)}>
 			<summary>Replaced and retired ({ended.length})</summary>{past && list(ended)}</details>}
 		<details className="handbook-log">

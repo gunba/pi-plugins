@@ -25,24 +25,30 @@ the section the model last had until then.
 ## Who writes it
 
 - **The agent**, with the `handbook` tool. An instruction must quote the user's message exactly, or the tool refuses
-  it; it counts at once. A learning waits for the tidy-up. The agent can flag an entry that turned out wrong, write
-  the purpose when there is none, and read the whole handbook.
+  it; it counts at once. A learning waits for the tidy-up. The agent can flag an entry that turned out wrong or out
+  of date: the entry stays in the prompt with the agent's reason beside it until the tidy-up settles it. The agent
+  can also write the purpose and read the whole handbook.
 - **The tidy-up**, a side request on the conversation's model. It runs when the conversation has been idle for ten
   minutes, about once a day, and reads the user's messages since its last run, each with the end of the agent's
-  reply before it. It catches instructions the agent missed, admits or turns down the agent's learnings, merges
-  and replaces entries, and labels each message (instruction, correction, repeat or other) for the chart. A backlog
-  takes several passes in a row. A pass adds at most one new entry for every ten messages it reads, and never more
+  reply before it. It catches instructions the agent missed, admits or turns down the agent's learnings, settles
+  the agent's flags, merges and replaces entries, and labels each message (instruction, correction, repeat or
+  other) for the chart. A backlog takes several passes in a row. A pass adds at most one new entry for every ten messages it reads, and never more
   than six, the most important first; replacing and merging entries don't count.
-- **The user**, in Desk's Handbook view: add an instruction, edit, pin or remove an entry, accept or dismiss a
-  flag, edit the purpose or restore an earlier one.
+- **The user**, in Desk's Handbook view: add an instruction, edit, pin or remove an entry, edit the purpose or
+  restore an earlier one. Nothing in the handbook waits for the user: the view asks for no decisions.
 
 The tidy-up returns changes to single entries as JSON, and code applies them after checking each:
 
 - only the user's messages can create instructions: a quote must be in the message it names, in whole words;
-- pinned entries and prohibitions ("never", "do not") are never changed or removed by the tidy-up, only flagged
-  for the user;
-- an instruction leaves the handbook only when the user's newer words replace it, or when the user accepts the
-  tidy-up's flag; a learning is retired with a reason when the work it concerned is finished;
+- a pinned entry is never changed or removed by the tidy-up; a prohibition ("never", "do not") is never reworded
+  or retired by it, and is replaced only by an instruction quoting words the user wrote later;
+- any other instruction leaves the handbook when the user's newer words replace it or the work it governed is over,
+  and a learning is retired when the work it concerned is finished, each with the reason;
+- every pass settles each flagged entry and each learning waiting for it. The model rewords, replaces, retires or
+  keeps a flagged entry and admits, rewords or turns down a waiting one; rewording an entry removes its flag and
+  admits it. Where the model's reply leaves one out, a waiting learning is admitted, a learning the agent flagged
+  has the agent's correction added to its text, and any other flag is dropped with the entry kept;
+- a change the checks refuse is listed with the pass in the change log;
 - a replaced or retired entry stays in the change log with the reason;
 - the tidy-up writes the purpose, and rewrites it when the work has clearly moved on, giving the reason; the
   Handbook view shows the wording it replaced, which the user can restore (and the tidy-up then leaves it alone
@@ -74,6 +80,6 @@ last had is a `pi-handbook/published-v1` entry. Helpers and other managed childr
 ## Desk
 
 The footer's book badge shows the number of entries and opens the view: the purpose, the entries with their
-quotes, conditions, pointers and use, those waiting for review, a chart of the user's messages per day (corrections
+quotes, conditions, pointers and use, the learnings waiting for the tidy-up, a chart of the user's messages per day (corrections
 and repeats marked) with the days the handbook changed, and the change log. `/handbook` opens it, or prints the
 handbook in a terminal.

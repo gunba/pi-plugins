@@ -45,6 +45,10 @@ export interface Entry extends Draft {
 	endedBy?: Actor;
 	endReason?: string;
 	replacedBy?: string;
+	/**
+	 * The agent's report that the entry is wrong or out of date, for the next tidy-up pass to settle. Rewording or
+	 * ending the entry removes it. Older tidy-ups flagged entries for the user, some with a proposed replacement.
+	 */
 	flag?: { reason: string; at: number; by: Actor; proposal?: Draft };
 	/** Tidy-up passes in which the work touched the entry's subject. */
 	cameUp: number;
@@ -87,6 +91,7 @@ export interface State {
 	/** The last entry whose messages a pass has read; null or undefined when none has. */
 	covered?: string | null;
 	purpose?: { text: string; at: number; by: Actor };
+	/** A purpose an older tidy-up proposed for the user to accept. The extension applies it when the conversation is idle. */
 	proposedPurpose?: { text: string; at: number; by: Actor; reason?: string };
 	entries: Map<string, Entry>;
 	next: { i: number; l: number };
@@ -178,7 +183,7 @@ export function applyChange(state: State, change: Change): void {
 					reviewed: actor !== "agent" || op.entry.kind !== "instruction", cameUp: 0, misled: 0, repeated: 0,
 				});
 				log((op.status === "pending" ? "Noted " : "Added ") + (op.entry.kind === "instruction" ? "instruction " : "learning ") + op.id
-					+ (op.status === "pending" ? " for review: " : ": ") + label(op.entry), op, op.id);
+					+ (op.status === "pending" ? " for the tidy-up: " : ": ") + label(op.entry), op, op.id);
 				break;
 			}
 			case "edit": {
@@ -187,7 +192,11 @@ export function applyChange(state: State, change: Change): void {
 				if (op.quote !== undefined && entry.kind === "instruction") entry.quote = op.quote;
 				if (op.holdsWhile !== undefined) { if (op.holdsWhile === null) delete entry.holdsWhile; else entry.holdsWhile = op.holdsWhile; }
 				if (op.pointsTo !== undefined) { if (op.pointsTo === null) delete entry.pointsTo; else entry.pointsTo = op.pointsTo; }
-				log("Reworded " + op.id + ": " + label(entry), op, op.id);
+				// The new wording answers a flag, and whoever reworded a waiting entry has accepted it.
+				const admitted = entry.status === "pending";
+				if (admitted) { entry.status = "active"; entry.reviewed = true; }
+				delete entry.flag;
+				log((admitted ? "Admitted and reworded " : "Reworded ") + op.id + ": " + label(entry), op, op.id);
 				break;
 			}
 			case "end": {
@@ -208,7 +217,7 @@ export function applyChange(state: State, change: Change): void {
 			case "flag":
 				if (!entry || (entry.status !== "active" && entry.status !== "pending")) break;
 				entry.flag = { reason: op.reason ?? "", at, by: actor, ...(op.proposal ? { proposal: op.proposal } : {}) };
-				log("Flagged " + op.id + " for review", op, op.id);
+				log("Flagged " + op.id + " as wrong or out of date", op, op.id);
 				break;
 			case "unflag":
 				if (!entry?.flag) break;

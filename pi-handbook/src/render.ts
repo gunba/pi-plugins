@@ -13,11 +13,11 @@ export const ENTRY_LIMIT = 60;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 export const shortDate = (time: number) => { const date = new Date(time); return date.getDate() + " " + MONTHS[date.getMonth()] + " " + date.getFullYear(); };
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
-const sentence = (text: string) => { const line = oneLine(text); return /[.!?]$/.test(line) ? line : line + "."; };
+export const sentence = (text: string) => { const line = oneLine(text); return /[.!?]$/.test(line) ? line : line + "."; };
 
 /** Instructions first (pinned, then oldest first), then learnings (pinned, then most recently used). */
 export function ranked(state: State): Entry[] {
-	const entries = [...state.entries.values()].filter(entry => entry.status === "active" && !(entry.kind === "learning" && entry.flag));
+	const entries = [...state.entries.values()].filter(entry => entry.status === "active");
 	const instructions = entries.filter(entry => entry.kind === "instruction")
 		.sort((a, b) => Number(b.pinned) - Number(a.pinned) || (a.sourceAt ?? a.addedAt) - (b.sourceAt ?? b.addedAt));
 	const learnings = entries.filter(entry => entry.kind === "learning")
@@ -25,15 +25,15 @@ export function ranked(state: State): Entry[] {
 	return [...instructions, ...learnings];
 }
 
-/** One entry as the model reads it. */
+/** One entry as the model reads it. A flagged entry carries the flag's reason until a tidy-up pass settles it. */
 export function entryLine(entry: Entry): string {
 	const conditions = entry.holdsWhile ? " Holds while: " + sentence(entry.holdsWhile) : "";
 	const pointers = entry.pointsTo?.length ? " See: " + entry.pointsTo.map(pointer => "`" + pointer + "`").join(", ") : "";
-	const review = entry.flag ? " (Under review: " + oneLine(entry.flag.reason) + ")" : "";
+	const flagged = entry.flag ? " (Flagged as wrong or out of date" + (entry.flag.reason ? ": " + oneLine(entry.flag.reason) : "") + ")" : "";
 	if (entry.kind === "instruction")
 		return "- " + entry.id + ", " + shortDate(entry.sourceAt ?? entry.addedAt) + (entry.text ? " (" + oneLine(entry.text) + ")" : "")
-			+ ": \"" + oneLine(entry.quote ?? entry.text) + "\"" + conditions + pointers + review;
-	return "- " + entry.id + ": " + oneLine(entry.text) + conditions + pointers;
+			+ ": \"" + oneLine(entry.quote ?? entry.text) + "\"" + conditions + pointers + flagged;
+	return "- " + entry.id + ": " + oneLine(entry.text) + conditions + pointers + flagged;
 }
 
 const GUIDE = "This conversation's handbook carries forward what its kind of work needs. Instructions quote the user's own words, "
@@ -61,11 +61,9 @@ export function sectionText(state: State, limit = SECTION_LIMIT): string {
 /** The whole handbook as text, for the tool's read action and the terminal. */
 export function fullText(state: State): string {
 	const entries = ranked(state), pending = [...state.entries.values()].filter(entry => entry.status === "pending");
-	const flagged = [...state.entries.values()].filter(entry => entry.status === "active" && entry.kind === "learning" && entry.flag);
 	return [
 		"Purpose: " + (state.purpose?.text ?? "not written yet."),
 		...(entries.length ? ["Instructions and learnings:", ...entries.map(entryLine)] : ["No entries yet."]),
-		...(flagged.length ? ["Learnings under review (not given to the model):", ...flagged.map(entry => entryLine(entry) + " (Flagged: " + oneLine(entry.flag!.reason) + ")")] : []),
 		...(pending.length ? ["Waiting for the next tidy-up:", ...pending.map(entryLine)] : []),
 	].join("\n");
 }
@@ -113,7 +111,6 @@ export function viewData(state: State, status: ViewStatus, cwd: string) {
 	const today = dayOf(Date.now()), order = new Map(ranked(state).map((item, index) => [item.id, index]));
 	return {
 		purpose: state.purpose ? { text: state.purpose.text, at: state.purpose.at, by: state.purpose.by } : null,
-		proposedPurpose: state.proposedPurpose ? { text: state.proposedPurpose.text, at: state.proposedPurpose.at, reason: state.proposedPurpose.reason ?? null } : null,
 		// Every live entry, in the prompt's order, and the 100 that ended last.
 		entries: [...[...state.entries.values()].filter(live).sort((a, b) => (order.get(a.id) ?? order.size) - (order.get(b.id) ?? order.size)),
 			...[...state.entries.values()].filter(item => !live(item))
