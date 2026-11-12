@@ -3,7 +3,7 @@ import { cacheExpired } from "../../pi-context-window/prompt-cache.ts";
 
 /**
  * Tool results a later result made useless, replaced by a short stub in the provider request only. New ones are
- * chosen only at free moments (a known-expired cache, compaction, or a model or thinking switch), when the request
+ * chosen only at free moments (a known-expired cache, compaction, or a model or cache-losing thinking switch), when the request
  * pays for its whole prompt anyway; they are recorded in the session so every later request sends the same stubs
  * and keeps its cache. Rewinding past a record drops it with the branch.
  */
@@ -12,7 +12,7 @@ export const SUPERSEDED = "superseded-results";
 type Call = { type: string; id?: string; name?: string; arguments?: Record<string, unknown> };
 type Message = { role: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean };
 type Entry = { type: string; customType?: string; data?: unknown; message?: { role?: string; provider?: string; model?: string } };
-type Model = { provider: string; id: string; promptCache?: { short?: number; long?: number } };
+type Model = { provider: string; id: string; promptCache?: { short?: number; long?: number }; compat?: object };
 type Seen = { id: string; name: string; args: Record<string, unknown>; error: boolean };
 
 const SEARCHES = new Set(["grep", "find", "ls", "glob", "web_search", "web_fetch", "view_image"]);
@@ -69,14 +69,18 @@ export function stubText({ by, earlier }: { by: Seen; earlier: Seen }): string {
 	function command(call: Seen) { return COMMANDS.has(call.name) && text(call.args.command ?? call.args.cmd); }
 }
 
-/** A request pays for its whole prompt: the cache is known to have expired, or it follows compaction or a model or thinking switch. */
+/**
+ * A request pays for its whole prompt: the cache is known to have expired, or it follows compaction or a model or
+ * thinking switch. A thinking switch costs nothing where the provider changes effort inside the conversation.
+ */
 export function freeMoment(model: Model | undefined, branch: readonly Entry[]): boolean {
 	if (cacheExpired(model, branch as never)) return true;
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index]!;
 		// A different model has no cache for this conversation.
 		if (entry.type === "message" && entry.message?.role === "assistant") return !!model && (entry.message.provider !== model.provider || entry.message.model !== model.id);
-		if (entry.type === "compaction" || entry.type === "model_change" || entry.type === "thinking_level_change") return true;
+		if (entry.type === "compaction" || entry.type === "model_change") return true;
+		if (entry.type === "thinking_level_change" && (model?.compat as { supportsMidConvoEffort?: boolean } | undefined)?.supportsMidConvoEffort !== true) return true;
 	}
 	return false;
 }

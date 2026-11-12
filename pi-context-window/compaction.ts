@@ -2,6 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isContextOverflow, isRetryableAssistantError, type AssistantMessage } from "@earendil-works/pi-ai";
 import { COMPACTION_FAILURE_ENTRY, RETRY_AFTER_MINUTES, compactionHeld, compactionKey, failures, type Failure } from "./compaction-state.ts";
+import { effortSetting } from "../pi-effort/src/shared.ts";
 
 export { compactionHeld, compactionKey } from "./compaction-state.ts";
 
@@ -50,7 +51,8 @@ export default function compactionPolicy(pi: ExtensionAPI): void {
 	let attempt: string | undefined;
 	pi.on("session_before_compact", (event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
-		const key = compactionKey(ctx.model, event.preparation.settings, ctx.thinkingLevel ?? pi.getThinkingLevel());
+		// Automatic effort moves the level between runs; only the user's own choice is a reason to try again.
+		const key = compactionKey(ctx.model, event.preparation.settings, effortSetting(sessionId, ctx.thinkingLevel ?? pi.getThinkingLevel()));
 		// Codex Wire runs first and applies the same hold to Codex models; pi-compaction-context records its
 		// failures under this same key.
 		if (event.reason !== "manual" && compactionHeld(sessionId, key)) return { cancel: true };

@@ -13,6 +13,7 @@ import { parseForkTurns } from "./task-names.ts";
 import { agentLabel, primaryAgents } from "../primary.ts";
 import { renderPartyCall, renderPartyResult } from "../render.ts";
 import { MAX_MESSAGE_FILES } from "../store.ts";
+import { effortSetting } from "../../pi-effort/src/shared.ts";
 
 /**
  * The agent tools. A primary agent is a conversation in Jordan's Desk, on any of his computers, that he can open and
@@ -76,7 +77,8 @@ function parentInvocation(
 		authority: binding.getAuthority(),
 		sessionManager: ctx.sessionManager as ParentInvocation["sessionManager"],
 		model: ctx.model,
-		thinkingLevel: ctx.thinkingLevel,
+		// A helper inherits the level the user chose, not the level automatic effort is using at this moment.
+		thinkingLevel: effortSetting(ctx.sessionManager.getSessionId(), ctx.thinkingLevel) as typeof ctx.thinkingLevel,
 		toolNames: binding.getToolNames?.() ?? [],
 		toolCallId,
 		cwd: ctx.cwd,

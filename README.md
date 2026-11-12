@@ -33,6 +33,8 @@ Do not pin a ref, or Pi's update checks will not see new commits.
 
 ## Models, context and cost
 
+- [`pi-effort`](pi-effort/README.md): automatic effort for Claude conversations. Lighter stretches run up to two
+  levels below the level you set, never under medium, and climb back as the work grows; the prompt cache holds.
 - [`pi-model-calls`](pi-model-calls/README.md): `ask_model`, free-text answers for programs from one model chosen in
   Desk's Settings, billed to its API key, with a daily spending limit.
 - [`pi-openai-images`](pi-openai-images/README.md): GPT Image 2.5 generation and editing through native codemode,

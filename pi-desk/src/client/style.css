@@ -994,6 +994,8 @@ details[open] > summary:before {
 .model-default { flex:none; color:var(--muted); }
 .model-default.is-default { color:var(--accent); opacity:1; }
 .model-default.is-default svg { fill:currentColor; }
+.effort-auto { flex:none; color:var(--muted); }
+.effort-auto.is-on { color:var(--accent); opacity:1; }
 .composer-preferences { display:flex; align-items:center; gap:3px; flex:none; }
 .model-controls {
   display: flex;
@@ -1251,6 +1253,7 @@ details[open] > summary:before {
 .composer-overflow-preferences { display:none; gap:8px; align-items:center; margin-top:12px; }
 .composer-overflow-preferences > span { color:var(--muted); }
 .composer-overflow-preferences > select { order:1; }
+.composer-overflow-preferences > .effort-auto { order:1; }
 .composer-overflow-preferences > .model-default { order:2; margin-left:auto; }
 .composer-shortcuts { color:var(--muted); font-size:11px; line-height:1.5; }
 .composer-shortcuts { margin:12px 0 0; padding-top:12px; border-top:1px solid var(--border); }

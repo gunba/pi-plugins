@@ -1,0 +1,19 @@
+{
+  "name": "pi-effort",
+  "version": "0.1.0",
+  "description": "Run lighter stretches of a conversation below the user's effort setting, and climb back as the work grows.",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/effort.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-coding-agent": { "optional": true }
+  },
+  "license": "MIT"
+}

@@ -44,6 +44,9 @@ export function Composer({ session, selected, selectedRef, composerInput, recall
   const selectedModel = session?.snapshot?.model;
   const isDefaultModel = !!selectedModel && selectedModel.provider === session?.snapshot?.defaultModel?.provider
     && selectedModel.id === session.snapshot.defaultModel.id;
+  const effort = session.snapshot?.effort;
+  /** The level in use, when automatic effort has it below the level the user chose. */
+  const effortNow = effort?.on && effort.now !== session.snapshot?.thinking ? effort.now : undefined;
   const modelPreferences = session.snapshot && <>
     <button type="button" className={`icon-button model-default${isDefaultModel ? " is-default" : ""}`}
       aria-label={isDefaultModel ? "Default model on this computer" : "Set selected model as default"}
@@ -63,10 +66,19 @@ export function Composer({ session, selected, selectedRef, composerInput, recall
     >
       {session.snapshot?.thinkingLevels.map((level) => (
         <option key={level} value={level}>
-          {level.charAt(0).toUpperCase() + level.slice(1)}
+          {level.charAt(0).toUpperCase() + level.slice(1)}{level === session.snapshot?.thinking && effortNow ? ` · now ${effortNow}` : ""}
         </option>
       ))}
     </select>
+    {effort && <button type="button" className={`icon-button effort-auto${effort.on ? " is-on" : ""}`}
+      aria-label="Automatic effort" aria-pressed={effort.on}
+      title={effort.on
+        ? `Automatic effort is on: lighter work runs up to two levels below the level set here, never under medium${effortNow ? `. Now at ${effortNow}` : ""}. Click to turn it off for this conversation.`
+        : "Automatic effort is off: all work runs at the level set here. Click to let lighter work run up to two levels lower, never under medium."}
+      disabled={settingBusy || !connected || session.state !== "ready"}
+      onClick={() => run({ kind: "effort", on: !effort.on })}>
+      <Icon name="sliders" />
+    </button>}
   </>;
   return <form className={`composer${draggingFiles ? " file-drop" : ""}`} onSubmit={event => { event.preventDefault(); void send(); }}
     onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDraggingFiles(true); } }}

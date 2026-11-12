@@ -96,6 +96,9 @@ export function commandFrom(value: unknown): WorkerCommand | UploadCommand {
 				...(context ? { context: { mode: "portable", leaf: string(context.leaf, 100) } as const } : {}) };
 		}
 		case "thinking": return { kind: data.kind, level: string(data.level, 30) };
+		case "effort":
+			if (typeof data.on !== "boolean") throw new Error("Invalid automatic effort choice.");
+			return { kind: data.kind, on: data.on };
 		case "answer": return { kind: data.kind, id: string(data.id, 100), answer: data.answer };
 		case "action":
 			if (!Number.isSafeInteger(data.revision) || Number(data.revision) < 0) throw new Error("Invalid view revision.");

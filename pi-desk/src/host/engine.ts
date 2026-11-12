@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { StaleGeneration } from "./worker-errors.ts";
 import { compactionFailure, compactionHeld, compactionKey, measuredContextTokens } from "../../../pi-context-window/compaction-state.ts";
 import { promptCacheState } from "../../../pi-context-window/prompt-cache.ts";
+import { effortSetting, views as effortViews } from "../../../pi-effort/src/shared.ts";
 import { join } from "node:path";
 import {
 	createAgentSessionServices,
@@ -542,7 +543,9 @@ export class DeskEngine {
 			empty: !session.sessionManager.getEntries().some(entry => entry.type === "message"),
 			model: session.model ? { id: session.model.id, provider: session.model.provider, name: session.model.name, images: session.model.input.includes("image") } : undefined,
 			defaultModel: defaults.defaultProvider && defaults.defaultModel ? { provider: defaults.defaultProvider, id: defaults.defaultModel } : undefined,
-			thinking: session.thinkingLevel, thinkingLevels: session.getAvailableThinkingLevels(),
+			// With automatic effort on, the level of the moment can sit below the one the user chose.
+			thinking: effortSetting(session.sessionId, session.thinkingLevel) ?? session.thinkingLevel, thinkingLevels: session.getAvailableThinkingLevels(),
+			...(effortViews.get(session.sessionId)?.usable ? { effort: { on: effortViews.get(session.sessionId)!.auto, now: session.thinkingLevel } } : {}),
 			modelSwitchConstraint: modelSwitchConstraint(session) ? { ...modelSwitchConstraint(session)!, portable: true } : null,
 			activity: ui.interactions.some(item => !item.settings && !asksInBackground(item.form)) ? "waiting" : this.running || this.transition || session.isCompacting ? "running" : this.failed || loaded.errors.length ? "error" : "idle",
 			...inventory,
@@ -800,6 +803,10 @@ export class DeskEngine {
 			}
 			case "action": return this.presentation.act(command.view, command.revision, command.action, command.value,
 				operation => this.change(operation, true));
+			case "effort":
+				if (!session.extensionRunner?.getCommand("effort")) throw new Error("Automatic effort is unavailable in this conversation.");
+				await session.prompt(`/effort ${command.on ? "on" : "off"}`, { source: "interactive" });
+				this.scheduleSnapshot(); return;
 			case "name": session.setSessionName(command.name); this.scheduleSnapshot(); return;
 			case "sent_messages": return sentMessageTexts(session.sessionManager.getBranch(), 50, this.fullEntry(session.sessionManager));
 			case "note":
@@ -869,7 +876,7 @@ export class DeskEngine {
 		if (!model || !settings?.enabled || this.closed || this.transition || this.runtime?.session !== session || !session.isIdle) return;
 		const checkpoint = model.contextWindow - settings.reserveTokens, estimate = session.getContextUsage()?.tokens, measured = this.measuredContext(session);
 		if (measured === undefined || measured <= checkpoint || estimate == null || estimate > checkpoint) return;
-		if (compactionHeld(session.sessionId, compactionKey(model, settings, session.thinkingLevel))) return;
+		if (compactionHeld(session.sessionId, compactionKey(model, settings, effortSetting(session.sessionId, session.thinkingLevel)))) return;
 		this.automaticCompaction = "threshold";
 		try { await session.compact(); } catch {} // The failure is recorded in the conversation.
 		finally { this.automaticCompaction = undefined; }

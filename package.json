@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.29.322",
+  "version": "0.29.323",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -42,6 +42,7 @@
       "./pi-fast-footer/extensions/fast-footer.ts",
       "./pi-context-ledger/extensions/context-ledger.ts",
       "./pi-context-window/index.ts",
+      "./pi-effort/extensions/effort.ts",
       "./pi-agents/index.ts",
       "./pi-plan/extensions/plan.ts",
       "./pi-handbook/extensions/handbook.ts",

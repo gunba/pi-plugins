@@ -26,7 +26,7 @@ export interface ErrorStat { tool: string; count: number; first: number; last: n
 interface Previous { prompt: number; model: string; at: number; cached: boolean }
 export interface FileState {
 	size: number; offset: number; carry: string;
-	previous?: Previous; flags: { switch: boolean; prompt: boolean; contextEdit: boolean }; afterUser: boolean;
+	previous?: Previous; flags: { switch: boolean; prompt: boolean; contextEdit: boolean; effort?: boolean }; afterUser: boolean;
 	/** Tool calls awaiting their result: name and whether it was a poll. */
 	calls: Record<string, [string, boolean]>;
 	days: Record<string, DayStats>; errors: Record<string, ErrorStat>;
@@ -66,7 +66,8 @@ export function addEntry(state: FileState, entry: Record<string, any>, ttlMs: (m
 		}
 		return;
 	}
-	if (entry.type === "model_change" || entry.type === "thinking_level_change") { state.flags.switch = true; return; }
+	if (entry.type === "model_change") { state.flags.switch = true; return; }
+	if (entry.type === "thinking_level_change") { state.flags.effort = true; return; }
 	if (entry.type === "context_edit") { state.flags.contextEdit = true; return; }
 	if (entry.type === "usage" && entry.kind === "cache_warm" && entry.usage) {
 		const usage = entry.usage as Usage, stats = day(at);
@@ -118,7 +119,9 @@ export function addEntry(state: FileState, entry: Record<string, any>, ttlMs: (m
 			const paidPer = paid > 0 && cost ? (cost.input + cost.cacheWrite) / paid : 0, readPer = usage.cacheRead > 0 && cost ? cost.cacheRead / usage.cacheRead : 0;
 			const lost = missed * Math.max(0, paidPer - readPer), ttl = ttlMs(model);
 			const idle = when - previous.at;
-			const cause: Cause = previous.model !== model || state.flags.switch ? "switch" : ttl !== undefined && idle > ttl ? "expiry"
+			// A reply names the level it was sent at only where the provider changes effort inside the conversation, keeping the cache.
+			const effortSwitch = state.flags.effort === true && message.providerThinkingLevel === undefined;
+			const cause: Cause = previous.model !== model || state.flags.switch || effortSwitch ? "switch" : ttl !== undefined && idle > ttl ? "expiry"
 				: state.flags.prompt ? "prompt" : state.flags.contextEdit ? "contextEdit" : ttl === undefined && idle > 300_000 ? "unknown" : "unexplained";
 			const bucket = stats.breaks[cause];
 			bucket.count++; bucket.tokens += missed; bucket.cost += lost;

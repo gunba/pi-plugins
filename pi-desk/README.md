@@ -559,6 +559,9 @@ Browser handlers open the relevant native controls or Settings. `/name [name]`
 and its `/rename` alias rename the conversation; `/fork <entry-id> [at|before]`
 chooses a branch, and `/clone` forks the current leaf. `/model [provider/model]`
 and `/thinking [level]` select the current conversation’s model and reasoning.
+For a Claude conversation, the sliders button beside the reasoning level switches
+automatic effort ([`pi-effort`](../pi-effort/README.md)): lighter work runs up to
+two levels below the level set, never under medium.
 `/export [path]` writes HTML, or JSONL when the path ends in `.jsonl`; its saved
 path appears in control history. `/import <path>` opens a native JSONL import.
 `/copy`, `/session` and `/changelog` use native session reads. `/help` shows the

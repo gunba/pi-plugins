@@ -63,6 +63,11 @@ export interface SessionSnapshot {
 	modelSwitchConstraint?: { provider: string; reason: string; portable?: boolean } | null;
 	thinking: string;
 	thinkingLevels: string[];
+	/**
+	 * Automatic effort, where the conversation's model supports it. While it is on, `thinking` is the level the user
+	 * chose and `now` the level in use, which can sit below it during a run. Omitted by workers without it.
+	 */
+	effort?: { on: boolean; now: string };
 	activity: "idle" | "running" | "waiting" | "error";
 	tools: { name: string; description: string; active: boolean;
 		exposure?: string; callable?: boolean; declared?: boolean; defaultActive?: boolean;
@@ -295,6 +300,8 @@ export type WorkerCommand =
 	| { kind: "name"; name: string }
 	| { kind: "model"; provider: string; id: string; makeDefault?: boolean; context?: { mode: "portable"; leaf: string } }
 	| { kind: "thinking"; level: string }
+	/** Turn automatic effort on or off for this conversation. */
+	| { kind: "effort"; on: boolean }
 	| { kind: "reload" }
 	/** Run a watch's program with this process's tools, outside any turn; only Desk's program runner sends it. */
 	| { kind: "program"; code: string };

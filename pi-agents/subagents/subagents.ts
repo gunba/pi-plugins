@@ -44,6 +44,7 @@ import { subagentWorkSection } from "../../pi-work-ui/sections.ts";
 import { getPresentation } from "../../pi-ui/index.ts";
 import { SubagentPresentation } from "./presentation.ts";
 import { ACTIVE_LIMIT_ENTRY, parseActiveLimit, savedActiveLimit } from "./limits.ts";
+import { effortSetting } from "../../pi-effort/src/shared.ts";
 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -426,7 +427,7 @@ export default function subagents(pi: ExtensionAPI): void {
 		if (remote?.capabilities.includes("details")) {
 			presentation = new SubagentPresentation(remote, created, () => ({
 				authority: created.rootAuthority, sessionManager: ctx.sessionManager as ParentInvocation["sessionManager"],
-				model: ctx.model, thinkingLevel: ctx.thinkingLevel, toolNames: pi.getActiveTools(),
+				model: ctx.model, thinkingLevel: effortSetting(ctx.sessionManager.getSessionId(), ctx.thinkingLevel) as typeof ctx.thinkingLevel, toolNames: pi.getActiveTools(),
 				toolCallId: `human:${randomUUID()}`, cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted(),
 			}), permissions);
 		}

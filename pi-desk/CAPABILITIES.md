@@ -86,6 +86,7 @@ same rule, so a watch waking a conversation for a check-in does not notify.
 | `pi-fast-footer` | Conversation footer with model/thinking/context and shared recorded usage; collapsed on mobile |
 | `pi-context-ledger` | Saved initial-context cards (automatic in the terminal, `/context-ledger` on request) shown as expandable cards; excluded from model context |
 | `pi-context-window` | Capacity/automatic-compaction settings and native compaction controls |
+| `pi-effort` | The sliders button beside the reasoning level switches automatic effort for a Claude conversation; the level shown stays the one the user chose, with the level in use beside it when lower |
 | `pi-agents` | Primary agents (Desk conversations on any computer, started with Jordan's approval) and secondary agents (background helpers that report back) through `agent_start`, `agent_send`, `agent_list`, `agent_stop` and `agent_move`; account-wide encrypted discovery and direct messages, the Messages card, and the quest log. |
 | `pi-plan` | Visible objective/current-step summary; **Work → Plan** manages objective, steps and optional automatic continuation |
 | `pi-watch` | `watch` waits without spending turns; a **Watching** badge by the message box lists watches with a Stop action. |
