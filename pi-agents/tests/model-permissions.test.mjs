@@ -173,7 +173,7 @@ test("tool definitions pass model and effort to the same runtime gate for root a
 		assert.ok(tool);
 		for (const context of [undefined, "copy", "fresh", "2"]) {
 			const result = await tool.execute("call", { name: "Test", task: "task", context, model: "test/small", reasoning: "low" }, undefined, () => {},
-				{ sessionManager: {}, model: capable, thinkingLevel: "high", cwd: "/", isProjectTrusted: () => true });
+				{ sessionManager: { getSessionId: () => "parent" }, model: capable, thinkingLevel: "high", cwd: "/", isProjectTrusted: () => true });
 			assert.equal(received.at(-1).model, "test/small");
 			assert.equal(received.at(-1).thinkingLevel, "low");
 			assert.equal(received.at(-1).taskName, "test");
