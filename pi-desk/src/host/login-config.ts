@@ -9,6 +9,11 @@ export interface LoginConfig {
 	version: 1; owner: string; platform: "linux" | "win32"; name: string;
 	node: string; entry: string; directory: string; cwd: string;
 	arguments: string[]; environment: Record<string, string>; unit?: string;
+	/**
+	 * Windows: "headless" once the registered task runs the wrapper under a console with no window (taskAction).
+	 * Absent for a task registered by a release that used a hidden PowerShell window, which refreshManager replaces.
+	 */
+	console?: "headless";
 }
 const defaults = [
 	"PATH", "LANG", "LC_ALL", "LC_CTYPE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
@@ -51,7 +56,8 @@ export function makeLoginConfig(directory: string, cwd: string, arguments_: stri
 	return { version: 1, owner: randomUUID(), platform: process.platform, name, node: process.execPath,
 		entry: process.env.PI_DESK_RUNTIME ? launcherPath(selectedRuntime()!.home) : fileURLToPath(new URL("./cli.js", import.meta.url)),
 		directory: canonical, cwd, arguments: arguments_, environment,
-		...(process.platform === "linux" ? { unit: join(resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config")), "systemd", "user", `${name}.service`) } : {}),
+		...(process.platform === "linux" ? { unit: join(resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config")), "systemd", "user", `${name}.service`) }
+			: { console: "headless" }),
 	};
 }
 export function saveLoginConfig(config: LoginConfig): void {

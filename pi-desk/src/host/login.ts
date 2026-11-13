@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { SessionLease } from "../../../pi-session-ownership/lease.ts";
@@ -16,8 +16,12 @@ export async function loginStatus(directory: string): Promise<LoginStatus> {
 	status.environment = Object.keys(config.environment).sort();
 	if (!loginPathsValid(config)) status.error = "The saved Node executable, app entry point or project directory is missing. Remove/reinstall login-start with the current paths.";
 	else if (status.state === "failed") status.error = "Login-start failed. Check login-error.txt, host.log and the user service/task status.";
-	else if (status.platform === "win32" && status.state === "Ready" && status.result && status.result !== 267011) {
-		status.error = `The last login-start task returned ${status.result}. Check login-error.txt, host.log and Task Scheduler.`;
+	else if (status.platform === "win32" && status.state === "Ready") {
+		// The task's result is its console host's, which is 0 even when the wrapper failed: runLogin leaves the reason in a file.
+		let failure: string | undefined;
+		try { failure = readFileSync(join(directory, "login-error.txt"), "utf8").trim().slice(0, 400); } catch { /* No failed run is recorded. */ }
+		if (failure) status.error = `Login-start failed: ${failure} Check host.log.`;
+		else if (status.result && status.result !== 267011) status.error = `The last login-start task returned ${status.result}. Check host.log and Task Scheduler.`;
 	}
 	return status;
 }
@@ -37,7 +41,7 @@ export async function migrateLogin(directory: string, entry: string): Promise<vo
 		const changed = canonicalPath(original.entry) !== canonicalPath(entry) || canonicalPath(original.node) !== canonicalPath(process.execPath);
 		if (!changed && !["missing", "not-found"].includes(status.state ?? "")) return;
 		atomicJson(join(directory, "login-before-managed.json"), original);
-		const config = { ...original, entry, node: process.execPath };
+		const config: LoginConfig = { ...original, entry, node: process.execPath, ...(original.platform === "win32" ? { console: "headless" } : {}) };
 		await disableManager(original); await removeManager(original);
 		try {
 			atomicJson(loginFile(directory), config);

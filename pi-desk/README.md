@@ -390,8 +390,12 @@ when selecting a non-default instance. Installing enables future login-start
 without starting the host immediately. `start` and `open` then use that service
 or task; `stop` waits for its host and launcher to finish.
 
-Linux uses a `systemd --user` service. Windows uses a current-user logon task,
-an interactive limited token and a hidden PowerShell launcher. It does not
+Linux uses a `systemd --user` service. Windows uses a current-user logon task
+with an interactive limited token, which runs the launcher under a console that
+has no window (`conhost.exe --headless`, Windows 10 1809 or later): there is
+nothing on the desktop to close. A task installed by an earlier release, whose
+hidden PowerShell window Windows Terminal shows, is changed over when the host
+next starts and takes effect the next time the task runs. It does not
 store a Windows password or request elevation. The account must be logged in,
 and the PC awake. No wake timer, linger setting or system-wide power setting is
 changed. If policy prevents registration, ordinary `start`/`serve` are still

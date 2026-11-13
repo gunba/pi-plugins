@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { SessionLease, SessionOwnedError, sessionLockPath } from "../../pi-session-ownership/lease.ts";
 import { assertFixtureJobMembers } from "./fixtures/windows-job-members.mjs";
 import test from "node:test";
@@ -21,6 +21,7 @@ import { RELEASE } from "../src/shared/release.ts";
 import { InputLedger } from "../src/host/inputs.ts";
 import { LoginSupervisor, liveSupervisor, waitHandoffSelection } from "../src/host/login-supervisor.ts";
 import { runLogin } from "../src/host/login.ts";
+import { taskAction } from "../src/host/login-manager.ts";
 
 const root = () => mkdtempSync(join(tmpdir(), "desk-supervisor-"));
 
@@ -254,4 +255,22 @@ test("a real managed wrapper survives public host replacement with the same busy
 		assert.equal(retained.read(key, input).status.state, "accepted");
 		assert.equal(retained.checkpoint().state, "complete");
 	} finally { retained.close(); }
+});
+
+// Work PC, 13 November: the login-start task ran its wrapper in a "hidden" PowerShell window, which Windows Terminal
+// showed; closing it ended Desk. The task now starts the wrapper through conhost --headless, which rebuilds the
+// wrapper's command line itself: a path it split or unquoted would leave Desk not starting at sign-in.
+test("the Windows login-start task's action starts the wrapper with the saved paths intact", {
+	skip: process.platform !== "win32" && "conhost and its console without a window exist only on Windows", timeout: 120000,
+}, t => {
+	const directory = mkdtempSync(join(tmpdir(), "desk login's ")), entry = join(directory, "launch file.mjs");
+	t.after(() => rmSync(directory, { recursive: true, force: true }));
+	writeFileSync(entry, 'import { writeFileSync } from "node:fs";\nwriteFileSync(new URL("./argv.json", import.meta.url), JSON.stringify(process.argv.slice(2)));\n');
+	const { execute, arguments: line } = taskAction({ version: 1, owner: randomUUID(), platform: "win32", name: "pi-desk-0123456789abcdef",
+		node: process.execPath, entry, directory, cwd: directory, arguments: [], environment: {} });
+	// As Task Scheduler starts it: the argument string as written, and no standard handles, which conhost would take for a terminal's.
+	const literal = value => "'" + value.replaceAll("'", "''") + "'";
+	execFileSync(win32.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+		Buffer.from("Start-Process -FilePath " + literal(execute) + " -ArgumentList " + literal(line) + " -Wait", "utf16le").toString("base64")], { windowsHide: true, stdio: "ignore" });
+	assert.deepEqual(JSON.parse(readFileSync(join(directory, "argv.json"), "utf8")), ["login-run", "--data-dir", directory]);
 });
