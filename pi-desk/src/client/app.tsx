@@ -660,12 +660,14 @@ export function App({ account }: { account?: BrowserAccount }) {
               : "Pi is not running. Resume to continue."}
               {session.state === "closed" && session.kept && session.waiting && <ul className="sleep-waiting">{session.waiting.map((item, index) =>
                 <li key={index}><strong>{item.title}</strong>{item.detail && <span>{item.detail}</span>}</li>)}</ul>}</span>
-            {session.state === "closed" && session.kept && <ResumeModel sessions={host.sessions} session={session} disabled={!connected}
-              change={choice => void api(`/sessions/${session.key}/restart`, { takeover: true, setup: choice, sleep: true }).catch(error => setError(errorText(error)))} />}
-            {session.unresponsive && <button disabled={!connected || stoppingOld === session.key} onClick={() => void stopAndOpen()}>
-              {stoppingOld === session.key ? "Stopping…" : "Stop it and open"}</button>}
-            <button disabled={!connected || stoppingOld === session.key} onClick={() => void restartSession()}>
-              {session.state === "closed" && session.kept ? "Open" : session.unresponsive ? "Try again" : session.file ? "Resume" : "Retry"}</button>
+            <div className="banner-actions">
+              {session.state === "closed" && session.kept && <ResumeModel sessions={host.sessions} session={session} disabled={!connected}
+                change={choice => void api(`/sessions/${session.key}/restart`, { takeover: true, setup: choice, sleep: true }).catch(error => setError(errorText(error)))} />}
+              {session.unresponsive && <button disabled={!connected || stoppingOld === session.key} onClick={() => void stopAndOpen()}>
+                {stoppingOld === session.key ? "Stopping…" : "Stop it and open"}</button>}
+              <button disabled={!connected || stoppingOld === session.key} onClick={() => void restartSession()}>
+                {session.state === "closed" && session.kept ? "Open" : session.unresponsive ? "Try again" : session.file ? "Resume" : "Retry"}</button>
+            </div>
           </div>
         )}
         {host.directoryError && <div className="connection-banner" role="status">{host.directoryError}</div>}

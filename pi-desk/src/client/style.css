@@ -1552,21 +1552,28 @@ details[open] > summary:before {
   background: var(--notice);
   color: var(--danger);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
 }
 .connection-banner {
   color: var(--muted);
   background: var(--sidebar);
 }
-.connection-banner > span { flex: 1; min-width: 0; }
+/* The message keeps a readable width: controls that don't fit beside that go on the line below, at the right. On a
+   phone they used to squeeze the message into a column one word wide. */
+.connection-banner > span { flex: 1 1 260px; min-width: 0; }
+.connection-banner > button, .banner-actions { margin-left: auto; }
+.banner-actions { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.banner-actions > button { flex: none; white-space: nowrap; }
 .sleep-waiting { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 2px; }
 .sleep-waiting li { display: flex; gap: 8px; min-width: 0; }
 .sleep-waiting strong { flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 500; }
 .sleep-waiting span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.resume-model { display: flex; align-items: center; gap: 6px; flex: none; }
-.resume-model .field-picker { min-height: 30px; padding: 3px 10px; width: auto; }
+/* A long model name is cut short before the controls outgrow a narrow screen. */
+.resume-model { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; }
+.resume-model .field-picker { min-height: 30px; padding: 3px 10px; width: auto; flex: none; }
 .older {
   display: block;
   margin: 0 auto 30px;
