@@ -28,9 +28,10 @@ the section the model last had until then.
   it; it counts at once. A learning waits for the tidy-up. The agent can flag an entry that turned out wrong or out
   of date: the entry stays in the prompt with the agent's reason beside it until the tidy-up settles it. The agent
   can also write the purpose and read the whole handbook.
-- **The tidy-up**, a side request on the conversation's model. It runs when the conversation has been idle for ten
-  minutes, about once a day, and reads the user's messages since its last run, each with the end of the agent's
-  reply before it. It catches instructions the agent missed, admits or turns down the agent's learnings, settles
+- **The tidy-up**, a side request on the conversation's model, asked at low thinking with up to 32,000 tokens for
+  its reply. It runs when the conversation has been idle for ten minutes, about once a day; after a failure the next
+  automatic one waits an hour, and twice as long after each further failure in a row, up to a day. It reads the
+  user's messages since its last run, each with the end of the agent's reply before it. It catches instructions the agent missed, admits or turns down the agent's learnings, settles
   the agent's flags, merges and replaces entries, and labels each message (instruction, correction, repeat or
   other) for the chart. A backlog takes several passes in a row. A pass adds at most one new entry for every ten messages it reads, and never more
   than six, the most important first; replacing and merging entries don't count.

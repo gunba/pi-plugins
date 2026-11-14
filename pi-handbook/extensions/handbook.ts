@@ -10,14 +10,23 @@ import { CHANGE_ENTRY, PUBLISHED_ENTRY, applyChange, emptyState, foldBranch, las
 	type Actor, type Change, type Draft, type Op, type State } from "../src/domain.ts";
 import { handbookReader } from "../src/peers.ts";
 import { SECTION_TAG, fullText, sectionText, viewData } from "../src/render.ts";
-import { TIDY_SYSTEM, WINDOW_CHARS, collectWindow, commitOps, parseReply, planReply, textOf, tidyRequest } from "../src/tidy.ts";
+import { TIDY_SYSTEM, WINDOW_CHARS, collectWindow, commitOps, parseReply, planReply, replyText, textOf, tidyRequest } from "../src/tidy.ts";
 
 /** Quiet time after the conversation settles before a tidy-up. */
 const IDLE_MS = 10 * 60_000;
 /** Tidy-ups run about daily, except while a backlog of messages is left. */
 const PASS_EVERY_MS = 20 * 3_600_000;
-/** After a failed tidy-up, the next automatic one waits this long. */
+/** After a failed tidy-up, the next automatic one waits this long, and twice as long after each further failure in a row. */
 const RETRY_MS = 3_600_000;
+/** The longest wait after failures in a row. */
+const RETRY_LIMIT_MS = 24 * 3_600_000;
+/**
+ * How much the model thinks about a pass, and the most its reply may be, thinking included. Asked with no level and
+ * 16,000 tokens, Claude Fable 5.2 thought for most of them on a backlog of 53 messages and 24 waiting learnings, and
+ * its JSON was cut off: every pass failed that way for two days. At low it answered the same request in 5,600 tokens,
+ * with the changes it made at medium.
+ */
+const TIDY_THINKING = "low", REPLY_TOKENS = 32_000;
 /** Backlog passes follow each other while the conversation stays idle. */
 const NEXT_CHUNK_MS = 15_000;
 /**
@@ -71,6 +80,8 @@ class Handbook {
 	private running?: string;
 	private error?: string;
 	private failedAt = 0;
+	/** Automatic tidy-ups that failed in a row. */
+	private failures = 0;
 	/** A pass's changes, waiting for the conversation to be idle. */
 	private queued?: { ops: Op[]; epoch: number };
 	/** Whether the session had no messages from the user when it started, and its last entry then. */
@@ -179,7 +190,9 @@ class Handbook {
 		const ctx = this.ctx, epoch = this.epoch;
 		if (!ctx || this.stopping || this.running || !this.topLevel || this.remote?.suspended) return;
 		this.settlePurpose();
-		if (!force && (!ctx.isIdle() || ctx.hasPendingMessages() || Date.now() - this.failedAt < RETRY_MS)) return;
+		// A pass that fails tends to fail again on the same messages, at the price of a whole request each time.
+		const retryAfter = Math.min(RETRY_LIMIT_MS, RETRY_MS * 2 ** Math.max(0, this.failures - 1));
+		if (!force && (!ctx.isIdle() || ctx.hasPendingMessages() || Date.now() - this.failedAt < retryAfter)) return;
 		const model = ctx.model;
 		if (!model) { if (force) { this.error = "This conversation has no model to tidy up with."; this.refresh(); } return; }
 		const last = this.state.passes.at(-1);
@@ -192,19 +205,19 @@ class Handbook {
 		this.refresh();
 		const asked = Date.now();
 		try {
-			const result = await ctx.modelRegistry.complete(model, { systemPrompt: TIDY_SYSTEM,
+			const result = await ctx.modelRegistry.streamSimple(model, { systemPrompt: TIDY_SYSTEM,
 				messages: [{ role: "user", content: tidyRequest(this.state, window, ctx.cwd), timestamp: Date.now() }] },
-				{ signal: abort.signal, headers: { [SIDE_REQUEST_HEADER]: "1" }, maxTokens: 16_000 } as never);
+				{ signal: abort.signal, headers: { [SIDE_REQUEST_HEADER]: "1" }, reasoning: TIDY_THINKING,
+					maxTokens: Math.min(REPLY_TOKENS, model.maxTokens || REPLY_TOKENS) }).result();
 			if (epoch !== this.epoch || this.stopping || abort.signal.aborted) return;
-			if (result.stopReason === "error" || result.stopReason === "aborted") throw new Error(result.errorMessage || "The model request failed.");
-			const plan = planReply(this.state, window, parseReply(textOf(result.content)), ctx.cwd, asked);
+			const plan = planReply(this.state, window, parseReply(replyText(result)), ctx.cwd, asked);
 			this.queued = { epoch, ops: [...plan.ops, ...(window.through ? [{ op: "cover", through: window.through } as Op] : []),
 				{ op: "pass", model: result.provider + "/" + result.model, cost: result.usage?.cost?.total ?? 0, messages: window.messages.length,
 					...(window.more ? { more: true } : {}), ...(plan.refused.length ? { reason: refusals(plan.refused) } : {}) }] };
-			this.failedAt = 0;
+			this.failedAt = 0; this.failures = 0;
 		} catch (error) {
 			if (epoch !== this.epoch || this.stopping || abort.signal.aborted) return;
-			this.error = "Tidy-up failed: " + message(error); this.failedAt = Date.now();
+			this.error = "Tidy-up failed: " + message(error); this.failedAt = Date.now(); this.failures++;
 		} finally {
 			if (this.abort === abort) this.abort = undefined;
 			if (epoch === this.epoch) { this.running = undefined; this.commit(); this.refresh(); }

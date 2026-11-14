@@ -158,6 +158,17 @@ const string = (value: unknown) => typeof value === "string" && value.trim() ? v
 const strings = (value: unknown) => Array.isArray(value) ? value.flatMap(item => string(item) ? [string(item)!] : []).slice(0, 8) : [];
 const items = (value: unknown) => Array.isArray(value) ? value.flatMap(item => record(item) ? [record(item)!] : []) : [];
 
+/**
+ * The text of the model's reply. Throws when the request failed, and when the reply reached the output limit: its JSON
+ * is then unfinished, and parsing it reports a missing bracket at whatever point the text happened to stop.
+ */
+export function replyText(result: { stopReason?: string; errorMessage?: string; content: unknown; usage?: { output?: number } }): string {
+	if (result.stopReason === "error" || result.stopReason === "aborted") throw new Error(result.errorMessage || "The model request failed.");
+	if (result.stopReason === "length")
+		throw new Error("The model's reply was cut off at its limit" + (result.usage?.output ? " of " + result.usage.output.toLocaleString("en-US") + " tokens" : "") + ".");
+	return textOf(result.content);
+}
+
 /** The reply's JSON object; throws when there is none. */
 export function parseReply(text: string): Raw {
 	const start = text.indexOf("{"), end = text.lastIndexOf("}");
