@@ -2,7 +2,7 @@
 
 The always-enabled Codex transport included in `pi-plugins`. Pi retains its prompts, tools, agent loop and session interface.
 
-The advertised core version follows the latest official stable [Codex release](https://github.com/openai/codex/releases/latest). Request bodies follow **Codex CLI 0.166.0**, commit [`6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`](https://github.com/openai/codex/tree/6ff1e1ca3b30fc8b914720681fcf5fe62e95f856), checked against requests the official 0.166.0 binary sent to a local server. The original implementation reference is **Codex CLI 0.159.1**, commit [`8e68a98ef03cdde76d2e6800791ebdf1b3b95b24`](https://github.com/openai/codex/tree/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24). The bundle requires Pi **1.0.4+** and Node **22.19+**.
+The advertised core version follows the latest official stable [Codex release](https://github.com/openai/codex/releases/latest). Request bodies follow **Codex CLI 0.167.0**, commit [`cb41599ccbe371272892f156286a236aa097bada`](https://github.com/openai/codex/tree/cb41599ccbe371272892f156286a236aa097bada), checked against requests the official 0.167.0 binary sent to a local server. The original implementation reference is **Codex CLI 0.159.1**, commit [`8e68a98ef03cdde76d2e6800791ebdf1b3b95b24`](https://github.com/openai/codex/tree/8e68a98ef03cdde76d2e6800791ebdf1b3b95b24). The bundle requires Pi **1.0.4+** and Node **22.19+**.
 
 ## Installation and activation
 
