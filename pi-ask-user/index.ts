@@ -30,6 +30,7 @@ import {
    wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { renderSingleSelectRows } from "./single-select-layout.ts";
+import { shellInput } from "../pi-watch/common.ts";
 import { getPresentation } from "../pi-ui/index.ts";
 
 import { stripVTControlCharacters } from "node:util";
@@ -1455,17 +1456,18 @@ function stopRun(child: ChildProcess | undefined): void {
  */
 function whenDone(command: string, ctx: ExtensionContext, signal: AbortSignal): Promise<boolean> {
    const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() });
-   const shell = getShellConfig(settings.getShellPath()), viaStdin = shell.commandTransport === "stdin";
+   const shell = getShellConfig(settings.getShellPath()), viaStdin = shell.commandTransport === "stdin", sent = shellInput(shell, command);
    return new Promise(resolve => {
       let child: ChildProcess | undefined, next: ReturnType<typeof setTimeout> | undefined;
       const stop = () => { clearTimeout(next); stopRun(child); resolve(false); };
       if (signal.aborted) return resolve(false);
       signal.addEventListener("abort", stop, { once: true });
       const run = () => {
-         const current = child = spawn(shell.shell, viaStdin ? shell.args : [...shell.args, command], {
-            cwd: ctx.cwd, stdio: [viaStdin ? "pipe" : "ignore", "ignore", "ignore"], windowsHide: true, detached: process.platform !== "win32",
+         const current = child = spawn(shell.shell, viaStdin ? shell.args : [...shell.args, sent.command], {
+            cwd: ctx.cwd, env: { ...process.env, ...sent.env }, stdio: [viaStdin ? "pipe" : "ignore", "ignore", "ignore"], windowsHide: true,
+            detached: process.platform !== "win32",
          });
-         if (viaStdin) current.stdin?.end(command);
+         if (viaStdin) current.stdin?.end(sent.command);
          const limit = setTimeout(() => stopRun(current), DONE_RUN_MS);
          current.once("error", () => { clearTimeout(limit); signal.removeEventListener("abort", stop); resolve(false); });
          current.once("close", code => {

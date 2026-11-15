@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { alive, judgement, launchRunner, parseTime, runnerFolder, stopCommand } from "../common.ts";
+import { alive, judgement, lastLine, launchRunner, parseTime, runnerFolder, shellFor, stopCommand } from "../common.ts";
 
 /** Commands are JavaScript run by Node, so they read the same on every platform. */
 const node = { shell: process.execPath, args: ["-e"] };
@@ -69,6 +69,28 @@ test("a change carries the output before it, and the wake check puts both beside
 		stopCommand(watch);
 		await exit(watch);
 	} finally { await remove(dir, watch.pid); }
+});
+
+test("a shell command's text is in no process's arguments, where pgrep -f in it would match its own shell", async () => {
+	// Benchmark Agent, 14 November: a watch's `pgrep -f "bundle 80ac25a" >/dev/null && echo running || echo done` went on
+	// printing "running" after the process had ended, and `pkill -f "guard.py"` killed the shell that ran it.
+	const dir = mkdtempSync(join(tmpdir(), "pi-watch-runner-")), runners = runnerFolder(dir), folder = join(dir, "watch", "conversation");
+	const shell = shellFor(process.cwd(), dir, false);
+	const whole = spec("w1", "output", "printf '%s\\n' \"it's\" 'two  words' \"${PI_WATCH_COMMAND-unset}\"\nexit 7");
+	try {
+		await launchRunner(whole, folder, shell, { runners });
+		assert.equal((await exit(whole)).code, 7);
+		assert.equal(readFileSync(whole.log, "utf8"), "it's\ntwo  words\nunset\n");
+		// The shell's own arguments are read from /proc/<pid>/cmdline, which is Linux's.
+		if (process.platform !== "linux") return;
+		const own = spec("w2", "output", "tr '\\0' ' ' < /proc/$$/cmdline");
+		await launchRunner(own, folder, shell, { runners });
+		assert.equal((await exit(own)).code, 0);
+		const started = `${shell.shell} ${shell.args.join(" ")} `;
+		assert.equal(readFileSync(own.log, "utf8").slice(0, started.length), started);
+		assert.doesNotMatch(readFileSync(own.log, "utf8"), /cmdline/);
+		assert.doesNotMatch(await lastLine(shell, "tr '\\0' ' ' < /proc/$$/cmdline", process.cwd()), /cmdline/);
+	} finally { await remove(dir, whole.pid); }
 });
 
 test("until refuses text that isn't a time rather than reading a date into it", () => {

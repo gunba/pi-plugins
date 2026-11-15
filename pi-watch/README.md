@@ -109,7 +109,9 @@ watch.
 ## bash
 
 pi-watch also provides Desk's `bash`, in place of Pi's. Its command runs in the same detached runner process, so it can
-outlive the call, and several calls in one program run at once.
+outlive the call, and several calls in one program run at once. The shell takes the command from an environment
+variable (`PI_WATCH_COMMAND`, removed before the command starts), not as an argument, so `pgrep -f` and `pkill -f` in
+a command don't match the shell running it; watches' commands and `progress` commands run the same way.
 
 | Parameter | Default | |
 |---|---|---|

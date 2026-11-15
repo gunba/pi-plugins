@@ -191,6 +191,21 @@ export function shellFor(cwd: string, agentDir: string, projectTrusted: boolean)
 	return { ...getShellConfig(settings.getShellPath()), prefix: settings.getShellCommandPrefix() };
 }
 
+/** The environment variable a POSIX shell's command travels in (shellInput). */
+const COMMAND_VARIABLE = "PI_WATCH_COMMAND";
+
+/**
+ * What `shell` is given to run `command`: `command` goes where the command would, as the last argument or on standard
+ * input, and `env` is added to the shell's environment. A POSIX shell started with -c takes the command from an
+ * environment variable, which is removed before the command's first word runs, so the command's text is in no
+ * process's arguments. There, `pgrep -f` or `pkill -f` in the command would match the shell that runs it. A shell
+ * started without the variable fails rather than run nothing.
+ */
+export function shellInput(shell: Shell, command: string): { command: string; env: NodeJS.ProcessEnv } {
+	const posix = shell.commandTransport !== "stdin" && shell.args.at(-1) === "-c" && /^(?:ba|da|k|z)?sh(?:\.exe)?$/i.test(shell.shell.split(/[\\/]/).at(-1)!);
+	return posix ? { command: `eval "unset ${COMMAND_VARIABLE}; \${${COMMAND_VARIABLE}?}"`, env: { [COMMAND_VARIABLE]: command } } : { command, env: {} };
+}
+
 /** The classifier that judges wake_when among those signed in: Jev when available. */
 export function pickClassifier<T extends { provider: string; id: string }>(models: readonly T[]): T | undefined {
 	return models.find(model => model.provider === "typesafe" && model.id === "jev-latest") ?? models.find(model => /jev/i.test(model.id)) ?? models[0];
@@ -226,12 +241,13 @@ export function judged(result: ClassifierResult): boolean {
 /** Runs a short command in the bash tool's shell; its last line of output, or why there is none. */
 export function lastLine(shell: Shell, command: string, cwd: string): Promise<string> {
 	return new Promise(resolve => {
-		const viaStdin = shell.commandTransport === "stdin";
-		const child = spawn(shell.shell, viaStdin ? shell.args : [...shell.args, command], { cwd, stdio: [viaStdin ? "pipe" : "ignore", "pipe", "pipe"], windowsHide: true });
+		const viaStdin = shell.commandTransport === "stdin", sent = shellInput(shell, command);
+		const child = spawn(shell.shell, viaStdin ? shell.args : [...shell.args, sent.command],
+			{ cwd, env: { ...process.env, ...sent.env }, stdio: [viaStdin ? "pipe" : "ignore", "pipe", "pipe"], windowsHide: true });
 		let output = "";
 		const take = (chunk: Buffer) => { output = (output + chunk.toString("utf8")).slice(-4_000); };
 		child.stdout!.on("data", take); child.stderr!.on("data", take);
-		if (viaStdin) child.stdin!.end(command);
+		if (viaStdin) child.stdin!.end(sent.command);
 		const timer = setTimeout(() => child.kill(), PROGRESS_LIMIT_MS);
 		child.once("error", error => { clearTimeout(timer); resolve(`(progress unavailable: ${error.message})`); });
 		child.once("close", () => { clearTimeout(timer); resolve((output.trim().split(/\r?\n/).filter(line => line.trim()).at(-1) ?? "(no progress output)").slice(0, 200)); });
@@ -264,12 +280,13 @@ export async function launchRunner(spec: WatchSpec, folder: string, shell: Shell
 	else { spec.log = join(folder, `${file}.log`); writeFileSync(spec.log, ""); }
 	rmSync(spec.exit, { force: true });
 	if (spec.change && !again) rmSync(spec.change, { force: true });
+	const sent = shellInput(shell, spec.command!), env = { ...(options.env ?? process.env), ...sent.env };
 	const job = { shell: shell.shell, args: shell.args, transport: shell.commandTransport ?? "argv",
-		command: spec.command, cwd: spec.cwd, log: spec.log, change: spec.change, every: spec.every, exit: spec.exit, expires: spec.expires };
+		command: sent.command, cwd: spec.cwd, log: spec.log, change: spec.change, every: spec.every, exit: spec.exit, expires: spec.expires };
 	const jobs = join(options.runners, "jobs"), run = join(jobs, randomUUID()), wait = options.takeMs ?? TAKE_MS;
 	mkdirSync(jobs, { recursive: true, mode: 0o700 });
 	// The environment can hold secrets: the file is the user's alone, and the runner deletes it as it takes it.
-	writeFileSync(`${run}.tmp`, JSON.stringify({ ...job, env: options.env ?? process.env }), { mode: 0o600 });
+	writeFileSync(`${run}.tmp`, JSON.stringify({ ...job, env }), { mode: 0o600 });
 	renameSync(`${run}.tmp`, `${run}.json`);
 	// The job is written before the runner process is looked for: one leaving after its last look leaves its successor to take it.
 	startRunner(options.runners);
@@ -281,7 +298,8 @@ export async function launchRunner(spec: WatchSpec, folder: string, shell: Shell
 			rmSync(`${run}.back`, { force: true });
 			const config = join(folder, `${file}.json`);
 			writeFileSync(config, JSON.stringify(job));
-			const runner = spawn(process.execPath, [RUNNER, config], { cwd: spec.cwd, detached: true, stdio: "ignore", windowsHide: true, ...(options.env ? { env: options.env } : {}) });
+			// The job file leaves the environment out, so the command inherits this runner's.
+			const runner = spawn(process.execPath, [RUNNER, config], { cwd: spec.cwd, detached: true, stdio: "ignore", windowsHide: true, env });
 			runner.once("error", () => {});
 			runner.unref();
 			if (!runner.pid) throw new Error("The command could not be started.");
