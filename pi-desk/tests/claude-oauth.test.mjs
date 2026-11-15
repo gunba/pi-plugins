@@ -46,7 +46,9 @@ for (const messageThreads of ["default", "unsupported"]) test(`packaged Claude O
 		if (wire.thread?.type === "continue") {
 			const previous = threadReplies.get(wire.thread.previous_message_id);
 			assert.ok(previous, "a continuation must name an existing server reply");
-			assert.equal(wire.system, undefined);
+			const billing = previous.system.filter(block => block.text.startsWith("x-anthropic-billing-header:"));
+			assert.equal(billing.length, 1);
+			assert.deepEqual(wire.system, billing);
 			assert.equal(wire.tools, undefined);
 			assert.ok(wire.messages.length > 0);
 			body = { ...previous, ...wire, system: previous.system, tools: previous.tools,
