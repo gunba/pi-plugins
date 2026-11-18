@@ -117,9 +117,13 @@ async function harness(t, checkpoint, contextWindow, seeded = true) {
 	assert.deepEqual(loader.getExtensions().errors, []);
 	for (const [name, value] of flags) loader.getExtensions().runtime.flagValues.set(name, value);
 	({ session } = await createAgentSession({ cwd: directory, agentDir: directory, modelRuntime: runtime, model,
-		thinkingLevel: "xhigh", resourceLoader: loader, sessionManager: manager, settingsManager: settings, tools: ["fixture_lookup"],
+		thinkingLevel: "xhigh", resourceLoader: loader, sessionManager: manager, settingsManager: settings,
+		tools: ["fixture_lookup", ...(seeded ? [] : ["fixture_hub"])],
 		customTools: [{ name: "fixture_lookup", label: "Fixture lookup", description: "Look up the fixture value.",
-			parameters: Type.Object({ value: Type.String() }), execute: async () => assert.fail("fixture tool must not execute") }] }));
+			parameters: Type.Object({ value: Type.String() }), execute: async () => assert.fail("fixture tool must not execute") },
+			// As codemode does: the tool stays active and recorded, and requests leave its declaration out.
+			...(seeded ? [] : [{ name: "fixture_hub", label: "Fixture hub", description: "Runs the other fixture tools.", parameters: Type.Object({}),
+				prepareLoadout: () => ({ hiddenDeclarations: ["fixture_lookup"] }), execute: async () => assert.fail("fixture tool must not execute") }])] }));
 	const errors = [];
 	await session.bindExtensions({ mode: "print", onError: error => errors.push(error) });
 	assert.deepEqual(errors, []);
@@ -159,6 +163,7 @@ test("a compaction request is the conversation's last request, its reply and a t
 		await new Promise(resolve => setTimeout(resolve, 3));
 	}
 	const last = h.calls.at(-1).body.input;
+	assert.deepEqual(last.find(item => item.type === "additional_tools").tools[0].tools.map(tool => tool.name), ["fixture_hub"]);
 	const compacted = await h.session.compact();
 	const sent = h.calls.at(-1).body.input;
 	// A request that describes the prompt, the tools or an earlier item differently misses the prompt cache, and

@@ -122,7 +122,10 @@ including the reserve and recent-token settings, are unchanged.
 
 The request is the whole conversation as its own requests send it (the same
 prompt, tools and items, built as Pi's provider builds them) followed by the
-trigger, using the selected model and effort. It therefore reads from the prompt
+trigger, using the selected model and effort. Like those requests it leaves out
+the tool declarations that a tool such as codemode hides; Pi reports them when a
+run starts, so a compaction before a process's first run names every recorded
+tool and matches none of the conversation's requests. It therefore reads from the prompt
 cache, and the checkpoint covers the kept messages as well as the history before
 them. GPT-6.2 models discard an item's reasoning once anything before it has
 changed (see [Changed history](#changed-history)), which a compaction does to

@@ -94,16 +94,13 @@ export function freeMoment(model: Model | undefined, branch: readonly Entry[]): 
 	return false;
 }
 
-/** Stubs recorded on this branch, plus any new ones at a free moment; undefined when the request is unchanged. */
-export function withoutSuperseded<T extends Message>(messages: T[], branch: readonly Entry[], model: Model | undefined, cwd: string,
-	record: (stubs: Record<string, string>) => void): T[] | undefined {
+function recordedStubs(branch: readonly Entry[]): Record<string, string> {
 	const stubs: Record<string, string> = {};
 	for (const entry of branch) if (entry.type === "custom" && entry.customType === SUPERSEDED) Object.assign(stubs, (entry.data as { stubs?: Record<string, string> })?.stubs);
-	if (freeMoment(model, branch)) {
-		const fresh: Record<string, string> = {};
-		for (const [id, found] of supersededCalls(messages, cwd)) if (!stubs[id]) fresh[id] = stubText(found);
-		if (Object.keys(fresh).length) { record(fresh); Object.assign(stubs, fresh); }
-	}
+	return stubs;
+}
+
+function withStubs<T extends Message>(messages: T[], stubs: Record<string, string>): T[] | undefined {
 	let changed = false;
 	const next = messages.map(message => {
 		const stub = message.role === "toolResult" && message.toolCallId ? stubs[message.toolCallId] : undefined;
@@ -112,4 +109,21 @@ export function withoutSuperseded<T extends Message>(messages: T[], branch: read
 		return { ...message, content: [{ type: "text", text: stub }] };
 	});
 	return changed ? next : undefined;
+}
+
+/** The stubs recorded on this branch, as the conversation's requests have sent them; undefined when there are none. */
+export function withRecordedStubs<T extends Message>(messages: T[], branch: readonly Entry[]): T[] | undefined {
+	return withStubs(messages, recordedStubs(branch));
+}
+
+/** Stubs recorded on this branch, plus any new ones at a free moment; undefined when the request is unchanged. */
+export function withoutSuperseded<T extends Message>(messages: T[], branch: readonly Entry[], model: Model | undefined, cwd: string,
+	record: (stubs: Record<string, string>) => void): T[] | undefined {
+	const stubs = recordedStubs(branch);
+	if (freeMoment(model, branch)) {
+		const fresh: Record<string, string> = {};
+		for (const [id, found] of supersededCalls(messages, cwd)) if (!stubs[id]) fresh[id] = stubText(found);
+		if (Object.keys(fresh).length) { record(fresh); Object.assign(stubs, fresh); }
+	}
+	return withStubs(messages, stubs);
 }

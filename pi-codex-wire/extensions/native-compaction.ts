@@ -7,6 +7,7 @@ import { CHECKPOINT_CAPTION, assertCheckpointContext, carrier, checkpointMessage
 import { CHECKPOINT, entryCheckpoint } from "./checkpoint-state.ts";
 import { restorePrunedSession } from "../../pi-session-memory/extensions/session-memory.ts";
 import { compactionHeld, compactionKey, recordCompactionFailure, retryCompaction } from "../../pi-context-window/compaction.ts";
+import { sentMessages } from "../../pi-output-budget/extensions/sent-messages.ts";
 
 type AgentMessage = AgentSession["messages"][number];
 type Settings = Pick<SettingsManager, "getRetrySettings" | "getProviderRetrySettings" | "getHttpIdleTimeoutMs">;
@@ -121,6 +122,7 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 	pi.on("model_select", (_event, ctx) => { guardSelected(ctx); });
 	pi.on("context", (event, ctx) => ({ messages: projectCheckpoints(event.messages, ctx.sessionManager.getBranch()) }));
 	pi.on("session_shutdown", (_event, ctx) => {
+		hiddenTools.delete(ctx.sessionManager.getSessionId());
 		if (registeredSession) sources.delete(registeredSession);
 		for (const { original, installed } of guards.values()) {
 			if (ctx.modelRegistry.getProvider(original.id) === installed) pi.registerProvider(original);
@@ -134,6 +136,9 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 		if (settings.drainErrors().length) throw new Error("Cannot read the configured compaction retry and timeout settings.");
 		return settings;
 	};
+	// The hidden declarations as of each session's last run: Pi tells extensions of them only when a run starts.
+	const hiddenTools = new Map<string, Set<string>>();
+	pi.on("before_agent_start", (event, ctx) => { hiddenTools.set(ctx.sessionManager.getSessionId(), new Set(event.systemPromptOptions?.hiddenTools)); });
 	pi.on("session_before_compact", async (event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
 		const key = compactionKey(ctx.model, event.preparation.settings, ctx.thinkingLevel ?? pi.getThinkingLevel());
@@ -167,10 +172,18 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 			// Messages that begin without them (a conversation that recorded none, or the newer half of one compacted in
 			// two parts) get the current prompt and tools.
 			const context = (messages: AgentMessage[]): Context => {
-				const converted = convertToLlm(messages);
-				return converted[0]?.role === "system"
-					? { messages: custom ? [...converted, { role: "system", content: custom, timestamp: Date.now() }] : converted }
-					: { systemPrompt: ctx.getSystemPrompt() + (custom ? `\n\n${custom}` : ""), messages: converted, tools };
+				const converted = convertToLlm(sentMessages(messages, event.branchEntries));
+				if (converted[0]?.role !== "system") return { systemPrompt: ctx.getSystemPrompt() + (custom ? `\n\n${custom}` : ""), messages: converted, tools };
+				// Pi leaves the declarations a tool such as codemode hides out of every request, though the conversation
+				// records them. A request that named them would differ from the conversation's own from its first item.
+				const hidden = hiddenTools.get(sessionId);
+				const declared = !hidden?.size ? converted : converted.map(message => {
+					if (message.role !== "system" || (!message.toolsAdded && !message.toolsRemoved)) return message;
+					const { toolsAdded, toolsRemoved, ...rest } = message;
+					const added = toolsAdded?.filter(tool => !hidden.has(tool.name)) ?? [], removed = toolsRemoved?.filter(tool => !hidden.has(tool.name)) ?? [];
+					return { ...rest, ...(added.length ? { toolsAdded: added } : {}), ...(removed.length ? { toolsRemoved: removed } : {}) };
+				});
+				return { messages: custom ? [...declared, { role: "system", content: custom, timestamp: Date.now() }] : declared };
 			};
 			const once = (messages: AgentMessage[]) => retryCompaction(() => compact({ ctx, context: context(messages), keptFrom,
 				signal: event.signal, reason: event.reason, thinking: ctx.thinkingLevel ?? pi.getThinkingLevel(), timeoutMs: timeout === 0 ? 2_147_483_647 : timeout }),
