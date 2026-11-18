@@ -21,3 +21,24 @@ test("a reasoning-level change is no reason to rewrite old tool results where th
 	assert.equal(sent[1].content[0].text, "[Result removed: `echo 1` is superseded; the same command ran again later (call b).]");
 	assert.deepEqual(recorded.map(stubs => Object.keys(stubs)), [["a"]]);
 });
+
+test("a reasoning-level change is no reason to rewrite old tool results on OpenAI's Responses API, which discards the reasoning after them", () => {
+	// 24 October: after a level change on GPT-6 Astra one result was replaced, with 123 of the conversation's 165
+	// reasoning blocks after it. GPT-6.2 models discard the reasoning that follows a changed result, and keep it across
+	// a level change (GPT-6.2 Sol, 18 November).
+	const call = (id, command) => ({ role: "assistant", provider: "openai-codex", model: "gpt-6.2-sol",
+		content: [{ type: "toolCall", id, name: "bash", arguments: { command } }] });
+	const result = (id, text) => ({ role: "toolResult", toolCallId: id, toolName: "bash", content: [{ type: "text", text }] });
+	const messages = [call("a", "echo 1"), result("a", "1"), call("b", "echo 1"), result("b", "1")];
+	const entries = messages.map(message => ({ type: "message", message }));
+	const model = { provider: "openai-codex", id: "gpt-6.2-sol", api: "openai-codex-responses" };
+	const recorded = [];
+
+	assert.equal(withoutSuperseded(messages, [...entries, { type: "thinking_level_change", thinkingLevel: "high" }], model, "/tmp", stubs => recorded.push(stubs)), undefined);
+	assert.deepEqual(recorded, []);
+
+	// A compaction discards the reasoning before it anyway.
+	const sent = withoutSuperseded(messages, [...entries, { type: "compaction" }], model, "/tmp", stubs => recorded.push(stubs));
+	assert.equal(sent[1].content[0].text, "[Result removed: `echo 1` is superseded; the same command ran again later (call b).]");
+	assert.deepEqual(recorded.map(stubs => Object.keys(stubs)), [["a"]]);
+});

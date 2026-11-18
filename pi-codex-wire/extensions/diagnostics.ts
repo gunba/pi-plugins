@@ -30,6 +30,23 @@ export function allowanceHeaders(headers: Headers): JsonObject {
   return result;
 }
 
+/**
+ * What the backend reports it changed in the request's input (input_transformations), as counts by item type, action
+ * and reason, such as "reasoning:removed:prefix_mismatch". GPT-6.2 models remove the reasoning that follows a changed
+ * earlier item, so a count here shows that something rewrote the conversation. After a compaction the reasoning in the
+ * messages kept is removed from every request, which is expected. Undefined where the backend reports nothing.
+ */
+function inputTransformations(value: unknown): JsonObject | undefined {
+  if (!Array.isArray(value)) return;
+  const kinds: Record<string, number> = {};
+  for (const entry of value) {
+    const kind = [object(entry).type, object(entry).action, object(entry).reason]
+      .map(part => typeof part === "string" && /^[a-z_]{1,40}$/.test(part) ? part : "other").join(":");
+    kinds[kind] = (kinds[kind] ?? 0) + 1;
+  }
+  return { count: value.length, ...(value.length ? { kinds } : {}) };
+}
+
 export function eventDiagnostics(value: unknown): JsonObject | undefined {
   const event = object(value);
   if (event.type === "codex.rate_limits") {
@@ -49,6 +66,7 @@ export function eventDiagnostics(value: unknown): JsonObject | undefined {
     kind: "response",
     event: event.type,
     serviceTier: tier,
+    inputTransformations: inputTransformations(response.input_transformations),
     usage: {
       ...numericFields(usage, ["input_tokens", "output_tokens", "total_tokens"]),
       ...numericFields(usage.input_tokens_details, ["cached_tokens"]),

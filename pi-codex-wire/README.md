@@ -116,10 +116,21 @@ context begins (the messages the latest checkpoint kept), and Desk compacts from
 there with a note on recalling earlier history with conversation search.
 
 Codex sessions use native compaction through Responses, with the
-`compaction_trigger` input used by Codex CLI 0.155.0. Pi still chooses the cut
-point and recent messages to retain. Existing context-limit settings, including
-the reserve and recent-token settings, are unchanged. The history prefix and
-any split-turn prefix are sent together using the selected model and effort.
+`compaction_trigger` input used by Codex CLI 0.155.0. Pi still chooses the
+recent messages to keep after the checkpoint. Existing context-limit settings,
+including the reserve and recent-token settings, are unchanged.
+
+The request is the whole conversation as its own requests send it (the same
+prompt, tools and items, built as Pi's provider builds them) followed by the
+trigger, using the selected model and effort. It therefore reads from the prompt
+cache, and the checkpoint covers the kept messages as well as the history before
+them. GPT-6.2 models discard an item's reasoning once anything before it has
+changed (see [Changed history](#changed-history)), which a compaction does to
+every kept message: they keep their text, calls and results, and what their
+reasoning held is in the checkpoint. A request that names the prompt and tools a
+second time takes nothing from the cache and is compacted without any of the
+conversation's reasoning: before 0.29.331 Wire's did, and one GPT-6 Astra
+compaction sent 404,664 uncached input tokens.
 
 Wire collects exactly one encrypted compaction item and requires a successful
 `response.completed` event before saving it in the compaction entry's `details`.
@@ -132,7 +143,8 @@ The checkpoint replaces prior assistant/tool history and earlier checkpoints.
 User messages are retained ahead of it, newest first within Codex's 64,000-token
 text-retention estimate; the boundary message preserves its beginning and end
 with a truncation marker. Images within retained messages remain intact. Pi's
-recent tail is kept separately. Original session records are not rewritten.
+recent tail is kept separately, and its user messages are not retained a second
+time. Original session records are not rewritten.
 
 Wire replays the checkpoint after reopening or forking the session, including
 after switching Codex accounts. Account changes reset authenticated connections,
@@ -144,10 +156,11 @@ context; navigating to a branch before it remains possible.
 Native-checkpoint branches can also be summarized into text when navigating
 elsewhere. Forked children receive independent copies of checkpoint details.
 
-Compaction uses Pi's public message serializers and active tool schemas. These
-schemas describe functions for compaction; ordinary response requests retain
-their existing grammar and deferred-tool behavior. Tool arguments and results
-keep their pairing. SDK children inherit the compactor with their own session,
+Compaction uses Pi's public message serializers on the conversation's recorded
+prompt and tool changes, where its requests have them. A conversation that
+records no prompt, and the newer half of one compacted in two parts, are given
+the current prompt and active tools. Tool arguments and results keep their
+pairing. SDK children inherit the compactor with their own session,
 routing state and settings. Provider ownership and compaction follow Pi’s native
 registration, not the temporary provider wrappers created by model overrides.
 Refreshing context limits retains Wire and child compaction while applying the
@@ -166,6 +179,30 @@ recovered the exact synthetic test code through its encrypted checkpoint, with
 no retries. Local installed-Pi tests cover persistence, resume, forks, tree
 navigation, failed streams and retry boundaries. This verifies the compaction
 path; the original active-stream WebSocket disconnect remains unexplained.
+
+### Changed history
+
+From GPT-6.2, OpenAI's Responses API removes a reasoning item from a request when
+anything before it differs from what preceded it when it was written, and reports
+each removal in the response's `input_transformations`
+([Keep the prefix unchanged](https://developers.openai.com/api/docs/guides/keep-prefix-unchanged)).
+The model then works without that reasoning. Checked on the ChatGPT backend on
+18 November 2026 with GPT-6.2 Sol and Astra; GPT-6.1 Terra, GPT-6.1 Sol and GPT-6
+Astra kept reasoning after the same edits.
+
+Nothing was removed after: replaying a conversation in a new process over SSE
+or WebSocket, a reasoning-level change, a prompt section changed or a tool
+added, changed or removed (Pi adds those to the conversation), or an item's
+turn metadata changing. Reasoning was removed after an earlier message or tool
+result was edited, an item was inserted before it, the whole prompt was replaced
+(an extension returning `systemPrompt` from `before_agent_start`), or a turn
+before it was dropped; so after a compaction the kept messages lose theirs,
+whatever IDs they carry and wherever the checkpoint is placed.
+
+Each `response` diagnostic record has `inputTransformations`: the count, and
+counts by item type, action and reason (`reasoning:removed:prefix_mismatch`).
+A count in a conversation that has not been compacted means something rewrote
+its history.
 
 ### Diagnosing interrupted requests
 

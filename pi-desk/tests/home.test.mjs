@@ -22,6 +22,18 @@ const fixture = t => {
 	return { directory, store, closing };
 };
 
+test("Home's instructions are a prompt section, so a later change to the prompt is added to the conversation", t => {
+	// Returning a prompt makes Pi replace the whole prompt whenever any part of it changes: Home's conversation on
+	// Sydney recorded two such replacements, each resending the conversation uncached.
+	const { directory, closing } = fixture(t), handlers = {};
+	installHome({ on: (name, handler) => { handlers[name] = handler; }, registerTool() {} }, directory);
+	closing.push(() => handlers.session_shutdown());
+	const event = { systemPrompt: "Base prompt.", systemPromptOptions: { sections: { docs: "Docs." } } };
+	assert.equal(handlers.before_agent_start(event), undefined);
+	assert.deepEqual(Object.keys(event.systemPromptOptions.sections), ["docs", "home"]);
+	assert.match(event.systemPromptOptions.sections.home, /^You are Home: Jordan's assistant in Pi Desk/);
+});
+
 test("an uncertain delivery is never silently repeated after a restart", t => {
 	const { store } = fixture(t), id = randomUUID();
 	store.request(id, { action: "notify", title: "Roundup", text: "News." }); assert.equal(store.claim(id), true); assert.equal(store.claim(id), false);

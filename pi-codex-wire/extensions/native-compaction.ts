@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isContextOverflow, type AssistantMessage, type Context, type Provider } from "@earendil-works/pi-ai";
 import { SettingsManager, convertToLlm, type AgentSession, type ExtensionAPI, type ExtensionContext, type ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
-import { CHECKPOINT_CAPTION, assertCheckpointContext, carrier, checkpointMessages, checkpointUsage, compactionPrefix, projectCheckpoints, type Checkpoint } from "./checkpoint.ts";
+import { CHECKPOINT_CAPTION, assertCheckpointContext, carrier, checkpointMessages, checkpointUsage, compactionRange, projectCheckpoints, type Checkpoint } from "./checkpoint.ts";
 import { CHECKPOINT, entryCheckpoint } from "./checkpoint-state.ts";
 import { restorePrunedSession } from "../../pi-session-memory/extensions/session-memory.ts";
 import { compactionHeld, compactionKey, recordCompactionFailure, retryCompaction } from "../../pi-context-window/compaction.ts";
@@ -13,6 +13,8 @@ type Settings = Pick<SettingsManager, "getRetrySettings" | "getProviderRetrySett
 export interface CompactOperation {
 	ctx: ExtensionContext;
 	context: Context;
+	/** When the first message Pi keeps after the compaction was written: user messages from then on stay where they are. */
+	keptFrom?: number;
 	signal: AbortSignal;
 	reason: "manual" | "threshold" | "overflow";
 	thinking: ReturnType<ExtensionAPI["getThinkingLevel"]>;
@@ -154,12 +156,23 @@ export default function nativeCompaction(pi: ExtensionAPI, suppliedSettings?: Se
 			const compact = provider && compactors.get(provider);
 			if (!compact) throw new Error("Native Codex compaction is unavailable in this session.");
 			const settings = settingsFor(ctx);
-			const entries = compactionPrefix(event.branchEntries, event.preparation.firstKeptEntryId);
+			const { entries, kept } = compactionRange(event.branchEntries, event.preparation.firstKeptEntryId);
+			// A recorded prompt or tool change carries no time of its own.
+			const keptFrom = checkpointMessages(entries.slice(kept)).find(message => message.role !== "system")?.timestamp || undefined;
 			const active = new Set(pi.getActiveTools());
-			const systemPrompt = ctx.getSystemPrompt() + (event.customInstructions ? `\n\nCompaction instructions:\n${event.customInstructions}` : "");
+			const custom = event.customInstructions ? `Compaction instructions:\n${event.customInstructions}` : "";
 			const tools = pi.getAllTools().filter(tool => active.has(tool.name));
 			const timeout = settings.getProviderRetrySettings().timeoutMs ?? settings.getHttpIdleTimeoutMs();
-			const once = (messages: AgentMessage[]) => retryCompaction(() => compact({ ctx, context: { systemPrompt, messages: convertToLlm(messages), tools } satisfies Context,
+			// The conversation's own system messages declare its prompt and tools, as in its requests (compactInput).
+			// Messages that begin without them (a conversation that recorded none, or the newer half of one compacted in
+			// two parts) get the current prompt and tools.
+			const context = (messages: AgentMessage[]): Context => {
+				const converted = convertToLlm(messages);
+				return converted[0]?.role === "system"
+					? { messages: custom ? [...converted, { role: "system", content: custom, timestamp: Date.now() }] : converted }
+					: { systemPrompt: ctx.getSystemPrompt() + (custom ? `\n\n${custom}` : ""), messages: converted, tools };
+			};
+			const once = (messages: AgentMessage[]) => retryCompaction(() => compact({ ctx, context: context(messages), keptFrom,
 				signal: event.signal, reason: event.reason, thinking: ctx.thinkingLevel ?? pi.getThinkingLevel(), timeoutMs: timeout === 0 ? 2_147_483_647 : timeout }),
 				settings.getRetrySettings(), event.signal,
 				(attempt, maximum, ms) => ctx.ui.notify(`Retrying Codex compaction ${attempt}/${maximum} in ${ms}ms.`, "warning"));

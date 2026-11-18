@@ -44,7 +44,10 @@ const result = (value: unknown) => ({ content: [{ type: "text" as const, text: J
 export function installHome(pi: ExtensionAPI, directory: string): void {
 	const store = new HomeStore(directory);
 	pi.on("session_shutdown", () => store.close());
-	pi.on("before_agent_start", event => ({ systemPrompt: HOME_INSTRUCTIONS + "\n" + event.systemPrompt }));
+	// A prompt section, not a replaced prompt: Pi then adds a later change to the prompt (a tool, the handbook) to the
+	// conversation as a message. With the whole prompt replaced, each such change resent the conversation at full
+	// price, and GPT-6.2 models discard all reasoning that follows a changed prompt.
+	pi.on("before_agent_start", event => { event.systemPromptOptions.sections.home = HOME_INSTRUCTIONS.trim(); });
 	pi.registerTool({ name: "home_jobs", label: "Read Home schedules", description: "Lists each scheduled job's files and its next deadline (Australia/Perth). Arms and runs nothing.", parameters: Type.Object({}),
 		async execute() { return result(readHomeJobs(join(getAgentDir(), "home", "jobs"))); } });
 	pi.registerTool({ name: "home_notify", label: "Deliver Home update", description: "Sends a scheduled job's result to Home and Jordan's phone. Only when there is something worth telling; a failed send is not retried.",

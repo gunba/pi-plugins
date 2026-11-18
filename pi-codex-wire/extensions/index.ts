@@ -466,7 +466,7 @@ export default function codexWire(pi: ExtensionAPI): void {
         const result = await requestCompact({ url, body, headers: outgoing, signal, requestId: randomUUID(),
           compression: requestCompression(compression === "on", model.provider, url, headers),
           timeoutMs: operation.timeoutMs, trace: requestTrace(primaryThreadId, owner, operation.context, operation.signal) },
-          currentDiagnostics, session.transport);
+          currentDiagnostics, session.transport, operation.keptFrom);
         signal.throwIfAborted();
         return createCheckpoint(result.output, result.usage);
       } finally { pending.delete(controller); trimIdleSessions(); }

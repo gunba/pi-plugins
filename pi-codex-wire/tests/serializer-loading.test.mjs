@@ -109,8 +109,9 @@ return { types: Object.fromEntries(Object.entries(serializer).map(([name, value]
 	for (let reload = 0; reload < 2; reload++) {
 		const result = await run();
 		assert.deepEqual(result, { types: { convertResponsesMessages: "function", convertResponsesTools: "function",
-			createGrammarToolInputProperties: "function", normalizeContext: "function", getCurrentSystemPrompt: "function",
-			getDeclaredTools: "function", resolveTranscriptTools: "function", responseReplay: "function", getResponsesToolSupport: "function" }, result: "OK" });
+			createGrammarToolInputProperties: "function", normalizeContext: "function", getDeclaredTools: "function",
+			getInitialSystemMessage: "function", getSystemMessageText: "function", resolveTranscript: "function",
+			resolveTranscriptTools: "function", responseReplay: "function", getResponsesToolSupport: "function" }, result: "OK" });
 		assert.equal(cached.convertResponsesTools, undefined, "the old cached module was not modified or patched");
 	}
 });

@@ -15,9 +15,10 @@ export const { convertResponsesMessages, convertResponsesTools, getResponsesTool
 export const { createGrammarToolInputProperties } = loadNative(
 	"@earendil-works/pi-ai/api/constrained-sampling",
 ) as typeof import("@earendil-works/pi-ai/api/constrained-sampling");
-export const { normalizeContext, getCurrentSystemPrompt, getDeclaredTools, resolveTranscriptTools } = loadNative(
+export const { normalizeContext, getDeclaredTools, getInitialSystemMessage, resolveTranscript, resolveTranscriptTools } = loadNative(
 	"@earendil-works/pi-ai/utils/transcript",
 ) as typeof import("@earendil-works/pi-ai/utils/transcript");
+export const { getSystemMessageText } = loadNative("@earendil-works/pi-ai/utils/text") as typeof import("@earendil-works/pi-ai/utils/text");
 
 /** Match the provider's grammar declarations, including tools removed after earlier calls. */
 export function responseReplay(model: Model<Api>, context: TranscriptContext, message: AssistantMessage) {

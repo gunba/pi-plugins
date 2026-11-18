@@ -28,15 +28,18 @@ function truncateText(text: string, budget: number): string {
 }
 
 /** Retain user messages ahead of the new checkpoint, using Codex's 64k text budget.
- * Pi supplies its own separate recent tail. Images in retained messages stay intact.
+ * Pi supplies its own separate recent tail, which the compacted input includes: user messages written from keptFrom
+ * (milliseconds) on are in that tail and are not repeated here. Images in retained messages stay intact.
  * Pi has no native agent_message or client-authored developer-message sidecars.
  */
-export function retainedCompactionInput(input: unknown[]): JsonObject[] {
+export function retainedCompactionInput(input: unknown[], keptFrom = Infinity): JsonObject[] {
 	const retained: JsonObject[] = [];
 	let remaining = 64_000;
 	for (const value of [...input].reverse()) {
 		const item = object(value);
 		if (!remaining || (item.type !== undefined && item.type !== "message") || item.role !== "user" || !Array.isArray(item.content)) continue;
+		const created = object(item.internal_chat_message_metadata_passthrough).create_time;
+		if (typeof created === "number" && created * 1000 >= keptFrom) continue;
 		// Pi's serializer uses the valid implicit message type for ordinary users.
 		const copy: JsonObject = structuredClone({ ...item, type: "message" });
 		const content = copy.content as JsonObject[];
@@ -105,7 +108,7 @@ function responseError(error: JsonObject): Error {
 
 /** One caller-owned attempt through Wire's transport. No prose decoder or replay loop. */
 export async function requestCompact(exchange: Exchange, diagnostics: Diagnostics,
-	transport: Pick<WireTransport, "request">): Promise<CompactResult> {
+	transport: Pick<WireTransport, "request">, keptFrom?: number): Promise<CompactResult> {
 	exchange.signal?.throwIfAborted();
 	const started = Date.now();
 	try {
@@ -137,7 +140,7 @@ export async function requestCompact(exchange: Exchange, diagnostics: Diagnostic
 				if (copies.length !== 1 || !isDeepStrictEqual(copies[0], checkpoint)) throw new Error("Codex compaction output conflicted with its completion.");
 			}
 			exchange.signal?.throwIfAborted();
-			const output = [...retainedCompactionInput(exchange.body.input as unknown[]), checkpoint];
+			const output = [...retainedCompactionInput(exchange.body.input as unknown[], keptFrom), checkpoint];
 			const usage = completed.usage !== undefined ? object(completed.usage) : undefined;
 			diagnostics.write({ kind: "compact-completed", ...exchange.trace, requestId: exchange.requestId,
 				elapsedMs: Date.now() - started, outputItems: output.length, usageReported: usage !== undefined });

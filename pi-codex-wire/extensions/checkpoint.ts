@@ -125,9 +125,15 @@ export function replayCheckpoints(body: JsonObject, context: Context, url: strin
 	return { ...body, input };
 }
 
-export function compactionPrefix(branch: SessionEntry[], firstKeptEntryId: string): ProjectedSessionEntry[] {
-	const active = buildSessionProjection(branch).entries;
-	const index = active.findIndex(entry => entry.sourceEntry.id === firstKeptEntryId);
-	if (index < 1) throw new Error("No complete context prefix is available for Codex compaction.");
-	return active.slice(0, index);
+/**
+ * The whole context to compact, and the index of the first entry Pi keeps after the compaction. The checkpoint covers
+ * the kept entries too, as Codex's own covers everything up to its trigger. GPT-6.2 models discard an item's reasoning
+ * once anything before it has changed, which a compaction does to every kept item, so a checkpoint of the earlier part
+ * alone would leave the reasoning of the latest work nowhere.
+ */
+export function compactionRange(branch: SessionEntry[], firstKeptEntryId: string): { entries: ProjectedSessionEntry[]; kept: number } {
+	const entries = buildSessionProjection(branch).entries;
+	const kept = entries.findIndex(entry => entry.sourceEntry.id === firstKeptEntryId);
+	if (kept < 1) throw new Error("No complete context prefix is available for Codex compaction.");
+	return { entries, kept };
 }

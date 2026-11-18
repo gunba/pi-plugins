@@ -85,6 +85,13 @@ test("retained user text is bounded and independent; stale checkpoints and assis
 	assert.deepEqual(retainedCompactionInput([{ role: "user", content: user("implicit Pi message").content }]), [user("implicit Pi message")]);
 });
 
+test("user messages written from the first kept message on are not retained: Pi keeps them after the checkpoint", () => {
+	const at = (text, seconds) => ({ ...user(text), internal_chat_message_metadata_passthrough: { create_time: seconds } });
+	const input = [at("first", 100), user("undated"), at("second", 200.5), at("kept", 200.501), at("later", 300)];
+	assert.deepEqual(retainedCompactionInput(input, 200_501), [at("first", 100), user("undated"), at("second", 200.5)]);
+	assert.deepEqual(retainedCompactionInput(input), input);
+});
+
 test("premature EOF and transient socket errors use the existing caller budget", async () => {
 	for (const failure of [() => stream([done(item)]), () => { throw new Error("Codex WebSocket stream failed"); },
 		() => stream([{ type: "error", error: { code: "server_error" } }])]) {

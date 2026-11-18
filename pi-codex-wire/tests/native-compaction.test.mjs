@@ -45,7 +45,7 @@ function compactStream(items = [output[1]], usage) {
 	return sseResponse(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""));
 }
 
-async function harness(t, checkpoint, contextWindow) {
+async function harness(t, checkpoint, contextWindow, seeded = true) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-native-compact-"));
 	const priorEnv = { agent: process.env.PI_CODING_AGENT_DIR, offline: process.env.PI_OFFLINE, originator: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE };
 	process.env.PI_CODING_AGENT_DIR = directory; process.env.PI_OFFLINE = "1";
@@ -84,7 +84,7 @@ async function harness(t, checkpoint, contextWindow) {
 	const model = runtime.getModel("openai-codex", modelData.id);
 	assert.ok(model);
 	const manager = SessionManager.create(directory, directory);
-	for (let i = 0; i < 6; i++) {
+	for (let i = 0; seeded && i < 6; i++) {
 		manager.appendMessage(user(`request ${i} ` + "u".repeat(1800)));
 		if (i === 2) {
 			manager.appendMessage({ ...assistant(""), content: [{ type: "toolCall", id: "call_fixture", name: "fixture_lookup", arguments: { value: "paired fixture" } }], stopReason: "toolUse" });
@@ -149,6 +149,27 @@ test("a live session can continue immediately after native compaction without re
 	assert.equal(h.session.messages.at(-1).stopReason, "stop", h.session.messages.at(-1).errorMessage);
 	assert.deepEqual(h.calls.at(-1).body.input.filter(item => item.type === "compaction"),
 		compacted.details[CHECKPOINT].output.filter(item => item.type === "compaction"));
+});
+
+test("a compaction request is the conversation's last request, its reply and a trigger; the checkpoint retains only the user messages before those Pi keeps", async t => {
+	const h = await harness(t, undefined, undefined, false);
+	for (const name of ["first", "second", "third"]) {
+		await h.session.prompt(`${name} request ` + "u".repeat(1800), { expandPromptTemplates: false });
+		// Messages are placed by the millisecond they were written in.
+		await new Promise(resolve => setTimeout(resolve, 3));
+	}
+	const last = h.calls.at(-1).body.input;
+	const compacted = await h.session.compact();
+	const sent = h.calls.at(-1).body.input;
+	// A request that describes the prompt, the tools or an earlier item differently misses the prompt cache, and
+	// GPT-6.2 models discard the reasoning in it.
+	assert.deepEqual(sent.slice(0, last.length), last);
+	assert.deepEqual(sent.slice(last.length).map(item => item.role ?? item.type), ["assistant", "compaction_trigger"]);
+	const text = item => item.content[0].text.split(" ")[0];
+	assert.deepEqual(compacted.details[CHECKPOINT].output.filter(item => item.role === "user").map(text), ["first", "second"]);
+	await h.session.prompt("fourth request", { expandPromptTemplates: false });
+	assert.deepEqual(h.calls.at(-1).body.input.filter(item => item.role === "user").map(text), ["first", "second", "third", "fourth"]);
+	assert.deepEqual(h.errors, []);
 });
 
 test("a model handoff leaves the encrypted checkpoint out and keeps the messages it kept and those after it", async t => {

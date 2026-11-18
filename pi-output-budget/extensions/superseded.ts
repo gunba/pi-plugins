@@ -6,13 +6,18 @@ import { cacheExpired } from "../../pi-context-window/prompt-cache.ts";
  * chosen only at free moments (a known-expired cache, compaction, or a model or cache-losing thinking switch), when the request
  * pays for its whole prompt anyway; they are recorded in the session so every later request sends the same stubs
  * and keeps its cache. Rewinding past a record drops it with the branch.
+ *
+ * OpenAI's Responses API, from GPT-6.2, also discards the reasoning that follows a changed result. An expired cache
+ * and a thinking switch lose the cache there but keep the reasoning (checked on GPT-6.2 Sol, November 2026), so they
+ * are not free moments for those models. Compaction and a model switch still are: the reasoning before them is
+ * discarded or not sent anyway.
  */
 export const SUPERSEDED = "superseded-results";
 
 type Call = { type: string; id?: string; name?: string; arguments?: Record<string, unknown> };
 type Message = { role: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean };
 type Entry = { type: string; customType?: string; data?: unknown; message?: { role?: string; provider?: string; model?: string } };
-type Model = { provider: string; id: string; promptCache?: { short?: number; long?: number }; compat?: object };
+type Model = { provider: string; id: string; api?: string; promptCache?: { short?: number; long?: number }; compat?: object };
 type Seen = { id: string; name: string; args: Record<string, unknown>; error: boolean };
 
 const SEARCHES = new Set(["grep", "find", "ls", "glob", "web_search", "web_fetch", "view_image"]);
@@ -70,17 +75,21 @@ export function stubText({ by, earlier }: { by: Seen; earlier: Seen }): string {
 }
 
 /**
- * A request pays for its whole prompt: the cache is known to have expired, or it follows compaction or a model or
- * thinking switch. A thinking switch costs nothing where the provider changes effort inside the conversation.
+ * A request pays for its whole prompt and loses nothing else to a changed result: the cache is known to have expired,
+ * or it follows compaction or a model or thinking switch. A thinking switch costs nothing where the provider changes
+ * effort inside the conversation. On OpenAI's Responses API a changed result costs the reasoning after it, which an
+ * expired cache and a thinking switch leave in place.
  */
 export function freeMoment(model: Model | undefined, branch: readonly Entry[]): boolean {
-	if (cacheExpired(model, branch as never)) return true;
+	const keepsReasoning = /^(azure-)?openai(-codex)?-responses$/.test(model?.api ?? "");
+	if (!keepsReasoning && cacheExpired(model, branch as never)) return true;
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index]!;
 		// A different model has no cache for this conversation.
 		if (entry.type === "message" && entry.message?.role === "assistant") return !!model && (entry.message.provider !== model.provider || entry.message.model !== model.id);
 		if (entry.type === "compaction" || entry.type === "model_change") return true;
-		if (entry.type === "thinking_level_change" && (model?.compat as { supportsMidConvoEffort?: boolean } | undefined)?.supportsMidConvoEffort !== true) return true;
+		if (entry.type === "thinking_level_change" && !keepsReasoning
+			&& (model?.compat as { supportsMidConvoEffort?: boolean } | undefined)?.supportsMidConvoEffort !== true) return true;
 	}
 	return false;
 }
