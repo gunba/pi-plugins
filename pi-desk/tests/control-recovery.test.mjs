@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -110,6 +110,19 @@ test("a conversation whose process leaves a read unanswered shows its saved mess
 		rmSync(file);
 		assert.deepEqual(await read(), { messages: [], revision: 0, generation: "live" });
 		assert.equal(typeof view().unanswered, "number");
+		// Stopping it at the user's request: the process is let go before it is stopped, then the conversation opens again.
+		const managed = host.sessions.get(key);
+		let detached = false;
+		worker.detach = async () => { detached = true; };
+		mkdirSync(join(root, "workers", key), { recursive: true }); // Where a real process keeps its record; this one has none.
+		const reopened = t.mock.method(host, "createSession", () => key);
+		const stop = await fetch(`${origin}/api/sessions/${key}/restart`, { method: "POST",
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", [API_HEADER]: String(API_VERSION) },
+			body: JSON.stringify({ takeover: true, stop: true }) });
+		assert.equal(stop.status, 202); assert.deepEqual(await stop.json(), { key });
+		assert.equal(managed.worker, undefined);
+		assert.equal(detached, true);
+		assert.deepEqual(reopened.mock.calls.map(call => call.arguments.slice(0, 4)), [[root, file, managed, true]]);
 	} finally { t.mock.restoreAll(); await host.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

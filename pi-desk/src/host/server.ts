@@ -875,10 +875,15 @@ export class DeskHost {
 		const worker = managed.worker, view = managed.view;
 		if (!worker || view.unanswered === undefined) throw new Error("This conversation's process is answering again.");
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate) throw new Error("Desk is updating or shutting down.");
-		await stopUnresponsiveWorker(workerDirectory(this.directory, view.key));
-		if (managed.worker !== worker) throw new Error("This conversation is opening already.");
-		// Nothing more comes from the stopped process: its events are ignored from here (createSession).
+		// The process's connection ends when it is stopped. Its events are ignored from here (createSession), so that end
+		// is neither reported as a failure nor answered with an attempt to reconnect while the stop is still under way.
 		managed.worker = undefined;
+		try { await stopUnresponsiveWorker(workerDirectory(this.directory, view.key)); }
+		catch (error) {
+			if (this.sessions.get(view.key) === managed && !managed.worker) managed.worker = worker;
+			throw error;
+		}
+		if (this.sessions.get(view.key) !== managed || managed.worker) throw new Error("This conversation is opening already.");
 		void worker.detach().catch(() => {});
 		this.inputs?.interrupt(view.key, "Its process was stopped");
 		console.error(`${view.title ?? view.key}: its process did not answer and was stopped at the user's request.`);
