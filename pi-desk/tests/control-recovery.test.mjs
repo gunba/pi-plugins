@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -72,6 +72,45 @@ test("worker loss and stale generations are not reported as definitive command r
 		assert.equal(managed.view.ui, undefined, "a stopped worker cannot leave a live question");
 		assert.equal(managed.view.snapshot, undefined);
 	} finally { await host.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a conversation whose process leaves a read unanswered shows its saved messages and says so until it answers", async t => {
+	const root = mkdtempSync(join(tmpdir(), "desk-unanswered-"));
+	const host = new DeskHost({ cwd: root, agentDir: root, dataDir: root, port: 0 });
+	try {
+		const { origin } = await host.start();
+		const token = JSON.parse(readFileSync(join(root, "access.json"))).operator;
+		const key = randomUUID(), file = join(root, "saved.jsonl"), stamp = new Date().toISOString();
+		writeFileSync(file, [{ type: "session", version: 3, id: randomUUID(), timestamp: stamp, cwd: root },
+			{ type: "message", id: "a1b2c3d4", parentId: null, timestamp: stamp, message: { role: "user", content: "The saved question", timestamp: Date.now() } }]
+			.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+		let answer;
+		const worker = { command: () => new Promise(resolve => { answer = resolve; }), close: async () => {} };
+		host.sessions.set(key, { view: { key, state: "ready", cwd: root, created: Date.now(), file, ui: { generation: "live", interactions: [], views: [] } }, worker });
+		const view = () => host.sessions.get(key).view;
+		// The five seconds a process is given to answer pass at once here.
+		const timeout = globalThis.setTimeout;
+		t.mock.method(globalThis, "setTimeout", (callback, ms, ...rest) => timeout(callback, ms === 5000 ? 20 : ms, ...rest));
+		t.mock.method(console, "error", () => {});
+		const read = async () => (await fetch(`${origin}/api/sessions/${key}/history`,
+			{ headers: { Authorization: `Bearer ${token}`, [API_HEADER]: String(API_VERSION) } })).json();
+		const asked = Date.now(), page = await read();
+		assert.equal(page.messages.length, 1);
+		assert.match(JSON.stringify(page.messages[0]), /The saved question/);
+		assert.equal(page.generation, "live", "the app accepts a page only with the generation of the process it shows");
+		assert.ok(view().unanswered >= asked && view().unanswered <= Date.now(), "the conversation says since when");
+		answer({ messages: [], revision: 7, generation: "live" });
+		await new Promise(resolve => setImmediate(resolve));
+		assert.equal(view().unanswered, undefined, "an answer, however late, takes it back");
+		worker.command = async () => ({ messages: [], revision: 8, generation: "live" });
+		assert.deepEqual(await read(), { messages: [], revision: 8, generation: "live" });
+		assert.equal(view().unanswered, undefined);
+		// Nothing saved yet, as before a new conversation's first reply: no messages, not an error.
+		worker.command = () => new Promise(() => {});
+		rmSync(file);
+		assert.deepEqual(await read(), { messages: [], revision: 0, generation: "live" });
+		assert.equal(typeof view().unanswered, "number");
+	} finally { t.mock.restoreAll(); await host.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("host recovery preserves an unfinished control as uncertain without replaying it", () => {

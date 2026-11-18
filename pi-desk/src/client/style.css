@@ -543,7 +543,7 @@ details[open] > summary:before {
 .status-dot.background { --status-color:#43ca87; background:transparent; box-shadow:inset 0 0 0 2px var(--status-color); }
 .status-dot.waiting, .status-dot.attention { width:14px; height:16px; background:transparent; color:var(--input-needed); }
 .status-dot.waiting::after, .status-dot.attention::after { content:"?"; font:800 19px/1 system-ui; }
-.status-dot.error, .status-dot.failed { --status-color:#f07878; }
+.status-dot.error, .status-dot.failed, .status-dot.unanswered { --status-color:#f07878; }
 .status-dot.finished { --status-color:var(--accent); }
 .status-dot.closed, .status-dot.offline, .status-dot.interrupted, .status-dot.aborted, .status-dot.sleeping { --status-color:var(--muted); opacity:.65; }
 @keyframes activity-orbit { to { transform:rotate(360deg); } }

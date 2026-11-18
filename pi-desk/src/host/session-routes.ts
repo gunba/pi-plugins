@@ -1,4 +1,4 @@
-import { realpathSync, rmSync } from "node:fs";
+import { existsSync, realpathSync, rmSync } from "node:fs";
 import { isControl } from "../shared/controls.ts";
 import type { InputSubmission } from "../shared/inputs.ts";
 import type { WorkerCommand } from "../shared/protocol.ts";
@@ -11,8 +11,10 @@ import { StaleGeneration } from "./worker-errors.ts";
 import { ClosedHistory } from "./closed-history.ts";
 import { stopUnresponsiveWorker, workerDirectory } from "./worker-registry.ts";
 
-/** Histories of conversations that are not running, read from their files. */
+/** Histories of conversations that are not running, or whose process does not answer, read from their files. */
 const closedHistory = new ClosedHistory();
+/** How long a conversation's process may leave a read of its messages unanswered before they are read from its file. */
+const READ_WAIT_MS = 5000;
 
 /**
  * The API for conversations: starting and resuming them, messages and uploads, restart, close and pin, their native
@@ -48,6 +50,8 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 			}
 		} else if (!id && request.method === "POST") {
 			if (inputRoute[2] === "restart") {
+				// The user chose to stop a process that holds this conversation and leaves reads unanswered.
+				if (managed.worker && data.stop === true && managed.view.unanswered !== undefined) return reply({ key: await core.stopUnanswered(managed) }, 202);
 				if (managed.worker && data.replace === true) return reply({ key: await core.replaceWorker(managed) }, 202);
 				if (managed.worker && (managed.view.state === "starting" || managed.view.state === "ready")) return reply({ key });
 				if (managed.worker) throw new Error("Wait for this session worker to stop before restarting it.");
@@ -177,10 +181,25 @@ export async function sessionRoute(core: HostCore, saved: () => SavedSessionInde
 			return reply({ result: result ?? null });
 		}
 		if (route[2] === "history" && request.method === "GET") {
-			return reply(await managed.worker.command(workerCommandFrom({ kind: "history",
+			const worker = managed.worker, asked = Date.now(), key = managed.view.key;
+			const answer = worker.command(workerCommandFrom({ kind: "history",
 				before: url.searchParams.has("before") ? string(url.searchParams.get("before"), 100) : undefined,
 				after: url.searchParams.get("after") ?? undefined, from: url.searchParams.get("from") ?? undefined,
-				source: url.searchParams.has("source") ? string(url.searchParams.get("source"), 100) : undefined })));
+				source: url.searchParams.has("source") ? string(url.searchParams.get("source"), 100) : undefined }));
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const settled = answer.then(() => true, () => true);
+			const waited = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), READ_WAIT_MS); });
+			if (await Promise.race([settled, waited])) { clearTimeout(timer); return reply(await answer); }
+			// A process busy with something long, or stuck, answers nothing: the conversation says so until it does, and
+			// shows what its file holds meanwhile. The page is given the process's generation, which the app expects.
+			core.unanswered(key, worker, asked);
+			void settled.then(() => core.answered(key, worker));
+			if (!managed.view.file || url.searchParams.has("source")) return reply(await answer);
+			// Pi writes the file with the first reply: before that there is nothing saved to show.
+			if (!existsSync(managed.view.file)) return reply({ messages: [], revision: 0, generation: managed.view.ui?.generation ?? "" });
+			return reply({ ...await closedHistory.history(managed.view.file, managed.view.leaf ?? undefined, managed.view.cwd, {
+				before: url.searchParams.get("before") ?? undefined, after: url.searchParams.get("after") ?? undefined, from: url.searchParams.get("from") ?? undefined }),
+				generation: managed.view.ui?.generation ?? "" });
 		}
 		if (route[3] && request.method === "GET") {
 			const asset = await managed.worker.command(workerCommandFrom({ kind: "asset", id: route[3], origin })) as { mimeType: string; base64: string };

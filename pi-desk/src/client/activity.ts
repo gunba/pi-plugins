@@ -3,8 +3,10 @@ import type { SessionView } from "../shared/protocol.ts";
 import { asksInBackground, openQuestions } from "../shared/attention.ts";
 import { agentInventory } from "./agent-inventory.ts";
 
-export function sessionActivity(session: Pick<SessionView, "state" | "snapshot" | "ui" | "interrupted" | "reconnecting" | "updating" | "kept" | "controls">): string {
+export function sessionActivity(session: Pick<SessionView, "state" | "snapshot" | "ui" | "interrupted" | "reconnecting" | "updating" | "kept" | "controls" | "unanswered">): string {
 	if (session.updating) return "updating";
+	// What its process last reported, such as idle, is not known to still hold.
+	if (session.state === "ready" && session.unanswered !== undefined) return "unanswered";
 	if (session.state !== "closed" && session.controls?.some(control => control.kind === "close" && control.state === "running")) return "closing";
 	if (session.state === "closed" && session.kept) return "sleeping";
 	if (session.state === "closed" || session.state === "failed") return session.state;
@@ -19,6 +21,7 @@ export function activityLabel(state: string): string {
 		case "idle": case "ready": return "Idle";
 		case "error": return "Needs attention";
 		case "failed": return "Unavailable";
+		case "unanswered": return "Not responding";
 		case "interrupted": return "Stopped";
 		case "starting": return "Starting";
 		case "updating": return "Updating";

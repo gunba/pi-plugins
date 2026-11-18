@@ -7,6 +7,7 @@ import { splitDictationNote } from "../shared/dictation-note.ts";
 import type { ChatMessage, HistoryPage, WorkerCommand } from "../shared/protocol.ts";
 import type { BrowserAccount } from "./account.ts";
 import { activityLabel, sessionActivity, wakeLabel } from "./activity.ts";
+import { HOUR_MINUTE, localTime } from "./local-format.ts";
 import { agentInventory } from "./agent-inventory.ts";
 import { AgentPane } from "./agent-pane.tsx";
 import { applyTextFont, textFont } from "./fonts.ts";
@@ -187,6 +188,15 @@ export function App({ account }: { account?: BrowserAccount }) {
   const confirmation = useConfirmation(`${authorized}:${selected}:${session?.activation}:${ui?.generation}:${connected}`);
   /** The conversation whose earlier process is being stopped so it can open. */
   const [stoppingOld, setStoppingOld] = useState<string>();
+  /** Since when the open conversation's process has left reads unanswered; its messages then come from its file. */
+  const unanswered = session?.state === "ready" ? session.unanswered : undefined;
+  // Once the process answers again, its own history replaces what the file gave: counted so the transcript reads it.
+  const [recoveries, setRecoveries] = useState(0);
+  const silent = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (silent.current && silent.current === session?.key && unanswered === undefined && session.state === "ready") setRecoveries(count => count + 1);
+    silent.current = unanswered === undefined ? undefined : session?.key;
+  }, [session?.key, session?.state, unanswered]);
   const confirmationContext = session ? `${currentComputer?.name ?? "This computer"} · ${conversationTitle(session)}` : "";
   const visibleViews = panelViews(ui?.views ?? [], focusedView);
   const settings = panel === "settings" || panel === "view" && visibleViews[0]?.surface === "settings";
@@ -511,8 +521,8 @@ export function App({ account }: { account?: BrowserAccount }) {
   async function stopAndOpen() {
     if (!session || !connected) return;
     const key = session.key;
-    if (!await confirmation.request({ title: "Stop the earlier process?", context: confirmationContext, accept: "Stop and open",
-      body: <p>Desk stops the process that still holds this conversation, then opens it again. Whatever it was in the middle of is lost,
+    if (!await confirmation.request({ title: unanswered === undefined ? "Stop the earlier process?" : "Stop this conversation's process?", context: confirmationContext, accept: "Stop and open",
+      body: <p>Desk stops the process that {unanswered === undefined ? "still holds" : "runs"} this conversation, then opens it again. Whatever it was in the middle of is lost,
         such as a reply being written. Its saved messages stay.</p> })) return;
     setStoppingOld(key);
     try { await api(`/sessions/${key}/restart`, { takeover: true, stop: true }); }
@@ -649,6 +659,12 @@ export function App({ account }: { account?: BrowserAccount }) {
           <button disabled={!connected || controlBusy || !["idle", "error"].includes(session.snapshot?.activity ?? "")}
             onClick={() => run({ kind: "reload" })}>{controlBusy ? "Loading…" : "Retry loading"}</button>
         </div>}
+        {session && unanswered !== undefined && <div className="connection-banner" role="alert">
+          <span>This conversation's process has not answered since {localTime(unanswered, HOUR_MINUTE)}: it is busy with something long, or stuck.
+            These are its saved messages; anything you send waits until it answers.</span>
+          <div className="banner-actions"><button disabled={!connected || stoppingOld === session.key} onClick={() => void stopAndOpen()}>
+            {stoppingOld === session.key ? "Stopping…" : "Stop it and open again"}</button></div>
+        </div>}
         {session && !canCompose && <PendingInputs key={`${selected}:inputs`} session={session} connected={connected} report={setError} />}
         {session && !canCompose && (
           <div className="connection-banner">
@@ -675,7 +691,7 @@ export function App({ account }: { account?: BrowserAccount }) {
           session={selected} generation={session?.ui?.generation ?? ""}
           connected={connected && (session?.state === "ready" || session?.state === "starting" && !!session.historyReady
             // Not running, its saved messages are read from its file.
-            || (session?.state === "closed" || session?.state === "failed") && !!session.file && readsStopped(currentComputer ?? host))} epoch={epoch}
+            || (session?.state === "closed" || session?.state === "failed") && !!session.file && readsStopped(currentComputer ?? host))} epoch={epoch + recoveries}
           messages={messages} onLatest={storeHistory} latestRequest={latestRequest}
           overlay={session && compacting && <CompactionOverlay key={`${selected}:${compacting.started}`} compacting={compacting} context={session.snapshot?.context}
             stopping={stoppingCompaction || !connected} stop={() => { setStoppingCompaction(true); void commandPromise({ kind: "abort" }).finally(() => setStoppingCompaction(false)); }} />}

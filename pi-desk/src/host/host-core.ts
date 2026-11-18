@@ -66,6 +66,11 @@ export interface HostCore {
 	waitForSession(key: string, timeoutMs?: number): Promise<ManagedSession>;
 	/** Close an idle conversation's worker and reopen it on this host's current runtime. */
 	replaceWorker(managed: ManagedSession): Promise<string>;
+	/** Says on a conversation that `worker`, its process, has left a read unanswered since `since`; `answered` takes that back. */
+	unanswered(key: string, worker: object, since: number): void;
+	answered(key: string, worker: object): void;
+	/** Stops, at the user's request, a conversation's process that leaves reads unanswered, and opens the conversation again. */
+	stopUnanswered(managed: ManagedSession): Promise<string>;
 	/** Publish a conversation's pending inputs after they changed. */
 	inputEvent(managed: ManagedSession): void;
 	drainInputs(managed: ManagedSession): void;

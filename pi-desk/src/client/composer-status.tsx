@@ -25,6 +25,7 @@ export function ComposerStatus({ session, computer, connected, disabled, prefere
 	const limit = contextView?.context?.limit ?? context?.contextWindow;
 	const state = session.controls?.some(control => control.kind === "close" && control.state === "running") ? "Closing"
 		: session.reconnecting ? "Reconnecting" : session.state === "starting" ? "Starting" : session.state === "closed" ? "Closed" : session.state === "failed" ? "Unavailable"
+			: session.unanswered !== undefined ? "Not responding"
 			: snapshot?.activity === "waiting" ? "Waiting for input" : snapshot?.activity === "running" ? "Working" : snapshot?.activity === "error" ? "Needs attention" : "Idle";
 	const contextTitle = `Context budget${capacity ? ` · ${tokens(capacity)} model capacity` : ""}`;
 	const contextControl = <button type="button" className="composer-context" disabled={!contextView || disabled || !connected} title={contextTitle}

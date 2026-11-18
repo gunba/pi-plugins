@@ -11,7 +11,7 @@ import { agentId } from "../../../pi-agents/network.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { AccessStore } from "./access.ts";
 import { SessionWorker } from "./worker-client.ts";
-import { readWorkerRecord, workerDirectory, workerOccupied } from "./worker-registry.ts";
+import { readWorkerRecord, stopUnresponsiveWorker, workerDirectory, workerOccupied } from "./worker-registry.ts";
 import { sessionDisplay } from "./session-display.ts";
 import type { HostState, SessionView, WorkerInit, WorkerMessage } from "../shared/protocol.ts";
 import { PackageUpdates } from "./package-updates.ts";
@@ -146,6 +146,9 @@ export class DeskHost {
 			createSession: (cwd, sessionFile, existing, takeover, adopt) => this.createSession(cwd, sessionFile, existing, takeover, adopt),
 			waitForSession: (key, timeoutMs) => this.waitForSession(key, timeoutMs),
 			replaceWorker: managed => this.replaceWorker(managed),
+			unanswered: (key, worker, since) => this.unanswered(key, worker, since),
+			answered: (key, worker) => this.answered(key, worker),
+			stopUnanswered: managed => this.stopUnanswered(managed),
 			inputEvent: managed => this.inputEvent(managed),
 			drainInputs: managed => this.drainInputs(managed),
 			attachments: key => this.attachments(key),
@@ -856,6 +859,32 @@ export class DeskHost {
 	}
 
 	/** Close an idle conversation's worker and reopen the saved session on this host's current runtime. */
+	private unanswered(key: string, worker: object, since: number): void {
+		const managed = this.sessions.get(key);
+		if (!managed || managed.worker !== worker || managed.view.unanswered !== undefined) return;
+		console.error(`${managed.view.title ?? key}: its process has not answered a request for its messages.`);
+		managed.view = { ...managed.view, unanswered: since }; this.events.emit({ type: "session", session: managed.view });
+	}
+	private answered(key: string, worker: object): void {
+		const managed = this.sessions.get(key);
+		if (!managed || managed.worker !== worker || managed.view.unanswered === undefined) return;
+		managed.view = { ...managed.view, unanswered: undefined }; this.events.emit({ type: "session", session: managed.view });
+	}
+	/** The process is killed, so whatever it had not saved is lost; the conversation opens again from its file. */
+	private async stopUnanswered(managed: ManagedSession): Promise<string> {
+		const worker = managed.worker, view = managed.view;
+		if (!worker || view.unanswered === undefined) throw new Error("This conversation's process is answering again.");
+		if (this.closing || this.checkpoints?.held || this.restoringUpdate) throw new Error("Desk is updating or shutting down.");
+		await stopUnresponsiveWorker(workerDirectory(this.directory, view.key));
+		if (managed.worker !== worker) throw new Error("This conversation is opening already.");
+		// Nothing more comes from the stopped process: its events are ignored from here (createSession).
+		managed.worker = undefined;
+		void worker.detach().catch(() => {});
+		this.inputs?.interrupt(view.key, "Its process was stopped");
+		console.error(`${view.title ?? view.key}: its process did not answer and was stopped at the user's request.`);
+		return this.createSession(view.cwd, view.file, managed, true);
+	}
+
 	private async replaceWorker(managed: ManagedSession): Promise<string> {
 		const view = managed.view, worker = managed.worker!, snapshot = view.snapshot;
 		if (this.closing || this.checkpoints?.held || this.restoringUpdate) throw new Error("Desk is updating or shutting down.");
@@ -964,7 +993,7 @@ export class DeskHost {
 		// Adopting the same process carries over a restart waiting for its close to complete.
 		const managed: ManagedSession = { reconnectAt: adopt ? existing?.reconnectAt : undefined,
 			...(adopt && existing?.replaceAfter ? { replacing: true, replaceAfter: existing.replaceAfter } : {}), view: { ...existing?.view, key, cwd: options.cwd, file: sessionFile,
-			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, unresponsive: undefined, interrupted: false, kept: undefined, asleep: undefined, waiting: undefined,
+			created: existing?.view.created ?? Date.now(), state: "starting", error: undefined, unresponsive: undefined, unanswered: undefined, interrupted: false, kept: undefined, asleep: undefined, waiting: undefined,
 			reconnecting: adopt ? existing?.view.reconnecting : undefined,
 			snapshot: undefined, ui: undefined, historyReady: false, activation: adopt ? existing?.view.activation : randomUUID(), inputs: this.inputs!.pending(key) } };
 		this.sessions.set(key, managed);

@@ -204,6 +204,9 @@ export interface SessionView {
 	/** It failed to open because its earlier process still holds it without answering; the user may stop that process
 	 * (restart with stop, host worker-registry.ts stopUnresponsiveWorker). */
 	unresponsive?: boolean;
+	/** Since when (ms) its process has left a read of its messages unanswered: busy with something long, or stuck. Until
+	 * it answers, its messages come from its file, and the user may stop it (restart with stop, host stopUnanswered). */
+	unanswered?: number;
 	file?: string;
 	name?: string;
 	title?: string;
