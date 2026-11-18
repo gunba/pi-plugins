@@ -12,13 +12,16 @@ const LONG_CONTEXT_MODELS = new Set([
 	"gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-pro",
 	"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
 	"gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+	"gpt-6.2-astra", "gpt-6.2-sol",
 ]);
 
-// The authenticated Codex model catalog's max_context_window (client 0.159.1, 13 October 2026), not its default
-// 272k working budget. Codex Wire records the live value for each model it uses, which takes precedence.
+// The authenticated Codex model catalog's max_context_window, not its default working budget of 272k or 500k: read
+// with client 0.169.0 on 18 November 2026 for gpt-6.1-terra and the gpt-6.2 models, and with 0.159.1 on 13 October
+// 2026 for the rest. Codex Wire records the live value for each model it uses, which takes precedence.
 const CODEX_CAPACITIES: Record<string, number> = {
 	"gpt-5.5": 272_000, "gpt-5.6-sol": 872_000, "gpt-5.6-terra": 872_000, "gpt-5.6-luna": 872_000,
 	"gpt-6-astra": 872_000, "gpt-6-sol": 872_000, "gpt-6-luna": 872_000, "gpt-6.1-sol": 872_000,
+	"gpt-6.1-terra": 872_000, "gpt-6.2-astra": 872_000, "gpt-6.2-sol": 872_000,
 };
 const liveKey = Symbol.for("pi.codex.max-context-window.v1");
 const shared = globalThis as typeof globalThis & { [liveKey]?: Map<string, number> };
