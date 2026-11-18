@@ -5,6 +5,7 @@ import { object, string } from "./commands.ts";
 import { SecureChannel, validId, MAX_WIRE, PROTOCOL_VERSION } from "../shared/secure-channel.ts";
 import { acceptChannelOffer, ClientHandshake, hostAdmission, ChannelVersionError, type ChannelIdentity, type ChannelPurpose } from "../shared/account-channel.ts";
 import type { AccountConfiguration, MembershipLease, MembershipPeer } from "../shared/account.ts";
+import { accountNow } from "../shared/account-clock.ts";
 import { CredentialVerifier, type DeviceCredential } from "../shared/device-credential.ts";
 import { membershipDeadline, MembershipDenied } from "../shared/membership.ts";
 import { EventDelivery, EventWindow } from "./event-window.ts";
@@ -270,7 +271,7 @@ export class RelayConnector {
 		if (this.socket === socket && !this.stopped) this.update("online");
 	}
 	private valid(peer: Peer): boolean {
-		const now = Date.now() / 1000, monotonic = performance.now();
+		const now = accountNow() / 1000, monotonic = performance.now();
 		return !this.stopped && this.admitted && this.socket?.readyState === WebSocket.OPEN && this.peers.get(peer.id) === peer
 			&& !!peer.device && peer.device.expires > now && peer.ownExpires > now
 			&& peer.leaseUntil > monotonic && this.hostLeaseUntil > monotonic;

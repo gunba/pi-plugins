@@ -3,7 +3,8 @@ import {
 	accountConfiguration, accountOrigin, deviceKey, identifier, workspaceIdentity,
 	type AccountConfiguration, type DeviceKey, type WorkspaceDevice, type MembershipPeer, type MembershipLease,
 } from "../shared/account.ts";
-import { accountProof } from "../shared/account-proof.ts";
+import { accountNow } from "../shared/account-clock.ts";
+import { sendWithProof } from "../shared/account-proof.ts";
 import { signChannelProof, type ProofPurpose } from "../shared/account-channel.ts";
 import { CredentialVerifier } from "../shared/device-credential.ts";
 
@@ -148,15 +149,18 @@ export class BrowserAccount {
 		if (!path.startsWith("/") || url.origin !== this.config.origin || url.search || url.hash) throw new Error("Invalid account request.");
 		const method = input === undefined ? "GET" : "POST", body = input === undefined ? "" : JSON.stringify(input);
 		const device = await this.identity();
-		const proof = await accountProof({ id: device.id, method, url: url.href, body, accessToken: "" }, device.key);
-		if (this.closed || this.markedOut() || epoch !== this.epoch) throw new BrowserSignInRequired();
-		const response = await fetch(url, {
-			method, credentials: "omit", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(60_000),
-			headers: { "X-Pi-Desk-Proof": proof, ...(method === "POST" ? { "Content-Type": "application/json" } : {}) },
-			...(input === undefined ? {} : { body }),
+		const { response, value } = await sendWithProof({ id: device.id, method, url: url.href, body, accessToken: "" }, device.key, async proof => {
+			if (this.closed || this.markedOut() || epoch !== this.epoch) throw new BrowserSignInRequired();
+			const response = await fetch(url, {
+				method, credentials: "omit", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(60_000),
+				headers: { "X-Pi-Desk-Proof": proof, ...(method === "POST" ? { "Content-Type": "application/json" } : {}) },
+				...(input === undefined ? {} : { body }),
+			});
+			if (this.closed || epoch !== this.epoch) throw new BrowserSignInRequired();
+			const value = await response.json().catch(() => ({}));
+			if (this.closed || epoch !== this.epoch) throw new BrowserSignInRequired();
+			return { response, value, status: response.status, error: typeof value?.error === "string" ? value.error : undefined, date: response.headers.get("Date") };
 		});
-		if (this.closed || epoch !== this.epoch) throw new BrowserSignInRequired();
-		const value = await response.json().catch(() => ({}));
 		if (!response.ok) {
 			if (response.status === 401 || value?.error === "device_not_found") {
 				this.needsSignIn = true; this.credential = undefined; this.changed(); throw new BrowserSignInRequired();
@@ -167,7 +171,7 @@ export class BrowserAccount {
 		return value as T;
 	}
 	async enrol(): Promise<{ token: string; expires: number }> {
-		if (this.credential && this.credential.expires > Date.now() / 1000 + 90) return this.credential;
+		if (this.credential && this.credential.expires > accountNow() / 1000 + 90) return this.credential;
 		if (this.pending) return this.pending;
 		const epoch = this.epoch;
 		const job = (async () => {

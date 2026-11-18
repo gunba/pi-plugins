@@ -172,7 +172,8 @@ ${refresh ? `<meta http-equiv="refresh" content="1;url=${escapeHtml(refresh)}">`
 				response.setHeader("Access-Control-Allow-Origin", origin);
 				response.setHeader("Access-Control-Allow-Methods", "GET, POST");
 				response.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Pi-Desk-Proof");
-				response.setHeader("Access-Control-Expose-Headers", "Retry-After");
+				// Date: a browser measures its clock against this service's (account-clock.ts).
+				response.setHeader("Access-Control-Expose-Headers", "Retry-After, Date");
 			}
 			if (request.method === "OPTIONS") {
 				if (!origin) throw new AccountError(403, "invalid_origin");

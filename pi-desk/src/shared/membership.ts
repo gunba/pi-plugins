@@ -1,4 +1,5 @@
 import { MEMBERSHIP_LEASE, type MembershipLease } from "./account.ts";
+import { accountNow } from "./account-clock.ts";
 import { validId } from "./secure-channel.ts";
 
 export class MembershipDenied extends Error {
@@ -10,7 +11,7 @@ export function membershipDeadline(lease: MembershipLease, requestedAt: number, 
 	if (!lease || !Array.isArray(lease.allowed) || lease.allowed.length > 32 || !lease.allowed.every(validId)
 		|| !Number.isSafeInteger(lease.expires)) throw new Error("Invalid account authorization.");
 	if (peer && !lease.allowed.includes(peer)) throw new MembershipDenied();
-	const remaining = (lease.expires - Date.now() / 1000) * 1000;
+	const remaining = (lease.expires - accountNow() / 1000) * 1000;
 	const deadline = Math.min(requestedAt + MEMBERSHIP_LEASE * 1000, performance.now() + remaining);
 	if (deadline <= performance.now()) throw new Error("Account authorization expired.");
 	return deadline;

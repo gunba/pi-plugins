@@ -1,6 +1,7 @@
 import { SecureChannel, validId, MAX_WIRE } from "../shared/secure-channel.ts";
 import { ClientHandshake, ChannelVersionError, type ChannelIdentity } from "../shared/account-channel.ts";
 import type { AccountConfiguration, MembershipLease, MembershipPeer } from "../shared/account.ts";
+import { accountNow } from "../shared/account-clock.ts";
 import { CredentialVerifier, type DeviceCredential } from "../shared/device-credential.ts";
 import { membershipDeadline, MembershipDenied } from "../shared/membership.ts";
 import { socketUrl, type ApiRequest, type ApiResponse, type RemotePayload, type SessionPatchEvent, type StatePatchEvent } from "../shared/relay-protocol.ts";
@@ -201,7 +202,7 @@ export class RemoteClient {
 	}
 	private valid(socket = this.socket): boolean {
 		return !this.closed && this.socket === socket && socket?.readyState === WebSocket.OPEN
-			&& !!this.peer && !!this.own && this.peer.expires > Date.now() / 1000 && this.own.expires > Date.now() / 1000
+			&& !!this.peer && !!this.own && this.peer.expires > accountNow() / 1000 && this.own.expires > accountNow() / 1000
 			&& this.leaseUntil > performance.now();
 	}
 	private retry(): void {

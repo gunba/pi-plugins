@@ -9,7 +9,8 @@ import {
 	accountConfiguration, deviceKey, identifier, workspaceIdentity,
 	type AccountConfiguration, type DeviceKey, type MembershipPeer, type MembershipLease,
 } from "../shared/account.ts";
-import { accountProof } from "../shared/account-proof.ts";
+import { accountClockLead, accountNow } from "../shared/account-clock.ts";
+import { sendWithProof } from "../shared/account-proof.ts";
 import type { PushNotice } from "../account/push.ts";
 import { AccountNetwork } from "./account-network.ts";
 import { signChannelProof, type ProofPurpose } from "../shared/account-channel.ts";
@@ -96,7 +97,7 @@ export class NativeAccountIdentity {
 			if (approve.origin !== this.config.origin) throw new Error("The account service returned an invalid approval.");
 			await show({ url: approve.href, code: result.code, expires: result.expires! });
 			for (;;) {
-				if (Date.now() > result.expires!) throw new Error("The approval link expired. Start sign-in again.");
+				if (accountNow() > result.expires!) throw new Error("The approval link expired. Start sign-in again.");
 				await delay(2000);
 				try { await this.certificate(); return; }
 				catch (error) { if (!(error instanceof AccountSignInRequired)) throw error; }
@@ -108,10 +109,18 @@ export class NativeAccountIdentity {
 		const url = new URL(path, this.config.origin);
 		if (url.origin !== this.config.origin || url.search || url.hash || !path.startsWith("/")) throw new Error("Invalid account request.");
 		const method = input === undefined ? "GET" : "POST", body = input === undefined ? "" : JSON.stringify(input);
-		const response = await this.network.request<T & { error?: string }>(method, url.href, {
-			headers: { "X-Pi-Desk-Proof": await accountProof({ id: this.device.id, method, url: url.href, body, accessToken: "" }, this.key),
-				...(method === "POST" ? { "Content-Type": "application/json" } : {}) }, body,
+		const lead = accountClockLead();
+		const { response } = await sendWithProof({ id: this.device.id, method, url: url.href, body, accessToken: "" }, this.key, async proof => {
+			const response = await this.network.request<T & { error?: string }>(method, url.href, {
+				headers: { "X-Pi-Desk-Proof": proof, ...(method === "POST" ? { "Content-Type": "application/json" } : {}) }, body,
+			});
+			return { response, status: response.status, error: response.body.error, date: response.headers.date };
 		});
+		// Said once per change, in host.log or the terminal: a wrong clock also breaks things Desk cannot work around.
+		if (accountClockLead() !== lead && accountClockLead()) {
+			const seconds = Math.round(Math.abs(accountClockLead()) / 1000);
+			console.error(`This computer's clock is ${seconds} s ${accountClockLead() > 0 ? "ahead of" : "behind"} the Desk account service's. Desk dates its account requests by the service's clock.`);
+		}
 		if (response.status < 200 || response.status >= 300) {
 			if (response.status === 401 || response.body.error === "device_not_found") throw new AccountSignInRequired();
 			const codes = ["device_revoked", "device_identity_changed", "workspace_access_denied", "device_not_found"];
@@ -120,7 +129,7 @@ export class NativeAccountIdentity {
 		return response.body;
 	}
 	async certificate(): Promise<string> {
-		if (this.certificateValue && this.certificateValue.expires > Date.now() / 1000 + 90) return this.certificateValue.token;
+		if (this.certificateValue && this.certificateValue.expires > accountNow() / 1000 + 90) return this.certificateValue.token;
 		if (this.renewing) return this.renewing;
 		this.renewing = this.request<{ token: string; expires: number }>(`/devices/${this.device.id}/credential`, {})
 			.then(value => { this.certificateValue = value; return value.token; }).finally(() => { this.renewing = undefined; });

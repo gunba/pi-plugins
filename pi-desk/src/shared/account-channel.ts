@@ -1,5 +1,6 @@
 import { compactVerify, CompactSign } from "jose";
 import { deviceKey, type DeviceKey } from "./account.ts";
+import { accountNow } from "./account-clock.ts";
 import { CredentialVerifier, type DeviceCredential } from "./device-credential.ts";
 import { API_VERSION } from "./release.ts";
 import { base64, CHANNEL_FEATURES, newSecret, PROTOCOL_VERSION, SecureChannel, validId, validSecret } from "./secure-channel.ts";
@@ -112,7 +113,7 @@ export class ClientHandshake {
 		if (!key) throw new Error("Channel handshake is no longer available.");
 		const accept = wire(value, "accept"), peer = await this.verifier.verify(accept.credential, "host", this.data.host);
 		const data = await hello(accept, peer, acceptPurpose(this.purpose), this.data.host);
-		if (data.offer !== base64(await digest(this.offer)) || Math.min(this.own.expires, peer.expires) <= Date.now() / 1000) {
+		if (data.offer !== base64(await digest(this.offer)) || Math.min(this.own.expires, peer.expires) <= accountNow() / 1000) {
 			throw new Error("Host response does not authorize this handshake.");
 		}
 		return { channel: await channel(key, data.key, this.offer, accept, this.data, data, this.own.id, "client", handlers, this.purpose),
@@ -134,7 +135,7 @@ export async function acceptChannelOffer(value: unknown, host: string, identity:
 		key: key.publicKey, credential: base64(await digest(credential)), offer: base64(await digest(offer)), features: [...CHANNEL_FEATURES] };
 	const accept: ChannelWire = { type: "accept", credential,
 		proof: await identity.signProof(bytes(data), acceptPurpose(purpose)) };
-	if (Math.min(own.expires, peer.expires) <= Date.now() / 1000) throw new Error("Channel authorization expired.");
+	if (Math.min(own.expires, peer.expires) <= accountNow() / 1000) throw new Error("Channel authorization expired.");
 	return { channel: await channel(key.privateKey, client.key, offer, accept, client, data, peer.id, "host", handlers, purpose),
 		peer, own, accept };
 }
