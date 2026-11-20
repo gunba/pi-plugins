@@ -22,7 +22,8 @@ wakes the agent anyway with a note; after three failures in a row the watch ends
 A re-run command's output is judged as a reading: the classifier is asked whether the condition is true of the output
 now, given the output before it, since a bare count or flag shows nothing on its own. A change that doesn't meet the
 condition is listed with the watch ("11:41 output "1" did not meet the condition"), so a quiet watch shows why. Leave
-`wake_when` out when any change should wake the agent.
+`wake_when` out when any change should wake the agent; one that asks for no more than that ("changed", "when the output
+changes") is treated as left out, since judged as a condition it woke agents for some changes and not others.
 
 ## Desk runs the watches
 
@@ -99,6 +100,10 @@ watch.
 
 - pi-tools runs the program (its `RUN_PROGRAM` event). In Desk, it runs in Desk's background process for the folder
   (above), with a context of its own, so its operations pass through that folder's guards.
+- In Desk, its agent operations act for the watch's conversation, which Desk names to that process as the program
+  starts (`PROGRAM_AGENT`): `agent_send` sends as it, open or closed, and a wake reopens the recipient as from it.
+  Starting, closing and moving agents are refused there, and a watch run for an agent on another computer can't act for
+  it. Without Desk, the program runs as the conversation itself.
 - A run may take 2 minutes; one stopped then, or failed, has that as its result.
 - Without Desk, it runs in the conversation's process, with the context of the agent's latest `watch` or `bash` call,
   as Pi offers no context outside a call. The conversation can't sleep while one is active (`close` is declined), and

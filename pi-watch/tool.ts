@@ -80,6 +80,12 @@ export interface WatchBackend {
 	stopRun(spec: WatchSpec): void;
 }
 
+/** Whether a wake_when asks only for any change or new output, such as "changed" or "when the output changes". */
+export function anyChange(condition: string): boolean {
+	return /^(?:on |at |upon |when |if |whenever )?(?:any |a )?(?:(?:the |its )?(?:output|result|results|value|status|state|it|anything|something)(?: has| is)? )?(?:changes?|changed|differs?|is different|updates?|updated|new output|any output)(?: at all)?[.!]?$/i
+		.test(condition.trim().replace(/\s+/g, " "));
+}
+
 /**
  * Checks what a call asks for and returns the watch it describes, or a reason to refuse it. stop and listing are the
  * callers'. `counts` are the agent's time and command watches already active.
@@ -96,7 +102,8 @@ export function plannedWatch(params: Omit<Params, "close" | "stop">, ctx: Extens
 	if (params.until !== undefined && given.length > 1) throw new Error("until wakes you after a delay or at a time (5m, HH:MM or an ISO time) and takes nothing else; to check something repeatedly, give command with every. Either way, end your turn and you are woken.");
 	if (params.keep !== undefined && params.every === undefined) throw new Error("keep goes with every: it keeps a re-run command or program reporting after it first wakes you.");
 	if (params.cwd !== undefined && params.computer === undefined) throw new Error("cwd names the folder on another computer; give computer too. Here, watches run in this conversation's folder.");
-	const command = params.command?.trim(), wakeWhen = params.wake_when?.trim() || undefined;
+	// "changed" and the like ask for what leaving wake_when out does; judged as a condition, they woke agents unreliably.
+	const command = params.command?.trim(), wakeWhen = params.wake_when?.trim() && !anyChange(params.wake_when) ? params.wake_when.trim() : undefined;
 	if (params.command !== undefined && !command) throw new Error("command is empty.");
 	if (params.until !== undefined ? counts.times >= MAX_TIMES : counts.commands >= MAX_COMMANDS)
 		throw new Error(`At most ${params.until !== undefined ? `${MAX_TIMES} time` : `${MAX_COMMANDS} command`} watches can run at once. ${list()}`);

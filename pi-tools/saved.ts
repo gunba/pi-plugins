@@ -7,6 +7,12 @@ import { getAgentDir, type ExtensionToolContext } from "@earendil-works/pi-codin
  * the program's result as text. Extensions load their own copies of shared modules, so they meet on Pi's event bus.
  */
 export const RUN_PROGRAM = "pi-tools:run-program";
+/**
+ * Desk's process for watch programs announces, as each program starts and ends, the conversation it runs for: the watch's
+ * agent, when that is on this computer. pi-agents acts as that conversation for the program's agent operations.
+ */
+export const PROGRAM_AGENT = "pi-tools:program-agent";
+export interface ProgramAgent { agent?: string }
 export interface ProgramRun { ctx: ExtensionToolContext; code: string; signal: AbortSignal; claim(): void; done(text: string): void }
 
 /**

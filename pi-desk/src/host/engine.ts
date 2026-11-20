@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { createStructuredToolExtension, createStructuredSearchExtension } from "../../../pi-tools/index.ts";
-import { RUN_PROGRAM, type ProgramRun } from "../../../pi-tools/saved.ts";
+import { PROGRAM_AGENT, RUN_PROGRAM, type ProgramAgent, type ProgramRun } from "../../../pi-tools/saved.ts";
 import { PROGRAM_LIMIT_MS } from "../../../pi-watch/common.ts";
 import { describeAgentTools, describeSessionTools } from "../../../pi-ui/tool-descriptions.ts";
 import { operatorAvailability } from "./operator.ts";
@@ -616,12 +616,14 @@ export class DeskEngine {
 	}
 
 	private programs = 0;
+	private programsRunning = 0;
 	/**
 	 * Runs a watch's program for Desk (program-runner.ts) as pi-tools runs codemode, with this session's tools and
 	 * outside any turn; its result as text. Nested calls name the assistant message that issued them, which a session
-	 * that never ran a turn lacks, so one is put in its memory only.
+	 * that never ran a turn lacks, so one is put in its memory only. Its agent operations act for `agent`, the watch's
+	 * conversation (PROGRAM_AGENT).
 	 */
-	private runProgram(session: AgentSession, code: string): Promise<string> {
+	private runProgram(session: AgentSession, code: string, agent?: string): Promise<string> {
 		const runner = session.extensionRunner;
 		if (!runner || !this.events) throw new Error("This process can't run programs.");
 		if (!session.agent.state.messages.some(message => message.role === "assistant")) {
@@ -632,14 +634,18 @@ export class DeskEngine {
 		}
 		const controller = new AbortController(), timer = setTimeout(() => controller.abort(), PROGRAM_LIMIT_MS);
 		const ctx = runner.createToolContext(`watch-program-${++this.programs}`, controller.signal);
+		// The program runner sends one program at a time; should two overlap, neither may act for a conversation.
+		const events = this.events;
+		events.emit(PROGRAM_AGENT, { agent: this.programsRunning++ === 0 ? agent : undefined } satisfies ProgramAgent);
 		return new Promise<string>(resolve => {
 			let claimed = false, answered = false;
 			const done = (text: string) => {
 				if (answered) return;
 				answered = true; clearTimeout(timer);
+				if (--this.programsRunning === 0) events.emit(PROGRAM_AGENT, {} satisfies ProgramAgent);
 				resolve(controller.signal.aborted ? `${text}\n(stopped after ${PROGRAM_LIMIT_MS / 1000} s)`.trim() : text);
 			};
-			this.events!.emit(RUN_PROGRAM, { ctx, code, signal: controller.signal, claim: () => { claimed = true; }, done } satisfies ProgramRun);
+			events.emit(RUN_PROGRAM, { ctx, code, signal: controller.signal, claim: () => { claimed = true; }, done } satisfies ProgramRun);
 			if (!claimed) done("(could not run: programs need pi-tools)");
 		});
 	}
@@ -669,7 +675,7 @@ export class DeskEngine {
 		}
 		switch (command.kind) {
 			case "snapshot": return this.snapshot();
-			case "program": return { text: await this.runProgram(session, command.code) };
+			case "program": return { text: await this.runProgram(session, command.code, command.agent) };
 			case "models": await this.refreshModels(); return this.snapshot();
 			case "native_read": return readNativeCommand(session, command.name, command.args);
 			case "learn": this.learning?.setEnabled(command.enabled); this.scheduleSnapshot(); return;

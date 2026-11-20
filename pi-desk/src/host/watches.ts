@@ -162,7 +162,10 @@ export class WatchService {
 				this.retainPrograms();
 			},
 			judge: (spec, condition, output, previous) => this.judge(spec, condition, output, previous),
-			program: (spec, signal) => this.programs.run(spec.cwd, spec.program!, signal),
+			program: (spec, signal) => {
+				const row = this.armed.get(spec.key!);
+				return this.programs.run(spec.cwd, spec.program!, signal, row?.home === "" ? row.agent : undefined);
+			},
 			changed: () => this.readings(),
 			failed: error => console.error(`Watches: ${errorText(error)}`),
 		});

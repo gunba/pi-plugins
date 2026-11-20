@@ -7,6 +7,11 @@ import { agentId, nativeId, networkMembers, remoteMember, remoteMessage, NETWORK
 	type DeliveryReceipt, type NetworkMember } from "./network.ts";
 
 export const LEASE_MS = 45_000;
+/**
+ * Acting for a watch's conversation: Desk's process for watch programs (pi-desk program-runner.ts) sends agent messages
+ * for the conversation that owns the watch, which need not be open, so it has no owner to prove itself with.
+ */
+export const FOR_WATCH: unique symbol = Symbol("for a watch's conversation");
 /** How long, and how many of, a computer's closed conversations it lists to the others. */
 const CLOSED_LISTED_MS = 30 * 86_400_000, CLOSED_LISTED = 200;
 /** A name compared as agents type it: case and runs of spaces don't matter. */
@@ -475,6 +480,13 @@ export class PartyStore {
 		if (!member || member.owner !== owner) throw Error("Agent registration is no longer owned by this session process.");
 		return member;
 	}
+	/** The agent `session` acting: its own process, by `owner`, or for one of its watches (FOR_WATCH), which needs it to be on this computer. */
+	acting(session: string, owner: string | typeof FOR_WATCH): Member {
+		if (owner !== FOR_WATCH) return this.owned(session, owner);
+		const member = this.member(session);
+		if (!member || member.computer) throw Error("This watch's conversation is not an agent on this computer, so its program can't act for it.");
+		return member;
+	}
 	register(session: string, owner: string, label: string, cwd = "", kind = "session", file?: string): Member {
 		return this.tx(() => {
 			const old = this.member(session);
@@ -606,11 +618,11 @@ export class PartyStore {
 			? `${value} is not open on its computer. A conversation on another computer can be messaged only while it is open there.`
 			: `No agent is named "${value}". agent_list shows the agents there are; a closed one on another computer can be messaged only while it is open there.`);
 	}
-	send(session: string, owner: string, target: string, text: string, wake: boolean, files: MessageFile[] = []): PartyMessage {
+	send(session: string, owner: string | typeof FOR_WATCH, target: string, text: string, wake: boolean, files: MessageFile[] = []): PartyMessage {
 		if (!text.trim()) throw Error("Messages must contain non-whitespace text.");
 		checkFiles(files);
 		return this.tx(() => {
-			const self = this.owned(session, owner);
+			const self = this.acting(session, owner);
 			const peer = this.resolve(target, this.db.prepare("SELECT * FROM party_agents WHERE session<>?").all(session) as unknown as Member[]);
 			if (peer.computer && !this.computerOnline(peer.computer)) throw Error(`The computer for ${peer.session} is disconnected.`);
 			const pending = this.db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE recipient=? AND admitted=0

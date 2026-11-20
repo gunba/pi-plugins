@@ -3,7 +3,7 @@ import { watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { agentId, operationResult, partyOperation, type OperationResult, type PartyOperation } from "./network.ts";
-import { LEASE_MS, type PartyStore } from "./store.ts";
+import { LEASE_MS, type FOR_WATCH, type PartyStore } from "./store.ts";
 
 type OperationInput = { kind: "create"; computer?: string; cwd: string; task: string; label: string; model?: string; reasoning?: string }
 	| { kind: "fork"; cwd: string; task: string; label: string; call: string }
@@ -68,9 +68,8 @@ export class PartyOperations {
 		const row = this.db.prepare("SELECT value FROM party_operation_meta WHERE key='host_seen'").get() as { value: string } | undefined;
 		return Number(row?.value) > Date.now() - LEASE_MS;
 	}
-	queue(store: PartyStore, session: string, owner: string, input: OperationInput): PartyOperation {
-		const self = store.member(session);
-		if (!self || self.owner !== owner) throw Error("Agent registration is no longer owned by this session process.");
+	queue(store: PartyStore, session: string, owner: string | typeof FOR_WATCH, input: OperationInput): PartyOperation {
+		const self = store.acting(session, owner);
 		const computer = input.kind === "fork" ? "local" : input.computer ?? "local";
 		const now = Date.now(), operation: PartyOperation = { id: randomUUID(), sender: session, sender_epoch: self.agent_epoch,
 			kind: input.kind, created: now, expires: now + 300_000,

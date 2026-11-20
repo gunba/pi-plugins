@@ -5,8 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { PartyStore, LEASE_MS } from "./store.ts";
+import { FOR_WATCH, PartyStore, LEASE_MS } from "./store.ts";
 import { PartyOperations } from "./operations.ts";
+import { agentId } from "./network.ts";
 import { randomUUID } from "node:crypto";
 
 function fixture(t) {
@@ -34,6 +35,27 @@ test("late lifecycle results cannot overwrite a stopped controller's receipt", a
 	const repeated = await operations.receive("local", request, () => assert.fail("Must not replay an interrupted operation"));
 	assert.match(repeated.error, /host stopped/);
 	assert.match(operations.recent(sender).find(row => row.id === request.id).response.error, /host stopped/);
+});
+test("a watch's program acts for its conversation, closed or open, and only for one on this computer", t => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-party-watch-test-"));
+	const store = new PartyStore(directory), operations = new PartyOperations(directory);
+	t.after(() => { operations.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+	operations.startHost();
+	const lead = randomUUID(), helper = randomUUID(), computer = randomUUID();
+	store.register(lead, "lead-process", "Fleet lead");
+	store.register(helper, "helper-process", "Helper");
+	// Desk's process for watch programs is no agent: sending as itself, it was refused for every program.
+	assert.throws(() => store.send(randomUUID(), "background", helper, "Phase two", true), /no longer owned/);
+	store.release(lead, "lead-process");
+	const sent = store.send(lead, FOR_WATCH, helper, "Phase two", true);
+	assert.deepEqual(store.pending(helper, "helper-process").map(message => [message.id, message.sender, message.sender_label, message.wake]),
+		[[sent.id, lead, "Fleet lead", 1]]);
+	// A wake for a closed agent reopens it through Desk, also for the watch's conversation.
+	assert.equal(operations.queue(store, lead, FOR_WATCH, { kind: "resume", session: helper }).sender, lead);
+	assert.throws(() => store.send(randomUUID(), FOR_WATCH, helper, "Phase two", false), /not an agent on this computer/);
+	store.cacheDirectory(computer, store.networkDirectory());
+	assert.equal(store.member(agentId(computer, helper)).computer, computer);
+	assert.throws(() => store.send(agentId(computer, helper), FOR_WATCH, lead, "Phase two", false), /not an agent on this computer/);
 });
 test("registered agents exchange direct messages", t => {
 	const { a, b } = fixture(t);

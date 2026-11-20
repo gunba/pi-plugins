@@ -19,8 +19,11 @@ export class ProgramRunner {
 
 	constructor(options: { agentDir: string; sessionDir?: string; deskDirectory: string }) { this.options = options; }
 
-	/** Runs `code` in `cwd`'s process, after any run already there; its result as text. */
-	async run(cwd: string, code: string, signal: AbortSignal): Promise<string> {
+	/**
+	 * Runs `code` in `cwd`'s process, after any run already there; its result as text. `agent` is the watch's conversation,
+	 * when it is on this computer: the program's agent operations act for it.
+	 */
+	async run(cwd: string, code: string, signal: AbortSignal, agent?: string): Promise<string> {
 		if (this.closed) return "(could not run: Desk is stopping)";
 		const runner = this.runner(cwd);
 		const job = runner.queue.then(async () => {
@@ -29,7 +32,7 @@ export class ProgramRunner {
 			let timer: NodeJS.Timeout | undefined;
 			const stuck = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("the program didn't finish")), STUCK_MS); });
 			try {
-				const result = await Promise.race([worker.command({ kind: "program", code }), stuck]) as { text?: unknown } | undefined;
+				const result = await Promise.race([worker.command({ kind: "program", code, ...(agent ? { agent } : {}) }), stuck]) as { text?: unknown } | undefined;
 				return typeof result?.text === "string" ? result.text : "";
 			} finally { clearTimeout(timer); }
 		});

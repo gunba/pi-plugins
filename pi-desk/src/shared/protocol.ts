@@ -306,8 +306,11 @@ export type WorkerCommand =
 	/** Turn automatic effort on or off for this conversation. */
 	| { kind: "effort"; on: boolean }
 	| { kind: "reload" }
-	/** Run a watch's program with this process's tools, outside any turn; only Desk's program runner sends it. */
-	| { kind: "program"; code: string };
+	/**
+	 * Run a watch's program with this process's tools, outside any turn; only Desk's program runner sends it. `agent` is
+	 * the conversation on this computer that owns the watch, which the program's agent operations act for.
+	 */
+	| { kind: "program"; code: string; agent?: string };
 export interface WorkerState {
 	runtime?: WorkerRuntimeInfo;
 	snapshot?: SessionSnapshot;

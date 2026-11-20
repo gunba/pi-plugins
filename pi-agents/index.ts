@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import { ensureWorkUi, safeWorkText, type WorkUiSource } from "../pi-work-ui/index.ts";
 import { isManagedChild } from "../pi-work-coordination/index.ts";
 import { nativePromptPreparing } from "../pi-work-coordination/native-queue.ts";
-import { INLINE_FILE_BYTES, LEASE_MS, MAX_MESSAGE_FILE_BYTES, MAX_MESSAGE_FILES, MESSAGE_PARTS, PartyStore, sendNames, type Member, type MessageFile, type PartyMessage } from "./store.ts";
+import { FOR_WATCH, INLINE_FILE_BYTES, LEASE_MS, MAX_MESSAGE_FILE_BYTES, MAX_MESSAGE_FILES, MESSAGE_PARTS, PartyStore, sendNames, type Member, type MessageFile, type PartyMessage } from "./store.ts";
 import { PartyChat } from "./chat.ts";
 import { renderPartyNotice } from "./render.ts";
 import { getPresentation } from "../pi-ui/index.ts";
@@ -19,6 +19,7 @@ import { partyDelivery } from "./availability.ts";
 import { providePrimaryAgents, rememberAgentLabels, type PrimaryAgents } from "./primary.ts";
 import { readHandbookFile } from "../pi-handbook/src/file.ts";
 import { provideHandbookReader } from "../pi-handbook/src/peers.ts";
+import { PROGRAM_AGENT, type ProgramAgent } from "../pi-tools/saved.ts";
 
 export const PARTY_MESSAGE = "pi-party/message";
 /** agent_start's result when Jordan answers no. Programs get only this data, so it says who refused. */
@@ -60,6 +61,21 @@ export default function party(pi: ExtensionAPI): void {
 	let preparingPrompt = false;
 	let chat: PartyChat | undefined;
 	let remote: PartyPresentation | undefined;
+	// Desk runs watches' programs in a background process of its own (pi-desk program-runner.ts), which is not an agent.
+	// It names the conversation each program runs for (PROGRAM_AGENT): there, agent operations act as that conversation.
+	const background = !!process.env.PI_DESK_BACKGROUND;
+	let watchAgent: string | undefined;
+	if (background) pi.events.on(PROGRAM_AGENT, value => { watchAgent = (value as ProgramAgent).agent; });
+	/**
+	 * Who an agent operation acts as: this conversation, or in a watch's program the watch's conversation. `refused` names
+	 * an operation a program may not do for it: one that starts, stops or moves agents.
+	 */
+	const actor = (refused?: string): [string, string | typeof FOR_WATCH] => {
+		if (!background) return [session, owner];
+		if (refused) throw Error(`A watch's program can send agent messages, list agents and reopen them, but not ${refused}; do that in the conversation.`);
+		if (!watchAgent) throw Error("This watch's conversation is not an agent on this computer, so its program can't act for it.");
+		return [watchAgent, FOR_WATCH];
+	};
 
 	const label = () => pi.getSessionName() || "Untitled conversation";
 	const database = () => store ??= new PartyStore(directory);
@@ -99,7 +115,7 @@ export default function party(pi: ExtensionAPI): void {
 		if (blocker) return { reopened: "no", reason: blocker };
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
-			const request = operations().queue(database(), session, owner, { kind: "resume", computer: peer.computer ?? "local", session: nativeId(peer.session) });
+			const request = operations().queue(database(), ...actor(), { kind: "resume", computer: peer.computer ?? "local", session: nativeId(peer.session) });
 			const outcome = await Promise.race([operations().wait(request.id, signal).then(() => "yes" as const),
 				new Promise<"starting">(resolve => { timer = setTimeout(() => resolve("starting"), 45_000); })]);
 			return { reopened: outcome };
@@ -117,7 +133,7 @@ export default function party(pi: ExtensionAPI): void {
 		}
 		if (!store.computerOnline(computer)) throw Error(`${name}'s computer is offline.`);
 		if (!store.computerSupports(computer, "handbook")) throw Error(`${name}'s computer runs an older Desk that cannot share handbooks.`);
-		const request = operations().queue(store, session, owner, { kind: "handbook", computer, session: nativeId(peer.session) });
+		const request = operations().queue(store, ...actor(), { kind: "handbook", computer, session: nativeId(peer.session) });
 		try { return (await operations().wait(request.id, signal)).result?.text ?? `${name} has no handbook.`; }
 		catch (error) { throw Error((error instanceof Error ? error.message : String(error)).replace(/ Receipt: \S+$/, "")); }
 	};
@@ -289,7 +305,7 @@ export default function party(pi: ExtensionAPI): void {
 	const result = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {}, structuredContent: JSON.parse(JSON.stringify(value)) });
 
 	const sendMessage = (to: string, text: string, wake: boolean, files: MessageFile[] = []) => {
-		const sent = database().send(session, owner, to, text, wake, files);
+		const sent = database().send(...actor(), to, text, wake, files);
 		signal(); publish();
 		return sent;
 	};
@@ -382,6 +398,7 @@ export default function party(pi: ExtensionAPI): void {
 	/** Desk conversations for the agent tools, which the subagent runtime defines (primary.ts). */
 	const primary: PrimaryAgents = {
 		async start(request, toolCallId, abort, context) {
+			actor("start agents");
 			if (!context.hasUI) throw Error("Starting a primary agent needs Jordan's approval in Pi's interface.");
 			const approve = async (detail: string) => {
 				const approved = await context.ui.confirm("Start agent", detail, { signal: abort });
@@ -435,19 +452,20 @@ export default function party(pi: ExtensionAPI): void {
 				computers: [{ id: "local", name: hostname(), platform: process.platform, state: operations().hostOnline() ? "connected" : "offline" }, ...database().computers()] };
 		},
 		async resume(request, abort) {
-			const peer = database().peer(session, request.agent), handle = database().handles().get(peer.session) ?? peer.label;
+			const peer = database().peer(actor()[0], request.agent), handle = database().handles().get(peer.session) ?? peer.label;
 			if (peer.heartbeat > Date.now() - LEASE_MS || peer.state === "restarting") return { agent: peer.session, handle, reopened: "already open" };
 			const outcome = await reopen(peer, abort);
 			if (outcome.reopened === "no") throw Error(`${handle} could not be reopened: ${outcome.reason}`);
 			return { agent: peer.session, handle, reopened: outcome.reopened, ...(outcome.reopened === "starting" ? { note: "Desk is still opening it." } : {}) };
 		},
 		async close(request, abort) {
+			const acting = actor("close agents");
 			// A name or handle names an agent this computer knows; an ID may name one it doesn't, such as one closed elsewhere.
 			let id = request.agent;
 			try { id = database().peer(session, request.agent).session; } catch (error) { if (!/^[0-9a-f-]{8,}(@[0-9a-f-]{36})?$/i.test(request.agent)) throw error; }
 			const at = id.lastIndexOf("@"), computer = at > 0 ? id.slice(at + 1) : "local", target = at > 0 ? id.slice(0, at) : id;
 			if (computer !== "local" && !database().computerSupports(computer, "close")) throw Error("That agent's computer is offline, or its Desk is too old to close agents; it updates itself.");
-			const queued = operations().queue(database(), session, owner, { kind: "close", computer, session: target, ...(request.note ? { note: request.note } : {}),
+			const queued = operations().queue(database(), ...acting, { kind: "close", computer, session: target, ...(request.note ? { note: request.note } : {}),
 				...(request.keep !== undefined ? { keep: request.keep } : {}) });
 			const response = await operations().wait(queued.id, abort);
 			return { ...response, closed: request.agent };
@@ -462,10 +480,11 @@ export default function party(pi: ExtensionAPI): void {
 			cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Default: home folder." })),
 			note: Type.String({ minLength: 1, description: "Your next turn starts from it." }) }),
 		async execute(_id, params) {
+			const acting = actor("move conversations");
 			const computer = database().resolveComputer(params.computer, hostname());
 			if (computer === "local") throw Error("You are already on this computer.");
 			if (database().computerOnline(computer) && !database().computerSupports(computer, "move")) throw Error("That computer's Desk is too old to take a moving agent.");
-			operations().queue(database(), session, owner, { kind: "move", computer, ...(params.cwd ? { cwd: params.cwd } : {}), task: params.note });
+			operations().queue(database(), ...acting, { kind: "move", computer, ...(params.cwd ? { cwd: params.cwd } : {}), task: params.note });
 			// The move waits for this turn to end: stopping now lets it go at once.
 			return { ...result({ moving: true, computer, cwd: params.cwd ?? "its home folder",
 				next: "This conversation stops here now and continues there from your note. If the move fails, you are told here." }), terminate: true };
