@@ -11,7 +11,7 @@ import { retainDiagnostics } from "./diagnostic-retention.ts";
 import { Protocol } from "./protocol.ts";
 import { PROTOCOL_REFERENCE_VERSION, codexIdentity, type Client, type Identity } from "./identity.ts";
 import { codexVersion, latestCodexVersion, versionedUserAgent } from "./version.ts";
-import { prependCodexIntro } from "./prompt.ts";
+import { prependCodexInstructions } from "./prompt.ts";
 import { itemHistory, type Turn } from "./history.ts";
 import { gitWorkspaces } from "./workspace.ts";
 import type { Workspace } from "./protocol.ts";
@@ -21,7 +21,7 @@ import { ALLOWANCE_EVENT } from "./allowance.ts";
 import codexUsage from "./usage.ts";
 import limitWaits from "./limit-wait.ts";
 import { Catalog } from "./catalog.ts";
-import { shapeModelBody, responseNormalizer } from "./model-shape.ts";
+import { shapeModelBody, responseNormalizer, effectiveReasoningEffort } from "./model-shape.ts";
 import { readUserAgent, saveUserAgent, readClient, savedClient, saveClient, readPrewarm, savedPrewarm, savePrewarm,
   readFast, savedFast, saveFast, type FastMode } from "./settings.ts";
 import { registerRequiredWire, requireCodexWire } from "./required.ts";
@@ -335,7 +335,7 @@ export default function codexWire(pi: ExtensionAPI): void {
             ctx.ui.notify("Selected model is unlisted. Using native Codex fallback capabilities; the requested model is unchanged.", "warning");
           }
           const source = structuredClone(body);
-          source.instructions = prependCodexIntro(source.instructions, metadata);
+          prependCodexInstructions(source, metadata);
           // Pi's built-in low verbosity is a provider default, not a user choice.
           if (!(options && "textVerbosity" in options)) delete object(source.text).verbosity;
           // Desk uses detailed summaries; terminal Pi keeps its provider default.
@@ -350,7 +350,7 @@ export default function codexWire(pi: ExtensionAPI): void {
           if (requestTier && source.service_tier === undefined) source.service_tier = requestTier;
           const shapedItems = replayCheckpoints(shapeModelBody(source, metadata, currentProtocol.threadId, { history }), context,
             String(url));
-          currentProtocol.setRequest({ model: String(shapedItems.model), effort: object(shapedItems.reasoning).effort as string | undefined,
+          currentProtocol.setRequest({ model: String(shapedItems.model), effort: effectiveReasoningEffort(shapedItems),
             workspaces: side ? undefined : await workspacesFor(history.current) });
           fetchSignal.throwIfAborted();
           // Client metadata again, now that the turn, model, effort and workspace are known.
@@ -446,7 +446,7 @@ export default function codexWire(pi: ExtensionAPI): void {
           session.transport.close(); session.protocol.beginTurn(operation.reason); session.compactContext = operation.context;
         }
         const source = compactInput(model, operation.context, operation.thinking);
-        source.instructions = prependCodexIntro(source.instructions, metadata);
+        prependCodexInstructions(source, metadata);
         const tier = currentFast() === "ultrafast" ? "ultrafast" : "priority";
         if (fastMode !== "off" && operation.ctx.modelRegistry.isUsingOAuth(selected) && fastAvailable(metadata, model.id, tier)) {
           source.service_tier = tier;
@@ -455,7 +455,7 @@ export default function codexWire(pi: ExtensionAPI): void {
           source.reasoning = { ...object(source.reasoning), summary: metadata.default_reasoning_summary };
         }
         const compactHistory = itemHistory(operation.context.messages, owner);
-        session.protocol.setRequest({ model: model.id, effort: object(source.reasoning).effort as string | undefined });
+        session.protocol.setRequest({ model: model.id, effort: effectiveReasoningEffort(source) });
         const body = session.protocol.shapeBody(replayCheckpoints(shapeModelBody(compactBody(source), metadata, owner,
           { history: compactHistory }), operation.context, url));
         const outgoing = session.protocol.compactHeaders(headers, operation.reason);

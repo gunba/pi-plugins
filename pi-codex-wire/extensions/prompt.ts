@@ -20,3 +20,20 @@ export function prependCodexIntro(instructions: unknown, metadata: JsonObject): 
   if (text === intro || text.startsWith(`${intro}\n`)) return text;
   return text ? `${intro}\n\n${text}` : intro;
 }
+
+/** Fold Pi's leading inline prompt into Wire's base-instructions prefix. Mutates a caller-owned body;
+ * shapeModelBody moves these instructions into input, so they never become a top-level wire field. */
+export function prependCodexInstructions(body: JsonObject, metadata: JsonObject): void {
+  let instructions = body.instructions;
+  if (instructions == null && Array.isArray(body.input)) {
+    let index = 0;
+    while (object(body.input[index]).type === "additional_tools") index++;
+    const initial = object(body.input[index]);
+    if (initial.type === undefined && initial.id === undefined &&
+      (initial.role === "developer" || initial.role === "system") && typeof initial.content === "string") {
+      instructions = initial.content;
+      body.input.splice(index, 1);
+    }
+  }
+  body.instructions = prependCodexIntro(instructions, metadata);
+}

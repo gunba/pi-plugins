@@ -4,6 +4,16 @@ import { convertResponsesMessages, convertResponsesTools, createGrammarToolInput
 	getResponsesToolSupport, getSystemMessageText, normalizeContext, resolveTranscript, resolveTranscriptTools } from "./serializer.ts";
 import type { JsonObject } from "./diagnostics.ts";
 
+const legacySystemPromptOption = { includeSystemPrompt: false };
+let inlineCodexPrompt: boolean | undefined;
+
+function usesInlineCodexPrompt(model: Model<Api>): boolean {
+	// Pi 1.6 couples inline Codex prompts with configuration updates. Older converters honor this option;
+	// probing it keeps compaction aligned with the native provider without depending on package locations.
+	return inlineCodexPrompt ??= convertResponsesMessages(model, normalizeContext({ systemPrompt: "probe", messages: [] }),
+		new Set(["openai-codex"]), { ...legacySystemPromptOption, supportsMidConvoSystemMessages: false }).length > 0;
+}
+
 /**
  * The request Pi's openai-codex-responses provider builds for this context, before Wire shapes it: the same
  * instructions, tools and input items. A compaction request then continues the conversation's own requests. One
@@ -13,7 +23,7 @@ import type { JsonObject } from "./diagnostics.ts";
 export function compactInput(model: Model<Api>, context: Context, thinking: NonNullable<ExtensionContext["thinkingLevel"]>): JsonObject {
 	const supportsGrammar = model.compat && "supportsOpenAIGrammarTools" in model.compat
 		? model.compat.supportsOpenAIGrammarTools === true : false;
-	const compat = model.compat as { supportsAdditionalTools?: boolean; supportsToolSearch?: boolean; supportsMidConvoSystemMessages?: boolean; supportsStrictMode?: boolean } | undefined;
+	const compat = model.compat as { supportsAdditionalTools?: boolean; supportsToolSearch?: boolean; supportsMidConvoSystemMessages?: boolean; supportsMidConvoEffort?: boolean; supportsStrictMode?: boolean } | undefined;
 	// As Pi's openai-codex-responses provider places tools; Pi before 1.4.0 took a boolean here.
 	const support = { supportsMidConvoSystemMessages: compat?.supportsMidConvoSystemMessages ?? false,
 		supportsAdditionalTools: compat?.supportsAdditionalTools ?? false, supportsToolSearch: compat?.supportsToolSearch ?? false };
@@ -22,15 +32,20 @@ export function compactInput(model: Model<Api>, context: Context, thinking: NonN
 		?? (support.supportsAdditionalTools || support.supportsToolSearch) as unknown as Parameters<typeof resolveTranscriptTools>[1]);
 	const toolOptions = { strict: null, supportsStrictMode: compat?.supportsStrictMode ?? true, supportsOpenAIGrammarTools: supportsGrammar };
 	const level = clampThinkingLevel(model, thinking);
-	const effort = level === "off" ? undefined : (model.thinkingLevelMap?.[level] ?? level);
+	const inline = usesInlineCodexPrompt(model);
+	const offEffort = inline && model.reasoning ? (model.thinkingLevelMap?.off === undefined ? "none" : model.thinkingLevelMap.off) : undefined;
+	const nativeEffort = level === "off" ? offEffort : (model.thinkingLevelMap?.[level] ?? level);
+	const configurationUpdateEffort = inline && compat?.supportsMidConvoEffort ? nativeEffort ?? undefined : undefined;
+	const effort = configurationUpdateEffort === undefined ? nativeEffort : "medium";
 	const initial = getInitialSystemMessage(transcript.messages);
 	return {
-		model: model.id, instructions: initial ? getSystemMessageText(initial) : "", parallel_tool_calls: true,
+		model: model.id, ...(!inline ? { instructions: initial ? getSystemMessageText(initial) : "" } : {}), parallel_tool_calls: true,
 		input: convertResponsesMessages(model, transcript, new Set(["openai", "openai-codex", "opencode"]), {
-			includeSystemPrompt: false,
+			...(inline ? {} : legacySystemPromptOption),
 			grammarToolInputProperties: createGrammarToolInputProperties(getDeclaredTools(transcript.messages), supportsGrammar),
 			...support,
 			toolOptions,
+			configurationUpdateEffort,
 		}),
 		tools: convertResponsesTools(placement.requestTools, toolOptions),
 		...(effort !== undefined && effort !== null ? { reasoning: { effort } } : {}),

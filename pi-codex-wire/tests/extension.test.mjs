@@ -220,18 +220,45 @@ test("Desk sends the catalog's Codex introduction once and preserves Pi instruct
     return new Response('data: {"type":"response.completed","response":{"id":"intro","status":"completed","output":[]}}\n\n',
       { headers: { "content-type": "text/event-stream" } });
   };
-  for (const prompt of [piPrompt, intro + "\n\n" + piPrompt]) {
-    const result = await h.provider().streamSimple(model, { messages: [{ role: "system", content: prompt, timestamp: Date.now() }] },
+  for (const [prompt, additionalTools] of [[piPrompt, false], [intro + "\n\n" + piPrompt, true]]) {
+    const result = await h.provider().streamSimple({ ...model, compat: { supportsAdditionalTools: additionalTools } },
+      { messages: [{ role: "system", content: prompt, timestamp: Date.now() }],
+        tools: [{ name: "read", description: "Read", parameters: { type: "object", properties: {} } }] },
       { apiKey: jwt, reasoning: "medium", fetch: fetcher }).result();
     assert.equal(result.stopReason, "stop", result.errorMessage);
   }
   for (const body of sent) {
-    const message = body.input.find(item => item.type === "message" && item.role === "developer");
-    assert.equal(message.content[0].text, intro + "\n\n" + piPrompt);
+    const messages = body.input.filter(item => item.type === "message" && item.role === "developer");
+    assert.equal(messages.length, 1, "keep the initial prompt and introduction in one base item");
+    assert.equal(messages[0].content[0].text, intro + "\n\n" + piPrompt);
     assert.equal(body.reasoning.summary, "detailed");
     assert.equal(body.reasoning.effort, "medium");
     assert.equal(body.instructions, undefined, "Lite receives its prompt as a developer message");
   }
+});
+
+test("native turn metadata reports inline effort rather than the cache-stable default", async t => {
+  const h = harness(t);
+  let nativeBody, sent, metadata;
+  const result = await h.provider().streamSimple({ ...model,
+    thinkingLevelMap: { off: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh" },
+    compat: { supportsMidConvoEffort: true } },
+    { systemPrompt: "Fixture", messages: [{ role: "user", content: "Continue", timestamp: 1 }] }, {
+      apiKey: jwt, reasoning: "xhigh",
+      onPayload: body => { nativeBody = structuredClone(body); },
+      fetch: async (url, init) => {
+        if (String(url).includes("/models?")) return Response.json({ models: [{ slug: model.id, use_responses_lite: true }] });
+        sent = decode(init);
+        metadata = JSON.parse(new Headers(init.headers).get("x-codex-turn-metadata"));
+        return new Response('data: {"type":"response.completed","response":{"id":"effort","status":"completed","output":[]}}\n\n',
+          { headers: { "content-type": "text/event-stream" } });
+      },
+    }).result();
+  assert.equal(result.stopReason, "stop", result.errorMessage);
+  assert.equal(metadata.reasoning_effort, "xhigh");
+  assert.deepEqual(sent.input.filter(item => item.type === "configuration_update"),
+    nativeBody.input.filter(item => item.type === "configuration_update"));
+  assert.equal(sent.reasoning.effort, nativeBody.reasoning.effort);
 });
 
 test("failed manual reactivation remains fail-closed rather than restoring stock Codex", async t => {

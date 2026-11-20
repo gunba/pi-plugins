@@ -827,7 +827,7 @@ class WrappedSingleSelectList implements Component {
       let lines: string[];
       if (mdTheme) {
          const mdComponent = new Markdown(md.trim(), 0, 0, mdTheme);
-         lines = mdComponent.render(width);
+         lines = [...mdComponent.render(width)];
       } else {
          lines = [];
          for (const line of wrapTextWithAnsi(md.trim(), Math.max(10, width))) {

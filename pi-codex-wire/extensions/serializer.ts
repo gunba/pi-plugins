@@ -24,7 +24,6 @@ export const { getSystemMessageText } = loadNative("@earendil-works/pi-ai/utils/
 export function responseReplay(model: Model<Api>, context: TranscriptContext, message: AssistantMessage) {
 	return convertResponsesMessages(model, normalizeContext({ messages: [message] }),
 		new Set(["openai", "openai-codex", "opencode"]), {
-			includeSystemPrompt: false,
 			grammarToolInputProperties: createGrammarToolInputProperties(getDeclaredTools(context.messages),
 				model.compat && "supportsOpenAIGrammarTools" in model.compat ? model.compat.supportsOpenAIGrammarTools ?? false : false),
 		}).filter(item => item.type !== "function_call_output" && item.type !== "custom_tool_call_output");

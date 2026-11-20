@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {getEventListeners} from 'node:events';
-import {visibleWidth, getKeybindings} from '@earendil-works/pi-tui';
+import {visibleWidth, getKeybindings, Markdown} from '@earendil-works/pi-tui';
+import {initTheme} from '@earendil-works/pi-coding-agent';
 import extension from '../index.ts';
+initTheme('dark', false);
 const theme = {fg: (_color, text) => text, bg: (_color, text) => text, bold: text => text};
 function tool() {
  let tool;
@@ -43,15 +45,30 @@ test('RPC freeform prompt strips terminal controls and returns user response', a
  assert.deepEqual(result.details.response, {kind: 'freeform', text: 'yes'});
 });
 test('actual custom question component stays inside narrow viewports', async () => {
+ let component;
  await tool().execute('id', {question: 'Choose a 界 option', options: ['First', 'Second']}, undefined, undefined, {
   hasUI: true, mode: 'tui', ui: {onTerminalInput: () => () => {}, async custom(factory) {
-   const component = factory({terminal: {rows: 40}, requestRender() {}}, theme, getKeybindings(), () => {});
-   for (let width = 1; width <= 100; width++) {
-    for (const line of component.render(width)) assert.ok(visibleWidth(line) <= width, `width ${width}: ${line}`);
-   }
+   component = factory({terminal: {rows: 40}, requestRender() {}}, theme, getKeybindings(), () => {});
    return null;
   }}
  });
+ for (let width = 1; width <= 100; width++) {
+  for (const line of component.render(width)) assert.ok(visibleWidth(line) <= width, `width ${width}: ${line}`);
+ }
+});
+
+test('selection previews do not mutate borrowed Markdown render lines', async t => {
+ const borrowed = Object.freeze(['Fixture preview', '']);
+ t.mock.method(Markdown.prototype, 'render', () => borrowed);
+ let component;
+ await tool().execute('id', {question: 'Choose', options: ['First', 'Second']}, undefined, undefined, {
+  hasUI: true, mode: 'tui', ui: {onTerminalInput: () => () => {}, async custom(factory) {
+   component = factory({terminal: {rows: 40}, requestRender() {}}, theme, getKeybindings(), () => {});
+   return null;
+  }}
+ });
+ assert.match(component.render(160).join('\n'), /Fixture preview/);
+ assert.deepEqual(borrowed, ['Fixture preview', '']);
 });
 
 test('answered custom dialogs release abort listeners and timeouts', async t => {

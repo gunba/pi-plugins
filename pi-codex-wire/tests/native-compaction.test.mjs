@@ -45,7 +45,7 @@ function compactStream(items = [output[1]], usage) {
 	return sseResponse(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""));
 }
 
-async function harness(t, checkpoint, contextWindow, seeded = true) {
+async function harness(t, checkpoint, contextWindow, seeded = true, midConvoEffort = false) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-native-compact-"));
 	const priorEnv = { agent: process.env.PI_CODING_AGENT_DIR, offline: process.env.PI_OFFLINE, originator: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE };
 	process.env.PI_CODING_AGENT_DIR = directory; process.env.PI_OFFLINE = "1";
@@ -73,7 +73,7 @@ async function harness(t, checkpoint, contextWindow, seeded = true) {
 	} } }));
 	const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: contextWindow ? modelsPath : null, refreshOnCreate: false });
 	runtime.registerProvider("openai-codex", { name: "Fixture", apiKey: jwt, baseUrl: "https://chatgpt.com/backend-api", api: modelData.api,
-		streamSimple, models: [modelData] });
+		streamSimple, models: [midConvoEffort ? { ...modelData, compat: { supportsMidConvoEffort: true } } : modelData] });
 	let token = jwt;
 	const fixtureProvider = runtime.getProvider("openai-codex");
 	runtime.registerNativeProvider({ ...fixtureProvider, auth: { apiKey: {
@@ -155,9 +155,10 @@ test("a live session can continue immediately after native compaction without re
 		compacted.details[CHECKPOINT].output.filter(item => item.type === "compaction"));
 });
 
-test("a compaction request is the conversation's last request, its reply and a trigger; the checkpoint retains only the user messages before those Pi keeps", async t => {
-	const h = await harness(t, undefined, undefined, false);
-	for (const name of ["first", "second", "third"]) {
+for (const midConvoEffort of [false, true]) test(`a compaction request preserves the last request, reply and trigger (mid-conversation effort ${midConvoEffort})`, async t => {
+	const h = await harness(t, undefined, undefined, false, midConvoEffort);
+	for (const [name, effort] of [["first", "low"], ["second", "high"], ["third", "xhigh"]]) {
+		h.session.setThinkingLevel(effort);
 		await h.session.prompt(`${name} request ` + "u".repeat(1800), { expandPromptTemplates: false });
 		// Messages are placed by the millisecond they were written in.
 		await new Promise(resolve => setTimeout(resolve, 3));
@@ -169,7 +170,13 @@ test("a compaction request is the conversation's last request, its reply and a t
 	// A request that describes the prompt, the tools or an earlier item differently misses the prompt cache, and
 	// GPT-6.2 models discard the reasoning in it.
 	assert.deepEqual(sent.slice(0, last.length), last);
-	assert.deepEqual(sent.slice(last.length).map(item => item.role ?? item.type), ["assistant", "compaction_trigger"]);
+	const updates = last.filter(item => item.type === "configuration_update");
+	assert.deepEqual(sent.slice(last.length).map(item => item.role ?? item.type),
+		updates.length ? ["assistant", "configuration_update", "compaction_trigger"] : ["assistant", "compaction_trigger"]);
+	if (updates.length) {
+		assert.deepEqual(updates.map(item => item.reasoning.effort), ["low", "high", "xhigh"]);
+		assert.deepEqual(sent.at(-2), { type: "configuration_update", reasoning: { effort: "xhigh" } });
+	}
 	const text = item => item.content[0].text.split(" ")[0];
 	assert.deepEqual(compacted.details[CHECKPOINT].output.filter(item => item.role === "user").map(text), ["first", "second"]);
 	await h.session.prompt("fourth request", { expandPromptTemplates: false });

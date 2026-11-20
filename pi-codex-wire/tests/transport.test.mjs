@@ -870,10 +870,15 @@ for (const prewarm of [false, true]) for (const terminalOutput of ["full", "empt
   const metadata = { slug: model.id, use_responses_lite: true, support_verbosity: false };
   const messages = [{ role: "user", content: "Read a", timestamp: Date.now() }];
   const context = { systemPrompt: "Test", messages, tools: [{ name: "read", description: "Read", parameters: { type: "object", properties: { path: { type: "string" } } } }] };
+  let nativeMaxOutputTokens;
   async function call(requestId) {
     let outgoing;
-    const response = streamSimple(model, context, { apiKey: jwt, reasoning: "medium", transport: "sse",
-      onPayload: value => { outgoing = shapeModelBody(f.protocol.shapeBody(value), metadata, f.protocol.threadId); return value; },
+    const response = streamSimple(model, context, { apiKey: jwt, reasoning: "medium", maxTokens: 1024, transport: "sse",
+      onPayload: value => {
+        nativeMaxOutputTokens = value.max_output_tokens;
+        outgoing = shapeModelBody(f.protocol.shapeBody(value), metadata, f.protocol.threadId);
+        return value;
+      },
       fetch: async () => {
         const request = exchange(f, { body: outgoing, requestId, normalizeEvent: normalizeLiteEvent });
         request.headers.set("x-openai-internal-codex-responses-lite", "true");
@@ -897,8 +902,14 @@ for (const prewarm of [false, true]) for (const terminalOutput of ["full", "empt
   assert.equal(frames.at(-1).input[0].type, "function_call_output");
   assert.equal(frames.at(-1).client_metadata.ws_request_header_x_openai_internal_codex_responses_lite, "true");
   // Codex 0.164.0's field order: routing fields before the input.
-  assert.deepEqual(Object.keys(frames.at(-1)), ["type", "model", "stream", "previous_response_id", "input", "tool_choice",
-    "parallel_tool_calls", "reasoning", "store", "include", "prompt_cache_key", "client_metadata"]);
+  const keys = ["type", "model", "stream", "previous_response_id", "input", "tool_choice",
+    "parallel_tool_calls", "reasoning", "store", "include", "prompt_cache_key", "client_metadata"];
+  if (nativeMaxOutputTokens !== undefined) {
+    assert.equal(nativeMaxOutputTokens, 1024);
+    keys.push("max_output_tokens");
+  }
+  assert.equal(frames.at(-1).max_output_tokens, nativeMaxOutputTokens, "retain the native provider token cap");
+  assert.deepEqual(Object.keys(frames.at(-1)), keys);
   assert.equal(readFileSync(f.log, "utf8").includes("PRIVATE ENCRYPTED REASONING"), false);
 });
 

@@ -142,6 +142,16 @@ function liteInput(value: unknown): ObjectValue {
   return item;
 }
 
+/** The latest inline configuration overrides the request's cache-stable reasoning default. */
+export function effectiveReasoningEffort(body: ObjectValue): string | undefined {
+  const input = array(body.input ?? [], "input");
+  for (let index = input.length - 1; index >= 0; index--) {
+    const item = object(input[index], "input item");
+    if (item.type === "configuration_update") return object(item.reasoning, "reasoning").effort as string | undefined;
+  }
+  return object(body.reasoning ?? {}, "reasoning").effort as string | undefined;
+}
+
 /** Shape a Pi-serialized body using matching catalog or native fallback metadata.
  * Returns a deep clone and retains the requested model ID.
  * Pi's existing explicit effort/verbosity wins; catalog defaults fill absence.
