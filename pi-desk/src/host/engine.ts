@@ -61,7 +61,7 @@ import { trackServiceModels } from "../../../pi-service-usage/models.ts";
 import { SessionArchive, withPayload } from "../../../pi-session-memory/extensions/archive.ts";
 import { promptCommandName } from "../shared/prompt-commands.ts";
 import { installHome } from "./home-extension.ts";
-import { HOME_MODEL } from "../shared/home.ts";
+import { HOME_MODEL, HOME_THINKING } from "../shared/home.ts";
 import { entryCheckpoint, readableContextStart } from "../../../pi-codex-wire/extensions/checkpoint-state.ts";
 import { lazyMcpTransports } from "../../../pi-agents/lazy-mcp.ts";
 
@@ -293,7 +293,7 @@ export class DeskEngine {
 				throw Error("Home needs openai-codex/gpt-6.1-terra in this computer's model store and a usable Codex login.");
 			const result = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent,
 				...(model && services.modelRuntime.hasConfiguredAuth(model.provider) ? { model } : {}),
-				...(options.homeDirectory ? { thinkingLevel: "low" as const }
+				...(options.homeDirectory ? { thinkingLevel: HOME_THINKING }
 					: sessionManager.getBranch().some(entry => entry.type === "thinking_level_change") ? { thinkingLevel: saved.thinkingLevel as AgentSession["thinkingLevel"] } : {}),
 			});
 			// Batch Desk steering at the native boundary without rewriting terminal preferences.

@@ -8,6 +8,7 @@ import { entryCheckpoint } from "../../pi-codex-wire/extensions/checkpoint-state
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { DeskEngine } from "../src/host/engine.ts";
 import { NativeQueueGuard } from "../../pi-work-coordination/native-queue.ts";
+import { HOME_MODEL, HOME_THINKING } from "../src/shared/home.ts";
 
 const initial = { provider: "fixture", id: "initial" }, writing = { provider: "fixture", id: "writing" };
 
@@ -215,6 +216,32 @@ test("resuming a conversation without user messages keeps its saved model after 
 		assert.equal(resumed.snapshot().model.id, model, "the current default cannot replace a saved conversation model");
 	} finally {
 		await Promise.all([first.close(), other.close(), resumed.close()]);
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Home's conversation opens at Home's reasoning level, as when Jordan opens Home", async () => {
+	// Home's scheduled jobs on Sydney ran at low whenever a watch reopened Home's closed conversation, and its helpers
+	// with them, until Jordan next opened Home: opening Home set xhigh, but starting its conversation set low.
+	const root = mkdtempSync(join(tmpdir(), "desk-home-level-")), agent = join(root, "agent"), fetch = globalThis.fetch;
+	mkdirSync(agent);
+	writeFileSync(join(agent, "settings.json"), JSON.stringify({ defaultThinkingLevel: "medium" }));
+	writeFileSync(join(agent, "auth.json"), JSON.stringify({ "openai-codex": { type: "oauth", access: "fixture", refresh: "fixture", expires: Date.now() + 3_600_000, accountId: "fixture" } }));
+	writeFileSync(join(agent, "models-store.json"), JSON.stringify({ "openai-codex": { models: [{ id: HOME_MODEL.id, name: "Home model", api: "openai-codex-responses",
+		provider: HOME_MODEL.provider, baseUrl: "https://chatgpt.com/backend-api", reasoning: true, input: ["text"], cost: { input: 1, output: 5, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 400000, maxTokens: 128000, thinkingLevelMap: { off: "none", minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh" } }] } }));
+	globalThis.fetch = () => { throw Error("Home level fixture must stay offline"); };
+	const first = new DeskEngine(() => {}), reopened = new DeskEngine(() => {});
+	try {
+		await first.start({ cwd: root, agentDir: agent, sessionDir: join(root, "sessions"), homeDirectory: join(root, "home") });
+		assert.equal(first.snapshot().thinking, HOME_THINKING);
+		const file = first.snapshot().file;
+		first.runtime.session.setThinkingLevel("low");
+		await first.close();
+		await reopened.start({ cwd: root, agentDir: agent, sessionFile: file, homeDirectory: join(root, "home") });
+		assert.equal(reopened.snapshot().thinking, HOME_THINKING);
+	} finally {
+		await Promise.all([first.close(), reopened.close()]); globalThis.fetch = fetch;
 		rmSync(root, { recursive: true, force: true });
 	}
 });

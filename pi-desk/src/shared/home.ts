@@ -1,4 +1,6 @@
 export const HOME_MODEL = { provider: "openai-codex", id: "gpt-6.1-terra" } as const;
+/** Drawing well takes thought; Home's model is cheap enough to think hard every turn. Its helpers start at this level. */
+export const HOME_THINKING = "xhigh" as const;
 export const HOME_WORK = "home-work-v1";
 
 /** files: the names of files Jordan attached. */

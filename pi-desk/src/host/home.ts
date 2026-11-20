@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import type { InputSubmission } from "../shared/inputs.ts";
 import type { SessionView } from "../shared/protocol.ts";
-import { HOME_MODEL, type HomeSnapshot, type HomeWatch, type HomeWork, type HomeRun } from "../shared/home.ts";
+import { HOME_MODEL, HOME_THINKING, type HomeSnapshot, type HomeWatch, type HomeWork, type HomeRun } from "../shared/home.ts";
 import type { HostCore, ManagedSession } from "./host-core.ts";
 import { openQuestions } from "../shared/attention.ts";
 import { HomeStore } from "./home-store.ts";
@@ -86,8 +86,7 @@ export class Home {
 
 				await managed.worker!.command({ kind: "model", ...HOME_MODEL });
 			}
-			// Drawing well takes thought; Terra is cheap enough to think hard every turn.
-			if (snapshot?.thinking !== "xhigh") await managed.worker!.command({ kind: "thinking", level: "xhigh" });
+			if (snapshot?.thinking !== HOME_THINKING) await managed.worker!.command({ kind: "thinking", level: HOME_THINKING });
 			if (managed.view.name !== "Home") await managed.worker!.command({ kind: "name", name: "Home" });
 			return managed;
 		})().finally(() => { this.starting = undefined; });
