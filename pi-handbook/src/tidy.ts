@@ -144,6 +144,10 @@ export function tidyRequest(state: State, window: Window, cwd: string, now = Dat
 		...(active.length ? active.map(entry => describe(entry, cwd)) : ["(none)"]),
 		...(pending.length ? ["Waiting for review:", ...pending.map(entry => describe(entry, cwd) + " (noted " + shortDate(entry.addedAt) + ")")] : []),
 		"</handbook>",
+		...(active.length + pending.length > ENTRY_LIMIT ? ["The handbook is over its limit: " + active.length + " active and " + pending.length + " waiting, against at most " + ENTRY_LIMIT
+			+ ". This pass must leave at most " + ENTRY_LIMIT + " active. Merge entries on the same subject: replace them \"into\" the one that says it best, editing it to cover the others, or \"with\" a new learning, which keeps their sources. "
+			+ "Retire the least useful: work that is finished, entries that never came up, detail the code or documents keep. Turn down waiting entries that do not earn a place. "
+			+ "Rule 6's leave-alone does not apply to this. Pinned and protected entries stay."] : []),
 		"You may add at most " + addLimit(window.messages.length) + " new entr" + (addLimit(window.messages.length) === 1 ? "y" : "ies") + " in this pass.",
 		"<messages>",
 		...window.messages.flatMap(message => [message.ref + ", " + dateTime(message.at),
@@ -178,7 +182,8 @@ export function parseReply(text: string): Raw {
 	return value;
 }
 
-export interface Plan { ops: Op[]; refused: string[] }
+/** active: how many entries were active before the pass and will be after it. */
+export interface Plan { ops: Op[]; refused: string[]; active: { before: number; after: number } }
 
 /**
  * The operations a reply asks for, checked against the state and the messages read. New entries get placeholder
@@ -198,7 +203,8 @@ export function planReply(state: State, window: Window, reply: Raw, cwd: string,
 	const why = (entry: Entry) => entry.id + " is " + lock(entry);
 	let placeholder = 0;
 	const added: Draft[] = [];
-	const draft = (raw: Raw | undefined, where: string): Draft | undefined => {
+	// A learning that replaces others may rest on their sources instead of messages this pass read.
+	const draft = (raw: Raw | undefined, where: string, replaces: readonly Entry[] = []): Draft | undefined => {
 		if (!raw) return;
 		const holdsWhile = prose(raw.holds_while), pointsTo = strings(raw.points_to);
 		const extra = { ...(holdsWhile ? { holdsWhile } : {}), ...(pointsTo.length ? { pointsTo } : {}) };
@@ -214,6 +220,8 @@ export function planReply(state: State, window: Window, reply: Raw, cwd: string,
 		if (raw.kind === "learning") {
 			const text = prose(raw.text), sources = strings(raw.refs).flatMap(ref => refs.get(ref) ? [refs.get(ref)!] : []);
 			if (!text) { refused.push(where + ": a learning needs text"); return; }
+			if (!sources.length && replaces.length) return { kind: "learning", text, sources: [...new Set(replaces.flatMap(entry => entry.sources))],
+				sourceAt: Math.max(...replaces.map(entry => entry.sourceAt ?? entry.addedAt)), ...extra };
 			if (!sources.length) { refused.push(where + ": a learning needs the refs of the messages it rests on"); return; }
 			if (where.startsWith("add") && [...state.entries.values()].some(entry => live(entry) && normal(entry.text) === normal(text))) { refused.push(where + ": already in the handbook"); return; }
 			return { kind: "learning", text, sources: sources.map(message => message.id), sourceAt: Math.max(...sources.map(message => message.at)), ...extra };
@@ -265,7 +273,7 @@ export function planReply(state: State, window: Window, reply: Raw, cwd: string,
 	items(reply.replace).forEach((item, index) => {
 		const into = liveEntry(item.into), reason = prose(item.reason);
 		const old = strings(item.ids).flatMap(id => liveEntry(id) && id !== into?.id ? [liveEntry(id)!] : []);
-		const entry = into ? undefined : draft(record(item.with), "replace " + (index + 1));
+		const entry = into ? undefined : draft(record(item.with), "replace " + (index + 1), old);
 		if (!old.length || !into && !entry) return;
 		// A replacement with the same words is no change; what else differs is an edit.
 		const same = entry && old.length === 1 && old[0]!.kind === entry.kind
@@ -316,10 +324,17 @@ export function planReply(state: State, window: Window, reply: Raw, cwd: string,
 	// What the reply left unsettled. A waiting entry is admitted. A flag's replacement, which an older tidy-up proposed
 	// from the user's own message, takes effect. A learning the agent flagged keeps its text with the agent's correction
 	// added, so neither is lost. Any other flag is dropped and its entry kept.
+	// A waiting entry left out is admitted only while there is room: admitting by default kept one handbook at 137 entries.
 	const handled = new Set(ops.flatMap(op => op.op === "edit" || op.op === "end" || op.op === "unflag" || op.op === "admit" ? [op.id] : []));
+	const before = [...state.entries.values()].filter(entry => entry.status === "active").length;
+	let after = activeAfter(state, ops);
 	for (const entry of state.entries.values()) {
 		if (!live(entry) || handled.has(entry.id)) continue;
-		if (entry.status === "pending" && entry.addedAt <= asked) ops.push({ op: "admit", id: entry.id });
+		if (entry.status === "pending" && entry.addedAt <= asked) {
+			if (after < ENTRY_LIMIT) { ops.push({ op: "admit", id: entry.id }); after++; }
+			else ops.push({ op: "end", id: entry.id, status: "rejected", reason: "The handbook was at its limit of " + ENTRY_LIMIT + " entries and the tidy-up did not admit it." });
+			continue;
+		}
 		const flag = entry.flag;
 		if (!flag || flag.at > asked) continue;
 		if (flag.proposal && !entry.pinned)
@@ -330,7 +345,19 @@ export function planReply(state: State, window: Window, reply: Raw, cwd: string,
 	}
 	const unreviewed = [...state.entries.values()].filter(entry => live(entry) && !entry.reviewed).map(entry => entry.id);
 	if (unreviewed.length) ops.push({ op: "review", ids: unreviewed });
-	return { ops, refused };
+	return { ops, refused, active: { before, after } };
+}
+
+/** How many entries are active once ops are applied. */
+function activeAfter(state: State, ops: readonly Op[]): number {
+	const status = new Map([...state.entries.values()].map(entry => [entry.id, entry.status as string]));
+	for (const op of ops) {
+		if (op.op === "add") status.set(op.id, op.status);
+		// An edit admits a waiting entry, as an admit does.
+		else if ((op.op === "admit" || op.op === "edit") && status.get(op.id) === "pending") status.set(op.id, "active");
+		else if (op.op === "end") status.set(op.id, op.status);
+	}
+	return [...status.values()].filter(value => value === "active").length;
 }
 
 /**

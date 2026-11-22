@@ -9,7 +9,16 @@ import { isManagedChild } from "../../pi-work-coordination/index.ts";
 import { CHANGE_ENTRY, PUBLISHED_ENTRY, applyChange, emptyState, foldBranch, lastPublished, live, normal, quotes,
 	type Actor, type Change, type Draft, type Op, type State } from "../src/domain.ts";
 import { handbookReader } from "../src/peers.ts";
-import { SECTION_TAG, fullText, sectionText, viewData } from "../src/render.ts";
+import { ENTRY_LIMIT, SECTION_TAG, fullText, sectionText, viewData } from "../src/render.ts";
+
+/** Paths as given, and the items of a list an agent sent as one JSON text: '["a.ts", "b.ts"]' was saved as one path. */
+function pointerList(items: readonly string[]): string[] {
+	return items.flatMap(item => {
+		const text = item.trim();
+		if (text.startsWith("[")) try { const list = JSON.parse(text); if (Array.isArray(list)) return list.filter(value => typeof value === "string"); } catch { /* A path that starts with a bracket. */ }
+		return [text];
+	}).map(item => item.trim()).filter(Boolean).slice(0, 8);
+}
 import { TIDY_SYSTEM, WINDOW_CHARS, collectWindow, commitOps, parseReply, planReply, replyText, textOf, tidyRequest } from "../src/tidy.ts";
 
 /** Quiet time after the conversation settles before a tidy-up. */
@@ -195,11 +204,13 @@ class Handbook {
 		if (!force && (!ctx.isIdle() || ctx.hasPendingMessages() || Date.now() - this.failedAt < retryAfter)) return;
 		const model = ctx.model;
 		if (!model) { if (force) { this.error = "This conversation has no model to tidy up with."; this.refresh(); } return; }
+		// A handbook over its limit is brought under it at the next quiet moment, even with nothing new to read.
+		const over = [...this.state.entries.values()].filter(entry => entry.status === "active").length > ENTRY_LIMIT;
 		const last = this.state.passes.at(-1);
-		if (!force && last && Date.now() - last.at < PASS_EVERY_MS && !last.more) return;
+		if (!force && last && Date.now() - last.at < PASS_EVERY_MS && !last.more && !over) return;
 		const window = collectWindow(ctx.sessionManager.getBranch() as never, this.covered(), entry => this.full(entry as SessionEntry) as never);
 		const waiting = [...this.state.entries.values()].some(entry => live(entry) && (entry.status === "pending" || !entry.reviewed || !!entry.flag));
-		if (!window.messages.length && !waiting) { if (force) { this.error = "Nothing new to read since the last tidy-up."; this.refresh(); } return; }
+		if (!window.messages.length && !waiting && !over) { if (force) { this.error = "Nothing new to read since the last tidy-up."; this.refresh(); } return; }
 		const abort = this.abort = new AbortController();
 		this.running = "Reading " + window.messages.length + " message" + (window.messages.length === 1 ? "" : "s"); this.error = undefined;
 		this.refresh();
@@ -213,7 +224,9 @@ class Handbook {
 			const plan = planReply(this.state, window, parseReply(replyText(result)), ctx.cwd, asked);
 			this.queued = { epoch, ops: [...plan.ops, ...(window.through ? [{ op: "cover", through: window.through } as Op] : []),
 				{ op: "pass", model: result.provider + "/" + result.model, cost: result.usage?.cost?.total ?? 0, messages: window.messages.length,
-					...(window.more ? { more: true } : {}), ...(plan.refused.length ? { reason: refusals(plan.refused) } : {}) }] };
+					// Another pass follows while the handbook is still over its limit and this one brought it closer.
+					...(window.more || plan.active.after > ENTRY_LIMIT && plan.active.after < plan.active.before ? { more: true } : {}),
+					...(plan.refused.length ? { reason: refusals(plan.refused) } : {}) }] };
 			this.failedAt = 0; this.failures = 0;
 		} catch (error) {
 			if (epoch !== this.epoch || this.stopping || abort.signal.aborted) return;
@@ -263,7 +276,7 @@ class Handbook {
 			return "Flagged " + entry.id + ". The next tidy-up rewords or retires it; until then the handbook shows it with your reason.";
 		}
 		const extra = { ...(params.holds_while?.trim() ? { holdsWhile: params.holds_while.trim() } : {}),
-			...(params.points_to?.length ? { pointsTo: params.points_to.map(item => item.trim()).filter(Boolean).slice(0, 8) } : {}) };
+			...(params.points_to?.length ? { pointsTo: pointerList(params.points_to) } : {}) };
 		if (params.kind === "instruction") {
 			const quote = params.quote?.trim();
 			if (!quote) throw new Error("An instruction needs quote: the user's exact words.");
@@ -289,7 +302,9 @@ class Handbook {
 			const leaf = this.ctx!.sessionManager.getLeafId();
 			const entry: Draft = { kind: "learning", text, sources: leaf ? [leaf] : [], sourceAt: Date.now(), ...extra };
 			const [added] = this.write("agent", [{ op: "add", id: "+1", entry, status: "pending" }]).filter(op => op.op === "add");
-			return "Noted " + (added as { id: string }).id + " for the next tidy-up, which admits or turns it down.";
+			const full = [...state.entries.values()].filter(entry => entry.status === "active").length >= ENTRY_LIMIT;
+			return "Noted " + (added as { id: string }).id + " for the next tidy-up, which admits or turns it down." + (full
+				? " The handbook is at its limit of " + ENTRY_LIMIT + " entries, so a new one gets in only in place of a less useful one: note only what matters more." : "");
 		}
 		throw new Error("add needs kind: instruction or learning.");
 	}

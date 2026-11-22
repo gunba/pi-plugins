@@ -57,6 +57,10 @@ on; for a completed one, that the work since is in no plan. A paused or blocked
 plan is checked too, once the model is working again: it is told that the plan
 still takes edits, and that resuming an automatic plan sets it continuing by
 itself again.
+A message from the user or another agent is checked against the plan too: once
+the model has made 8 tool calls after it and the plan has not changed since,
+the next result asks it to add the work the message asked for, or to start a
+new plan for it when the old one is complete.
 A plan can complete with steps still open; they keep their recorded states.
 Finishing every step does not by itself prove the objective complete.
 `create_plan` while a plan is unfinished completes that plan, as it stands, and

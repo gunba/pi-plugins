@@ -7,6 +7,21 @@ import { currentSteps, stepSummary } from "./steps.ts";
  */
 export const PLAN_CHECK_EVERY = 25;
 
+/**
+ * The model's own tool calls after a message from the user or another agent before the plan is checked against it,
+ * unless the plan changes meanwhile. New work waited for the next check, up to PLAN_CHECK_EVERY calls: on 22 Nov 2026
+ * one conversation took on two other agents' requests and worked on them for 20 calls with a plan that listed neither.
+ */
+export const REQUEST_CHECK_AFTER = 8;
+
+/** The reminder after work has gone on past a new message while the plan stayed as it was. */
+export function renderRequestCheck(plan: PlanSnapshot, calls: number, from: string): string {
+	const short = (text: string) => JSON.stringify(text.length > 120 ? `${text.slice(0, 117)}…` : text);
+	if (plan.phase === "complete")
+		return `[Plan check] ${calls} tool calls since ${from} latest message, which came after the plan ${short(plan.objective)} was completed. If it asked for work with more than one step, create_plan for it now.`;
+	return `[Plan check] ${calls} tool calls since ${from} latest message, and the plan ${short(plan.objective)} has not changed since it came. If it asked for work the plan does not list, add that work as steps now with update_plan${plan.phase === "active" ? "" : ' (action "edit")'}, or create_plan if it is separate work with more than one step.`;
+}
+
 /** The reminder added to a tool result: where the plan stands, so the model can bring it up to date. */
 export function renderPlanCheck(plan: PlanSnapshot, calls: number): string {
 	const summary = stepSummary(plan.steps), short = (text: string) => JSON.stringify(text.length > 120 ? `${text.slice(0, 117)}…` : text);

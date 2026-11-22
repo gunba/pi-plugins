@@ -9,7 +9,7 @@ import { PlanStore, PlanStateError } from "../src/store.ts";
 import { DEFAULT_BLOCKED_AFTER_ROUNDS, DEFAULT_MAX_PLAN_ROUNDS, PLAN_CHANGE_ENTRY, PLAN_COMMAND_ENTRY, PLAN_ROUND_MESSAGE } from "../src/constants.ts";
 import { type PlanRef, type PlanRoundIdentity, type PlanView } from "../src/domain.ts";
 import { branchContainsRound, decodePlanRoundDetails } from "../src/replay.ts";
-import { PLAN_CHECK_EVERY, renderDroppedSteps, renderPlanCheck, renderPlanGuidance, renderPlanRoundPrompt, renderPlanWrapup, renderRefusedCalls, renderStepNotes } from "../src/prompt.ts";
+import { PLAN_CHECK_EVERY, REQUEST_CHECK_AFTER, renderDroppedSteps, renderPlanCheck, renderRequestCheck, renderPlanGuidance, renderPlanRoundPrompt, renderPlanWrapup, renderRefusedCalls, renderStepNotes } from "../src/prompt.ts";
 import { CreateParameters, UpdateParameters, definition, preparePlanArguments, type CreateParams, type UpdateParams } from "../src/tools.ts";
 import { planControls, planPresentation } from "../src/presentation.ts";
 import { STEP_STATUSES, currentSteps, stepSummary } from "../src/steps.ts";
@@ -24,6 +24,8 @@ const seenKey = (plan: { id: string; revision: number } | null | undefined) => p
 export const PLAN_READ = "pi-plan/read-v1";
 /** Calling either shows or changes the plan, so the count of calls without an update starts again. */
 const PLAN_TOOL_NAMES = new Set(["create_plan", "update_plan"]);
+/** pi-agents' messages from other agents (PARTY_MESSAGE), which ask for work as the user's do. */
+const AGENT_MESSAGE = "pi-party/message";
 /** Tools whose results showed the model the plan, including get_plan in earlier histories. */
 const PLAN_SHOWN_BY = new Set(["get_plan", "create_plan", "update_plan"]);
 
@@ -92,6 +94,8 @@ class PlanController {
 	private editing = 0;
 	/** The model's own tool calls since the active plan last changed, and which plan revision that was ("" when none is active). */
 	private sinceUpdate = 0;
+	/** The newest message from the user or another agent that the plan has not changed since, and the model's tool calls after it. */
+	private asked?: { from: string; calls: number; key: string };
 	/** The current steps' notes as the model was last shown them. */
 	private noted = "";
 	/** Unfinished steps the model's last update left out, to tell it about on its next result. */
@@ -311,7 +315,7 @@ class PlanController {
 		const restore = (ctx: ExtensionContext) => {
 			this.epoch++; this.ctx = ctx; this.remote = getPresentation(this.pi); this.stopping = false; this.signature = "";
 			this.source = this.work.source("plan"); this.attempt = undefined; this.wrapup = undefined; this.lastStop = undefined;
-			this.sinceUpdate = 0; this.seen = ""; this.noted = ""; this.modelSeen = lastShownPlan(ctx.sessionManager.getBranch());
+			this.sinceUpdate = 0; this.asked = undefined; this.seen = ""; this.noted = ""; this.modelSeen = lastShownPlan(ctx.sessionManager.getBranch());
 			this.store.restore(ctx.sessionManager.getBranch()); this.refreshUi();
 		};
 		this.pi.on("session_start", (_event, ctx) => restore(ctx));
@@ -331,6 +335,10 @@ class PlanController {
 			this.source?.dispose(); this.source = undefined;
 		});
 		this.pi.on("message_end", async (event, ctx) => {
+			if (event.message.role === "user" || event.message.role === "custom" && event.message.customType === AGENT_MESSAGE) {
+				this.asked = { from: event.message.role === "user" ? "the user's" : "another agent's", calls: 0, key: seenKey(this.current()) };
+				return;
+			}
 			if (event.message.role !== "custom" || event.message.customType !== PLAN_ROUND_MESSAGE) return;
 			const message = event.message;
 			// A round's prompt states the plan, as a check would.
@@ -363,6 +371,7 @@ class PlanController {
 			const plan = this.current(), key = plan ? `${plan.id}:${plan.revision}` : "";
 			// A plan changed some other way (Desk's plan controls, say) counts from that change; this call is the first since.
 			if (key !== this.seen) { this.seen = key; this.sinceUpdate = 0; }
+			if (this.asked && this.asked.key !== key) this.asked = undefined;
 			// A step's notes come up once, when the model reaches it: a plan tool's own result shows them, and from a
 			// program, the program's result does.
 			const notes = plan && key ? renderStepNotes(plan) : "", fresh = notes !== this.noted ? notes : "";
@@ -370,9 +379,14 @@ class PlanController {
 			const dropped = [this.refused.length ? renderRefusedCalls(this.refused) : "", this.dropped.length ? renderDroppedSteps(this.dropped) : ""].filter(Boolean).join("\n");
 			this.dropped = []; this.refused = [];
 			let text = dropped;
-			if (!plan || !key || PLAN_TOOL_NAMES.has(event.toolName)) this.sinceUpdate = 0;
-			// A check repeats the notes.
-			else text = [dropped, ++this.sinceUpdate % PLAN_CHECK_EVERY ? fresh : renderPlanCheck(plan, this.sinceUpdate)].filter(Boolean).join("\n");
+			if (!plan || !key || PLAN_TOOL_NAMES.has(event.toolName)) { this.sinceUpdate = 0; this.asked = undefined; }
+			else {
+				// The regular check repeats the notes. A message is checked once, or not at all if the regular check comes first.
+				const regular = !(++this.sinceUpdate % PLAN_CHECK_EVERY), asked = this.asked && ++this.asked.calls >= REQUEST_CHECK_AFTER ? this.asked : undefined;
+				if (regular || asked) this.asked = undefined;
+				text = [dropped, regular ? renderPlanCheck(plan, this.sinceUpdate) : asked ? renderRequestCheck(plan, asked.calls, asked.from) : "", regular ? "" : fresh]
+					.filter(Boolean).join("\n");
+			}
 			if (!text) return;
 			return { content: [...event.content, { type: "text" as const, text: `\n${text}` }],
 				// Replacing the content alone would drop a result's structured form.

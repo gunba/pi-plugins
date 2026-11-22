@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { applyChange, emptyState } from "../src/domain.ts";
 import { entryLine, ranked } from "../src/render.ts";
-import { commitOps, planReply } from "../src/tidy.ts";
+import { commitOps, planReply, tidyRequest } from "../src/tidy.ts";
 
 const noon = (day) => new Date(2026, 10, day, 12).getTime();
 const change = (state, at, actor, ops) => applyChange(state, { v: 1, at, actor, ops });
@@ -63,4 +63,23 @@ test("a pass settles every flag and waiting learning its reply leaves out", () =
 	assert.deepEqual(entry("i1"), { kind: "instruction", status: "active", text: "", quote: "Report in plain sentences.", flag: undefined, replacedBy: undefined });
 	assert.deepEqual(entry("i2"), { kind: "instruction", status: "replaced", text: "", quote: "Use three variants.", flag: undefined, replacedBy: "i3" });
 	assert.deepEqual(entry("i3"), { kind: "instruction", status: "active", text: "", quote: "One case only.", flag: undefined, replacedBy: undefined });
+});
+
+test("a handbook over its limit is brought under it: a merged learning keeps its sources, and a waiting one left out is turned down when there is no room", () => {
+	// Gunba WoW Addons had 137 active entries on 22 November 2026: its agent noted 10 to 22 a day, and every waiting entry
+	// a pass left out was admitted. A merged learning needed refs of messages the pass read, so passes with none could not merge.
+	const state = emptyState();
+	change(state, noon(9), "tidy", Array.from({ length: 62 }, (_, index) => ({ op: "add", id: "l" + (index + 1),
+		entry: { kind: "learning", text: "Fact " + (index + 1) + ".", sources: ["s" + (index + 1)], sourceAt: noon(9) }, status: "active" })));
+	change(state, noon(10), "agent", [{ op: "add", id: "l63", entry: learning("Another fact."), status: "pending" }]);
+	const window = { messages: [], more: false, chars: 0 };
+	assert.match(tidyRequest(state, window, "/", noon(11)), /over its limit: 62 active and 1 waiting, against at most 60\. This pass must leave at most 60 active\./);
+
+	const plan = planReply(state, window, { replace: [{ ids: ["l1", "l2", "l3"], with: { kind: "learning", text: "Facts 1 to 3." }, reason: "One subject" }] }, "/", noon(11));
+	assert.deepEqual(plan.refused, []);
+	assert.deepEqual(plan.active, { before: 62, after: 60 });
+	change(state, noon(11), "tidy", commitOps(state, plan.ops, "tidy"));
+	assert.deepEqual([...state.entries.values()].find(entry => entry.text === "Facts 1 to 3.").sources, ["s1", "s2", "s3"]);
+	assert.equal(state.entries.get("l63").status, "rejected");
+	assert.equal([...state.entries.values()].filter(entry => entry.status === "active").length, 60);
 });

@@ -35,6 +35,10 @@ the section the model last had until then.
   the agent's flags, merges and replaces entries, and labels each message (instruction, correction, repeat or
   other) for the chart. A backlog takes several passes in a row. A pass adds at most one new entry for every ten messages it reads, and never more
   than six, the most important first; replacing and merging entries don't count.
+  A handbook holds at most 60 active entries. Over that, the next quiet moment brings a pass even with nothing new to
+  read, told to merge and retire entries until it is under, and further passes follow while each brings it closer.
+  A learning that merges others keeps their sources. An agent noting a learning while the handbook is full is told
+  that it gets in only in place of a less useful one.
 - **The user**, in Desk's Handbook view: add an instruction, edit, pin or remove an entry, edit the purpose or
   restore an earlier one. Nothing in the handbook waits for the user: the view asks for no decisions.
 
@@ -47,7 +51,8 @@ The tidy-up returns changes to single entries as JSON, and code applies them aft
   and a learning is retired when the work it concerned is finished, each with the reason;
 - every pass settles each flagged entry and each learning waiting for it. The model rewords, replaces, retires or
   keeps a flagged entry and admits, rewords or turns down a waiting one; rewording an entry removes its flag and
-  admits it. Where the model's reply leaves one out, a waiting learning is admitted, a learning the agent flagged
+  admits it. Where the model's reply leaves one out, a waiting learning is admitted while there is room under the
+  limit and turned down when there is none, a learning the agent flagged
   has the agent's correction added to its text, and any other flag is dropped with the entry kept;
 - a change the checks refuse is listed with the pass in the change log;
 - a replaced or retired entry stays in the change log with the reason;

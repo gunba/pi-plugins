@@ -202,6 +202,32 @@ test("a plan untouched for 25 of the model's tool calls is recalled in the next 
 	await h.emit("session_shutdown");
 });
 
+test("work after a new message from the user or another agent is checked against a plan that has not changed since", async () => {
+	// One conversation took on two other agents' requests and worked on them for 20 calls with a plan that listed neither.
+	const h = createExtensionHarness(); await h.start();
+	await executeTool(h, "create_plan", { objective: "Ship the fix", steps: [{ content: "Write it", status: "in_progress" }, { content: "Release it", status: "pending" }] });
+	const call = async (extra = {}) => (await h.emit("tool_result", { toolName: "bash", toolCallId: `c${Math.random()}`, content: [{ type: "text", text: "ok" }], isError: false, ...extra }))
+		.find(result => result !== undefined);
+	await call();
+	await h.emit("message_end", { message: { role: "custom", customType: "pi-party/message", content: "Message from Builder\n\nAlso export the weights.", display: true, timestamp: Date.now() } });
+	for (let index = 1; index < 8; index++) assert.equal(await call(), undefined, `no reminder after ${index} calls`);
+	assert.equal(await call({ parentToolCallId: "script" }), undefined, "a script's own calls do not count");
+	assert.equal((await call()).content[1].text, '\n[Plan check] 8 tool calls since another agent\'s latest message, and the plan "Ship the fix" has not changed since it came. '
+		+ "If it asked for work the plan does not list, add that work as steps now with update_plan, or create_plan if it is separate work with more than one step.");
+	assert.equal(await call(), undefined, "a message is checked once");
+	// A plan changed after the message needs no check.
+	await h.emit("message_end", { message: { role: "user", content: "And add a changelog.", timestamp: Date.now() } });
+	await update(h, { action: "edit", steps: [{ content: "Write it", status: "in_progress" }, { content: "Changelog", status: "pending" }, { content: "Release it", status: "pending" }] });
+	await h.emit("tool_result", { toolName: "update_plan", toolCallId: "u", content: [], isError: false });
+	for (let index = 0; index < 12; index++) assert.equal(await call(), undefined);
+	// After a completed plan, a request with more than one step needs a new one.
+	await update(h, { action: "complete" });
+	await h.emit("message_end", { message: { role: "user", content: "Now port it to the other addon.", timestamp: Date.now() } });
+	for (let index = 1; index < 8; index++) assert.equal(await call(), undefined);
+	assert.equal((await call()).content[1].text, '\n[Plan check] 8 tool calls since the user\'s latest message, which came after the plan "Ship the fix" was completed. If it asked for work with more than one step, create_plan for it now.');
+	await h.emit("session_shutdown");
+});
+
 test("an update that leaves out unfinished steps says so in the next result, since steps replaces the whole list", async () => {
 	// An agent sent only its new steps from a program, twice; the plan lost five unfinished steps and nothing said so.
 	const h = createExtensionHarness(); await h.start();
