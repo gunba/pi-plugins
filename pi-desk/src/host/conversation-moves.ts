@@ -92,16 +92,22 @@ export class ConversationMoves {
 			await this.stop(managed, move).catch(error => console.error(`A moved conversation could not be stopped here: ${error instanceof Error ? error.message : String(error)}`));
 	}
 
-	/** Gives a conversation up for a move: stopped here, its file handed over. Refused while it is working or asking. */
+	/**
+	 * Gives a conversation up for a move: stopped here, its file handed over. Refused for Home, and while it is working or
+	 * asking. Its watches go on until the other computer has it (retire): a move that fails after this leaves it closed
+	 * here with its watches set, as "Close until needed" does.
+	 */
 	async release(session: string): Promise<{ file: string; cwd: string; title?: string }> {
 		const managed = this.conversation(session), file = managed && (managed.view.snapshot?.file ?? managed.view.file);
 		if (!managed || !file) throw new Error("That conversation is not on this computer.");
+		// Home's page, jobs and watches belong to the workspace server.
+		if (managed.view.home) throw new Error("Home stays on the workspace server. To work on another computer, send a message to a conversation there, or start one there.");
 		const busy = () => ["running", "waiting"].includes(managed.view.snapshot?.activity ?? "");
 		// An agent moving itself asked during its turn, which that call ends: give the turn time to finish.
 		for (let wait = 0; busy() && wait < 600 && this.host.moving(session); wait++) await new Promise(resolve => setTimeout(resolve, 100));
 		if (busy()) throw new Error("It is working on its computer: let it finish, or stop it, then move it.");
 		const title = managed.view.snapshot?.name ?? managed.view.name ?? managed.view.snapshot?.title ?? managed.view.title;
-		await this.stop(managed, undefined, false, MOVED);
+		await this.stop(managed, undefined, true);
 		return { file, cwd: managed.view.cwd, ...(title ? { title } : {}) };
 	}
 
