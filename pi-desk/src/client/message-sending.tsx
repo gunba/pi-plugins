@@ -8,33 +8,10 @@ import type { useConfirmation } from "./confirmation.tsx";
 import { api, ApiError } from "./connection.ts";
 import { deskCommand, type DeskCommandHandlers } from "./desk-commands.ts";
 import { withDictation } from "./dictation.tsx";
+import { arrived, newest, queuedCount, type Outgoing } from "./outgoing.ts";
 import { admittedInput, clearSubmission, createSubmission, readSubmission, submissionDecision, submissionFingerprint, submissionKey, submitWithReceipt, type SubmissionReceipt } from "./input-submission.ts";
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
-
-/**
- * A message on its way to Pi, shown at the end of the conversation from the moment it is sent until the conversation
- * shows it. Pi may change a message (a prompt template, an input handler), so arrival is counted, not matched: after
- * is the newest message in the conversation when it was sent, queued how many messages Pi's queue held, and ahead how
- * many sent earlier were still on their way.
- */
-export interface Outgoing { id: string; session: string; message: ChatMessage; draft: string; after: number; queued: number; ahead: number; receipt?: string }
-/** Messages sent into Pi's queue that are still waiting there, counted as sent though steering joins them into one. */
-const queuedCount = (session: SessionView | undefined) => {
-  const queue = session?.snapshot?.queue;
-  return (queue?.steering.sent ?? queue?.steering.count ?? 0) + (queue?.followUp.sent ?? queue?.followUp.count ?? 0);
-};
-const newest = (messages: readonly ChatMessage[]) => messages.reduce((order, message) => Math.max(order, message.order), -Infinity);
-/**
- * Whether the conversation now shows the message, or its pending-message card does: it failed or was cancelled, or it
- * waits for Pi to start, where the card offers to cancel it.
- */
-function arrived(item: Outgoing, session: SessionView | undefined, messages: readonly ChatMessage[]): boolean {
-  const input = item.receipt ? session?.inputs?.find(input => input.id === item.receipt) : undefined;
-  if (input && (!admittedInput(input) || input.state === "queued" && session?.state !== "ready")) return true;
-  const users = messages.filter(message => message.role === "user" && !message.notice && message.order > item.after).length;
-  return users + Math.max(0, queuedCount(session) - item.queued) > item.ahead;
-}
 
 function uploadedPrompt(text: string, files: DraftFile[], session: string): PromptCommand | undefined {
   if (files.some(file => file.uploaded?.session !== session)) return;
