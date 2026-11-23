@@ -15,7 +15,7 @@ for row in SUMMARY:
     if "missing-ids" in row["name"]:
         assert row.get("resume") == {"code": 0, "signal": None}, row
     assert (ROOT / (row["name"] + ".jsonl")).is_file(), row
-HARNESS = ("host_skills", "permissions", "collaboration_mode", "multi_agent", "environments")
+HARNESS = ("host_skills", "permissions", "collaboration_mode", "multi_agent", "environments", "tools.deferred_namespaces")
 IDENTITY = {"installation_id", "session_id", "thread_id", "turn_id", "window_id", "context_window_id", "root_turn_id", "turn_started_at_unix_ms"}
 UUID7 = re.compile(r"^(rs|fc|msg)_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
