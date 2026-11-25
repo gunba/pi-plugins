@@ -189,6 +189,31 @@ test("primary agent requests await the approval service and preserve denial as d
   await assert.rejects(readFile(join(h.root, "must-not-exist")), {code:"ENOENT"});
 });
 
+test("a primary agent start waits past the operation limit for Jordan's approval", async t => {
+  // Jordan approved after five minutes; the limit had already stopped the call as if it had hung.
+  let sessionId;
+  const h = await harness(t, pi => {
+    pi.on("session_start", (_event, ctx) => {
+      sessionId = ctx.sessionManager.getSessionId();
+      providePrimaryAgents(sessionId, { async start(request, _id, signal, context) {
+        if (!await context.ui.confirm("Start agent", request.task, { signal })) return {approved:false};
+        signal?.throwIfAborted();
+        return {agent:"Review"};
+      } });
+    });
+    pi.on("session_shutdown", () => providePrimaryAgents(sessionId, undefined));
+    for (const tool of createSubagentToolDefinitions({}, {getAuthority: () => ({sessionId})}, "root")) pi.registerTool(tool);
+  });
+  h.session.extensionRunner.setUIContext({ async confirm() {
+    t.mock.timers.tick(6 * 60_000);
+    await new Promise(resolve => setImmediate(resolve));
+    return true;
+  } }, "rpc");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const result = await h.run(`return await tools.agent_start({name:"Review",task:"Review changes",primary:true});`);
+  assert.deepEqual(data(result), {agent:"Review", id:"Review"});
+});
+
 test("a conversation handoff ends the request and agent turn before later side effects", async t => {
   const h = await harness(t, pi => pi.registerTool({name:"handoff",label:"Handoff",description:"Transfer the conversation",
     parameters:Type.Object({}), async execute() { return {content:[{type:"text",text:"Moved"}],details:{},terminate:true}; } }));

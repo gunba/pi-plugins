@@ -13,7 +13,7 @@ Lets a conversation start and talk to other agents.
 |---|---|
 | `agent_start` | Start an agent with a task. Secondary by default, with `context` `copy` (the conversation so far), `fresh`, or a number of recent turns. `wake: "all"` holds an idle parent's wake until the last such agent finishes. `primary: true` starts a conversation instead, with an optional `computer`, `cwd`, `model` and `reasoning`. |
 | `agent_send` | Message a primary agent by name, or a secondary agent by path. `wake` (default) starts an idle agent on the message, and reopens a closed primary one; `files` sends copies to a primary agent's computer. |
-| `agent_list` | This conversation's secondary agents, and primary agents and computers: `query` finds them by name, folder or description, `offline` adds closed ones. |
+| `agent_list` | This conversation's secondary agents, and primary agents and computers: `query` finds them by name, folder, description or computer name, `offline` adds closed ones. |
 | `agent_resume` | Reopen a closed conversation on any computer without sending it anything. |
 | `agent_stop` | Interrupt a secondary agent's turn (it keeps its work), or close a primary agent this conversation started. `keep: true` closes it as Desk's "Close until needed" does: it stays in the sidebar and its watches go on, reopening it. `keep: false` removes it from the sidebar and ends its watches. Omitted, it is kept when it has watches. |
 | `agent_move` | Move this conversation to another computer when the user asks: it continues there from its note, with its history. Loaded with `tool_search`. |

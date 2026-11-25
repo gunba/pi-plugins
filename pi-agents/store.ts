@@ -530,10 +530,11 @@ export class PartyStore {
 		this.owned(session, owner);
 		this.db.prepare("UPDATE members SET description=? WHERE session=? AND owner=?").run(description, session, owner);
 	}
+	/** Agents whose name, folder, description or computer's name holds query, in any case. */
 	discover(query = "", includeOffline = false, offset = 0): { agents: Member[]; nextOffset?: number } {
-		const rows = this.db.prepare(`SELECT * FROM party_agents
-			WHERE (?1 OR heartbeat>?2) AND instr(lower(label || ' ' || cwd || ' ' || description),lower(?3))>0
-			ORDER BY heartbeat>?2 DESC, seen DESC, session LIMIT 51 OFFSET ?4`).all(includeOffline ? 1 : 0, this.now() - LEASE_MS, query, offset) as unknown as Member[];
+		const rows = this.db.prepare(`SELECT a.* FROM party_agents a LEFT JOIN network_computers c ON c.computer=a.computer
+			WHERE (?1 OR a.heartbeat>?2) AND instr(lower(a.label || ' ' || a.cwd || ' ' || a.description || ' ' || COALESCE(c.name, IIF(a.computer IS NULL, ?5, ''))),lower(?3))>0
+			ORDER BY a.heartbeat>?2 DESC, a.seen DESC, a.session LIMIT 51 OFFSET ?4`).all(includeOffline ? 1 : 0, this.now() - LEASE_MS, query, offset, hostname()) as unknown as Member[];
 		return { agents: rows.slice(0, 50), ...(rows.length > 50 ? { nextOffset: offset + 50 } : {}) };
 	}
 	touch(session: string, owner: string, state: string, label?: string): void {

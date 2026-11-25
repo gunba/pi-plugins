@@ -216,10 +216,11 @@ async function readWhole(ctx: ExtensionToolContext, params: unknown, options: Pa
 
 /**
  * How long one operation in a program may run. A stalled connector, page or service call would otherwise hold the whole
- * turn until the user stopped it. Commands have their own wait, and these can wait for the user's approval or answer.
+ * turn until the user stopped it. Commands have their own wait, and these can wait for the user's approval or answer;
+ * a request agent_start sends after approval expires by itself (pi-agents/operations.ts).
  */
 const CALL_LIMIT_MS = 5 * 60_000;
-const UNLIMITED = new Set(["bash", "powershell", "watch", "ask_user"]);
+const UNLIMITED = new Set(["bash", "powershell", "watch", "ask_user", "agent_start"]);
 /** After the limit, how long a stopped call gets to settle and report itself before the program moves on without it. */
 const STOP_GRACE_MS = 5_000;
 

@@ -42,7 +42,7 @@ const sendParameters = Type.Object({
 }, { additionalProperties: false });
 
 const listParameters = Type.Object({
-	query: Type.Optional(Type.String({ description: "Filter primary agents." })),
+	query: Type.Optional(Type.String({ description: "Filter primary agents by name, folder, description or computer." })),
 	offline: Type.Optional(Type.Boolean({ description: "Include stopped primary agents." })),
 	offset: Type.Optional(Type.Integer({ minimum: 0 })),
 }, { additionalProperties: false });

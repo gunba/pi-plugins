@@ -38,9 +38,9 @@ An operation with no result after 5 minutes is stopped and returns `{error}`, so
 stalled connector, page or service call doesn't hold the turn until the user stops
 it; the program carries on. A call that ignores the stop gets 5 more seconds to
 report itself before the program moves on without it. Commands (`bash`,
-`powershell`), `watch` and `ask_user` are exempt: commands have their own wait, and
-these can wait for the user's approval or answer. The program's own `timeout_ms`
-still applies.
+`powershell`), `watch`, `ask_user` and `agent_start` are exempt: commands have their
+own wait, and these can wait for the user's approval or answer (a start request sent
+after approval expires by itself). The program's own `timeout_ms` still applies.
 
 Return an object or array containing only needed fields. Only explicit script output
 reaches the model. The adapter removes the script status/time header and decodes a

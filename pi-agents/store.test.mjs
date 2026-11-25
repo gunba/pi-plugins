@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { spawn } from "node:child_process";
@@ -229,6 +229,18 @@ test("another computer's directory may list a conversation Desk is restarting", 
 	const computer = randomUUID();
 	a.cacheDirectory(computer, [restarting]);
 	assert.deepEqual(a.computers().map(known => [known.id, known.state]), [[computer, "connected"]]);
+});
+
+test("discovery finds agents by their computer's name", t => {
+	// Searching for the work laptop's name found none of its conversations.
+	const { a, b } = fixture(t), local = randomUUID(), remote = randomUUID(), laptop = randomUUID();
+	a.register(local, "owner", "Here", "/repo");
+	b.register(remote, "owner", "There", "C:/Users/Jordan");
+	a.cacheDirectory(laptop, b.networkDirectory().filter(peer => peer.session === remote));
+	a.setComputerOperations(laptop, [], "GVTG2L4", "win32");
+	assert.deepEqual(a.discover("gvtg2l4").agents.map(agent => agent.session), [agentId(laptop, remote)]);
+	// The stores share one database, so both conversations are this computer's.
+	assert.deepEqual(a.discover(hostname()).agents.map(agent => agent.session).sort(), [local, remote].sort());
 });
 
 test("network discovery lists running agents and recently closed conversations that can be reopened", t => {
