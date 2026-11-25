@@ -14,6 +14,7 @@ import { SurfaceFrame } from "./surfaces.tsx";
 import { acquireAsset, api } from "./connection.ts";
 import { ReferenceContext, useReferenceQuery } from "./reference-origin.tsx";
 import { Icon } from "./icons.tsx";
+import { Disclosure } from "./disclosure.tsx";
 import { dragPaneWidth } from "./pane-width.ts";
 import { BriefView, type Brief } from "./brief.tsx";
 import { markdownPlugins } from "./markdown-links.ts";
@@ -170,6 +171,17 @@ export function WorkChip({ item, status }: { item: WorkItem; status?: ReactNode 
 		<span className="tool-argument-preview"><span className="work-chip-name">{itemTitle(item)}</span>{itemPreview(item) && <> · {itemPreview(item)}</>}</span>
 		{item.block.type === "diff" && itemFacts(item)}{status}<span className="work-chip-open" aria-hidden="true">›</span>
 	</button>;
+}
+/** Files one call changed, when there are several: one row naming them, which opens to a row for each. */
+export function ChangeGroup({ id, items, status }: { id: string; items: WorkItem[]; status?: ReactNode }) {
+	const kinds = new Set(items.map(itemKind)), kind = kinds.size === 1 ? [...kinds][0]! : "Changed";
+	const totals = items.reduce((sum, item) => item.block.type === "diff" ? { added: sum.added + diffStats(item.block).added, removed: sum.removed + diffStats(item.block).removed } : sum, { added: 0, removed: 0 });
+	return <Disclosure id={id} className="tool-card tool-pill change-group" summary={<>
+		<span className="tool-icon"><Icon name={kind === "New" ? "plus" : kind === "Deleted" ? "trash" : "edit"} /></span><strong>{kind}</strong>
+		<span className="tool-argument-preview"><span className="work-chip-name">{items.length} files</span> · {items.slice(0, 3).map(itemTitle).join(", ")}{items.length > 3 ? ", …" : ""}</span>
+		<Stats added={totals.added} removed={totals.removed} />{status}</>}>
+		<div className="change-group-items">{items.map(item => <WorkChip key={item.id} item={item} />)}</div>
+	</Disclosure>;
 }
 const itemIcon = (item: WorkItem) => item.block.type === "brief" ? "info" : item.block.type === "image" ? "preview" : item.block.type === "document" ? "layers"
 	: item.block.type === "diff" && item.block.action === "deleted" ? "trash" : item.block.type === "diff" && item.block.action === "added" ? "plus" : "edit";

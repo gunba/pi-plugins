@@ -385,8 +385,8 @@ test("a program is told which of its bash calls are still running in the backgro
         structuredContent: { output: running ? "" : "ok", exit_code: running ? null : 0, ...(running ? { running: "w7" } : {}) } };
     } }));
   const result = await h.run(`
-    const fast = await tools.bash({command: "echo ok"});
-    const slow = await tools.bash({command: "slow-search --everything\\nsecond line", wait: 20});
+    const fast = await tools.bash({command: "echo ok", description: "Print ok"});
+    const slow = await tools.bash({command: "slow-search --everything\\nsecond line", wait: 20, description: "Search everything"});
     return fast.output + slow.output;`);
   assert.deepEqual(result.content.map(part => part.text), ["ok",
     "Still running in the background after its wait, so the program had only its output so far: w7 (`slow-search --everything`). Each wakes you with its result when it ends."]);
@@ -396,7 +396,19 @@ test("a program that ends normally lists the operations that failed", async t =>
   // A program ignored an {error} result and the agent saw only "Script completed".
   const h = await harness(t);
   const result = await h.run(`
-    await tools.edit({path: "missing.txt", edits: [{oldText: "a", newText: "b"}]});
+    await tools.edit({path: "missing.txt", edits: [{oldText: "a", newText: "b"}], description: "Change a to b"});
     return "done";`);
   assert.deepEqual(result.content.map(part => part.text), ["done", "1 operation failed: edit: Could not edit file: missing.txt. Error code: ENOENT."]);
+});
+
+test("a program is told which operations it left without a description Jordan can read", async t => {
+  // A long conversation drifted to descriptions of one letter or none, which told Jordan nothing.
+  const h = await harness(t);
+  const result = await h.run(`
+    await tools.write({path: "a.txt", content: "a", description: "w"});
+    await tools.read({path: "a.txt"});
+    await tools.read({path: "a.txt", description: "Read the file back"});
+    return "done";`);
+  assert.deepEqual(result.content.map(part => part.text), ["done",
+    '2 operations had no description or a one-word one: write "w", read (none). Jordan follows your work by these: give each operation a short sentence on what it does.']);
 });

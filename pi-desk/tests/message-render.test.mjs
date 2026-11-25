@@ -120,6 +120,18 @@ test("thinking without readable content explains the empty panel", () => {
 	assert.doesNotMatch(html, /No readable|Waiting for/);
 });
 
+test("three or more files changed by one call are one row that opens to each", () => {
+	// A call that wrote a folder showed a row for every file, which buried the conversation.
+	const added = name => ({ type: "diff", path: `/skill/${name}`, action: "added", text: "+1 line", added: 1, removed: 0 });
+	const result = { ...message("result", "tool", [added("SKILL.md"), added("a.md"), added("b.md"), added("c.md")]), toolName: "bash", toolCallId: "call", tool: { state: "done" } };
+	const closed = render({ message: result });
+	assert.match(closed, /<strong>New<\/strong>.*4 files<\/span> · SKILL\.md, a\.md, b\.md, …/s);
+	assert.equal((closed.match(/work-chip-name">(SKILL|a|b|c)\.md/g) ?? []).length, 0);
+	assert.equal((render({ message: result }, new Map([["changes:result", true]])).match(/class="tool-card work-chip/g) ?? []).length, 4);
+	result.blocks = result.blocks.slice(0, 2);
+	assert.equal((render({ message: result }).match(/class="tool-card work-chip/g) ?? []).length, 2);
+});
+
 test("skill reads are visible without expanding tools, including nested calls", () => {
 	const call = { type: "toolCall", id: "read-skill", name: "read", arguments: JSON.stringify({ path: "/skills/browse/SKILL.md" }) };
 	const owner = message("assistant", "assistant", [call]);

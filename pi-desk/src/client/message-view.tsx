@@ -1,5 +1,5 @@
 import { HOUR_MINUTE, localDate, localDateTime, localTime } from "./local-format.ts";
-import { createContext, memo, useContext, useMemo, useState, type CSSProperties } from "react";
+import { createContext, memo, useContext, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
 import type { ChatBlock, ChatMessage, NestedCall } from "../shared/protocol.ts";
 import { FileLink } from "./file-view.tsx";
@@ -7,7 +7,7 @@ import { ReferenceContext, useReferenceQuery } from "./reference-origin.tsx";
 import { acquireAsset } from "./connection.ts";
 import { AssetImage, AssetLink } from "./assets.tsx";
 import { ArtifactLink } from "./artifact-view.tsx";
-import { ShownSummary, WorkChip, diffStats, type WorkItem } from "./change-view.tsx";
+import { ChangeGroup, ShownSummary, WorkChip, diffStats, type WorkItem } from "./change-view.tsx";
 import { CodeBlock, Elapsed, LiveOutput } from "./transcript-parts.tsx";
 import { LedgerCard } from "./ledger-card.tsx";
 import { Icon } from "./icons.tsx";
@@ -180,11 +180,13 @@ function ToolPill({ owner, call, result, sessionKey, source }: {
 			{call.truncated && !call.full && <p className="muted">Preview only. Complete arguments exceed the viewer's asset limit.</p>}
 		</Disclosure>}
 	</Disclosure>;
+	// A call that wrote a folder of files showed a row for each, which buried the conversation: three or more are one row.
+	const changeRows = (status?: ReactNode) => items.length > 2 ? <ChangeGroup id={`changes:${result!.id}`} items={items} status={status} />
+		: <div className="tool-changes">{items.map((item, index) => <WorkChip key={item.id} item={item} status={index === items.length - 1 ? status : undefined} />)}</div>;
 	// A file edit's result is its change: one row that opens it. Other tools keep their own row too.
-	if (items.length && !result?.isError && ["edit", "write", "apply_patch"].includes(name))
-		return <div className="tool-changes">{items.map((item, index) => <WorkChip key={item.id} item={item} status={index === items.length - 1 ? <ToolStatus message={result} /> : undefined} />)}</div>;
+	if (items.length && !result?.isError && ["edit", "write", "apply_patch"].includes(name)) return changeRows(<ToolStatus message={result} />);
 	const nested = result?.nested?.calls.length ? <NestedCalls id={call?.id ?? result!.toolCallId ?? result!.id} nested={result.nested} /> : null;
-	return items.length || nested ? <>{pill}{nested}{items.length > 0 && <div className="tool-changes">{items.map(item => <WorkChip key={item.id} item={item} />)}</div>}</> : pill;
+	return items.length || nested ? <>{pill}{nested}{items.length > 0 && changeRows()}</> : pill;
 }
 type TextBlock = Extract<ChatBlock, { type: "text" | "thinking" }>;
 /**

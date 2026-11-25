@@ -249,11 +249,14 @@ async function limited(name: string, options: ExecuteToolOptions | undefined, ca
  * All nested operations still pass through Pi's validation, guards, approvals and Desk events. `background` hears of
  * each bash call still running when its wait ended, which returned only the output so far.
  */
-function context(ctx: ExtensionToolContext, terminate: () => void, background: (call: { watch: string; command: string }) => void): ExtensionToolContext {
+function context(ctx: ExtensionToolContext, terminate: () => void, background: (call: { watch: string; command: string }) => void,
+  terse: (call: { name: string; description: string }) => void): ExtensionToolContext {
   return Object.create(ctx, {
     tools: { value: ctx.tools.map(scriptTool) },
     executeTool: { value: async (...args: Parameters<ExtensionToolContext["executeTool"]>) => {
       const [name, params] = args;
+      const said = (params as { description?: unknown } | undefined)?.description, description = typeof said === "string" ? said.trim() : "";
+      if (description.split(/\s+/).length < 2) terse({ name, description });
       const call = (options?: ExecuteToolOptions) => name === "read" ? readWhole(ctx, params, options) : ctx.executeTool(name, params, options);
       const outcome = UNLIMITED.has(name) ? await call(args[2]) : await limited(name, args[2], call);
       if (outcome.result.terminate) terminate();
@@ -273,11 +276,16 @@ function context(ctx: ExtensionToolContext, terminate: () => void, background: (
 /** Single model-facing tool; active underlying operations stay active for permissions and transcript replay. */
 export function createStructuredToolExtension(): ExtensionFactory {
   return pi => intercept(pi, createCodemodeExtension({ mode: "only" }), definition => {
-    /** Runs a program: its data, native diagnostics and attachments, and a note naming the operations that failed. */
-    const run = async (id: string, code: string, signal: AbortSignal | undefined, update: Parameters<typeof definition.execute>[3], ctx: ExtensionToolContext) => {
+    /**
+     * Runs a program: its data, native diagnostics and attachments, and notes naming the operations that failed and, in
+     * the agent's turn, those it left without a description Jordan can read.
+     */
+    const run = async (id: string, code: string, signal: AbortSignal | undefined, update: Parameters<typeof definition.execute>[3], ctx: ExtensionToolContext, watched = false) => {
       let terminate = false;
       const saved = visibleSaved(ctx.cwd, ctx.sessionManager.getBranch(), new Set(ctx.tools.map(tool => tool.name))), running: { watch: string; command: string }[] = [];
-      const result = await definition.execute(id, { code: script(code, saved) }, signal, update, context(ctx, () => { terminate = true; }, call => running.push(call)));
+      const terse: { name: string; description: string }[] = [];
+      const result = await definition.execute(id, { code: script(code, saved) }, signal, update,
+        context(ctx, () => { terminate = true; }, call => running.push(call), call => terse.push(call)));
       // Keep native failure diagnostics, image attachments, spill paths and nested-call metadata.
       const content = result.content.slice(1);
       const value = content.length === 1 && content[0]?.type === "text" ? content[0].text : undefined;
@@ -293,14 +301,18 @@ export function createStructuredToolExtension(): ExtensionFactory {
       // computer, agents took that for a bash call that returned nothing.
       const still = running.length ? [{ type: "text" as const, text: `Still running in the background after its wait, so the program had only its output so far: ${running.slice(0, 5)
         .map(call => `${call.watch} (\`${call.command.split("\n")[0]!.slice(0, 80)}\`)`).join(", ")}${running.length > 5 ? ", …" : ""}. Each wakes you with its result when it ends.` }] : [];
-      return { ...result, content: [...content, ...note, ...still], structuredContent: data, ...(terminate ? { terminate: true } : {}) };
+      // Jordan follows a turn by its operations' descriptions. A long conversation drifted to one letter or none
+      // ("v", "w"), each call copying the last, until the descriptions said nothing.
+      const vague = watched || !terse.length ? [] : [{ type: "text" as const, text: `${terse.length} operation${terse.length === 1 ? "" : "s"} had no description or a one-word one: ${terse.slice(0, 5)
+        .map(call => `${call.name} ${call.description ? JSON.stringify(call.description.slice(0, 40)) : "(none)"}`).join(", ")}${terse.length > 5 ? ", …" : ""}. Jordan follows your work by these: give each operation a short sentence on what it does.` }];
+      return { ...result, content: [...content, ...note, ...still, ...vague], structuredContent: data, ...(terminate ? { terminate: true } : {}) };
     };
     // pi-watch's program watches run programs between turns, with the context of the agent's latest call.
     let runs = 0;
     pi.events.on(RUN_PROGRAM, request => {
       const { ctx, code, signal, claim, done } = request as ProgramRun;
       claim();
-      run(`program-watch-${++runs}`, code, signal, undefined, ctx).then(result => {
+      run(`program-watch-${++runs}`, code, signal, undefined, ctx, true).then(result => {
         const text = result.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
         done(result.isError ? `(failed: ${text})` : typeof result.structuredContent === "string" ? result.structuredContent : text);
       }, error => done(`(failed: ${error instanceof Error ? error.message : String(error)})`));

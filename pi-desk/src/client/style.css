@@ -2301,6 +2301,8 @@ details[open] > summary:before {
 .work-chip:hover { border-color:var(--focus-border); background:var(--hover); }
 .work-chip > strong { flex:none; font-weight:500; }
 .work-chip-name { color:var(--text); }
+.change-group > summary .change-stats { margin-left:auto; }
+.change-group-items { display:grid; gap:6px; padding:0 10px 10px; }
 .work-chip .tool-icon { display:inline-flex; flex:none; }
 .work-chip .tool-icon .ui-icon { width:14px; height:14px; }
 .shown-open { border:1px solid var(--border); border-radius:9px; background:var(--surface); }
