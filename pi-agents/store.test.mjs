@@ -203,7 +203,8 @@ test("discovery registers ungrouped agents, searches metadata, and excludes expi
 	assert.equal(a.member("a").room, "");
 	assert.deepEqual(a.discover("websocket").agents.map(x => x.session), ["b"]);
 	assert.deepEqual(a.discover("C:/repo").agents.map(x => x.session), ["a", "b"]);
-	assert.equal(a.discover("b").agents[0].kind, "child");
+	// The search also reads this computer's name, which could hold any short query.
+	assert.equal(a.discover("C:/repo/tests").agents[0].kind, "child");
 	advance(LEASE_MS + 1);
 	a.touch("a", "a", "working");
 	assert.deepEqual(a.discover().agents.map(x => x.session), ["a"]);
