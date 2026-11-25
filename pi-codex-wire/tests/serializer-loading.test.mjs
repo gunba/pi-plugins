@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import * as nativeResponses from "@earendil-works/pi-ai/api/openai-responses-shared";
 
 test("native serializers use the host SDK when extension peers are absent", t => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-wire-host-sdk-"));
@@ -26,7 +27,8 @@ test("native serializers use the host SDK when extension peers are absent", t =>
 	const entry = join(host, "probe.mjs");
 	writeFileSync(entry, `import assert from "node:assert/strict";
 import * as serializer from "../source/serializer.ts";
-for (const value of Object.values(serializer)) assert.equal(typeof value, "function");
+for (const [name, value] of Object.entries(serializer)) assert.equal(typeof value,
+  name === "prepareResponsesPrompt" ? ${JSON.stringify(typeof nativeResponses.prepareResponsesPrompt)} : "function");
 console.log("host serializers loaded");`);
 	const launcher = join(directory, "launcher.mjs");
 	symlinkSync(entry, launcher, "file");
@@ -111,7 +113,8 @@ return { types: Object.fromEntries(Object.entries(serializer).map(([name, value]
 		assert.deepEqual(result, { types: { convertResponsesMessages: "function", convertResponsesTools: "function",
 			createGrammarToolInputProperties: "function", normalizeContext: "function", getDeclaredTools: "function",
 			getInitialSystemMessage: "function", getSystemMessageText: "function", resolveTranscript: "function",
-			resolveTranscriptTools: "function", responseReplay: "function", getResponsesToolSupport: "function" }, result: "OK" });
+			resolveTranscriptTools: "function", responseReplay: "function", getResponsesToolSupport: "function",
+			prepareResponsesPrompt: typeof nativeResponses.prepareResponsesPrompt }, result: "OK" });
 		assert.equal(cached.convertResponsesTools, undefined, "the old cached module was not modified or patched");
 	}
 });

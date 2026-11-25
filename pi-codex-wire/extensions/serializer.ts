@@ -12,6 +12,15 @@ export const { convertResponsesMessages, convertResponsesTools, getResponsesTool
 ) as Omit<typeof import("@earendil-works/pi-ai/api/openai-responses-shared"), "getResponsesToolSupport">
 	// Pi before 1.4.0 has no getResponsesToolSupport, and its resolveTranscriptTools takes a boolean.
 	& Partial<Pick<typeof import("@earendil-works/pi-ai/api/openai-responses-shared"), "getResponsesToolSupport">>;
+// Pi before 1.6.1 has no request-preparation helper, so callers keep a converter fallback.
+export const { prepareResponsesPrompt } = loadNative("@earendil-works/pi-ai/api/openai-responses-shared") as {
+	prepareResponsesPrompt?: (model: Model<Api>, context: TranscriptContext, providers: ReadonlySet<string>,
+		options: NonNullable<Parameters<typeof convertResponsesMessages>[3]> & { effortBaseline: "initial" }) => {
+		input: ReturnType<typeof convertResponsesMessages>;
+		requestTools: ReturnType<typeof convertResponsesTools>;
+		requestEffortBaseline: string | undefined;
+	};
+};
 export const { createGrammarToolInputProperties } = loadNative(
 	"@earendil-works/pi-ai/api/constrained-sampling",
 ) as typeof import("@earendil-works/pi-ai/api/constrained-sampling");

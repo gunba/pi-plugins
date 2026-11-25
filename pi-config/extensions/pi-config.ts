@@ -1,3 +1,4 @@
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -49,7 +50,12 @@ const PI_SETTINGS: SettingField[] = [
   field("defaultModel", "Default model", "string", "Default model id for new sessions.", ""),
   field("defaultThinkingLevel", "Default thinking level", "enum", "Default reasoning level.", "medium", ["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
   field("modelThinkingLevels", "Model thinking levels", "object", "Startup thinking levels keyed by provider/modelId.", {}),
-  field("showCacheMissNotices", "Cache notices", "boolean", "Show significant cache misses, cache warming, compaction usage and recovery.", false),
+  ...("getNotices" in SettingsManager.prototype ? [
+    field("notices.cacheMisses", "Cache miss notices", "boolean", "Show significant prompt cache misses.", false),
+    field("notices.cacheWarming", "Cache warming notices", "boolean", "Show prompt cache warming notices.", false),
+    field("notices.compactionCosts", "Compaction cost notices", "boolean", "Show compaction usage and costs.", false),
+    field("notices.reasoningDrops", "Reasoning drop notices", "boolean", "Show dropped reasoning and recovery notices.", false),
+  ] : [field("showCacheMissNotices", "Cache notices", "boolean", "Show significant cache misses, cache warming, compaction usage and recovery.", false)]),
   field("cacheWarming", "Cache warming", "enum", "Keep eligible prompt caches warm. Agent-directory setting only.", "streaming", ["off", "streaming", "idle"]),
   field("hideThinkingBlock", "Hide thinking block", "boolean", "Hide thinking blocks in output.", false),
   field("thinkingBudgets", "Thinking budgets", "object", "Custom token budgets per thinking level.", { minimal: 1024, low: 4096, medium: 10240, high: 32768 }),

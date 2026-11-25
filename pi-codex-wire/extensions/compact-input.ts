@@ -1,7 +1,7 @@
 import { clampThinkingLevel, type Api, type Context, type Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { convertResponsesMessages, convertResponsesTools, createGrammarToolInputProperties, getDeclaredTools, getInitialSystemMessage,
-	getResponsesToolSupport, getSystemMessageText, normalizeContext, resolveTranscript, resolveTranscriptTools } from "./serializer.ts";
+	getResponsesToolSupport, getSystemMessageText, prepareResponsesPrompt, normalizeContext, resolveTranscript, resolveTranscriptTools } from "./serializer.ts";
 import type { JsonObject } from "./diagnostics.ts";
 
 const legacySystemPromptOption = { includeSystemPrompt: false };
@@ -36,18 +36,20 @@ export function compactInput(model: Model<Api>, context: Context, thinking: NonN
 	const offEffort = inline && model.reasoning ? (model.thinkingLevelMap?.off === undefined ? "none" : model.thinkingLevelMap.off) : undefined;
 	const nativeEffort = level === "off" ? offEffort : (model.thinkingLevelMap?.[level] ?? level);
 	const configurationUpdateEffort = inline && compat?.supportsMidConvoEffort ? nativeEffort ?? undefined : undefined;
-	const effort = configurationUpdateEffort === undefined ? nativeEffort : "medium";
+	const providers = new Set(["openai", "openai-codex", "opencode"]);
+	const options = {
+		...(inline ? {} : legacySystemPromptOption),
+		grammarToolInputProperties: createGrammarToolInputProperties(getDeclaredTools(transcript.messages), supportsGrammar),
+		...support, toolOptions, configurationUpdateEffort,
+	};
+	const prepared = prepareResponsesPrompt?.(model, transcript, providers, { ...options, effortBaseline: "initial" });
+	const effort = prepared ? prepared.requestEffortBaseline ?? nativeEffort
+		: configurationUpdateEffort === undefined ? nativeEffort : "medium";
 	const initial = getInitialSystemMessage(transcript.messages);
 	return {
 		model: model.id, ...(!inline ? { instructions: initial ? getSystemMessageText(initial) : "" } : {}), parallel_tool_calls: true,
-		input: convertResponsesMessages(model, transcript, new Set(["openai", "openai-codex", "opencode"]), {
-			...(inline ? {} : legacySystemPromptOption),
-			grammarToolInputProperties: createGrammarToolInputProperties(getDeclaredTools(transcript.messages), supportsGrammar),
-			...support,
-			toolOptions,
-			configurationUpdateEffort,
-		}),
-		tools: convertResponsesTools(placement.requestTools, toolOptions),
+		input: prepared?.input ?? convertResponsesMessages(model, transcript, providers, options),
+		tools: prepared?.requestTools ?? convertResponsesTools(placement.requestTools, toolOptions),
 		...(effort !== undefined && effort !== null ? { reasoning: { effort } } : {}),
 	};
 }

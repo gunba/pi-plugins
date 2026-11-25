@@ -163,19 +163,22 @@ for (const midConvoEffort of [false, true]) test(`a compaction request preserves
 		// Messages are placed by the millisecond they were written in.
 		await new Promise(resolve => setTimeout(resolve, 3));
 	}
-	const last = h.calls.at(-1).body.input;
+	const lastRequest = h.calls.at(-1).body;
+	const last = lastRequest.input;
+	const initialEffortBaseline = lastRequest.reasoning.effort === "low";
 	assert.deepEqual(last.find(item => item.type === "additional_tools").tools[0].tools.map(tool => tool.name), ["fixture_hub"]);
 	const compacted = await h.session.compact();
 	const sent = h.calls.at(-1).body.input;
+	assert.equal(h.calls.at(-1).body.reasoning.effort, lastRequest.reasoning.effort, "preserve the request effort baseline");
 	// A request that describes the prompt, the tools or an earlier item differently misses the prompt cache, and
 	// GPT-6.2 models discard the reasoning in it.
 	assert.deepEqual(sent.slice(0, last.length), last);
 	const updates = last.filter(item => item.type === "configuration_update");
 	assert.deepEqual(sent.slice(last.length).map(item => item.role ?? item.type),
-		updates.length ? ["assistant", "configuration_update", "compaction_trigger"] : ["assistant", "compaction_trigger"]);
+		updates.length && !initialEffortBaseline ? ["assistant", "configuration_update", "compaction_trigger"] : ["assistant", "compaction_trigger"]);
 	if (updates.length) {
-		assert.deepEqual(updates.map(item => item.reasoning.effort), ["low", "high", "xhigh"]);
-		assert.deepEqual(sent.at(-2), { type: "configuration_update", reasoning: { effort: "xhigh" } });
+		assert.deepEqual(updates.map(item => item.reasoning.effort), initialEffortBaseline ? ["high", "xhigh"] : ["low", "high", "xhigh"]);
+		if (!initialEffortBaseline) assert.deepEqual(sent.at(-2), { type: "configuration_update", reasoning: { effort: "xhigh" } });
 	}
 	const text = item => item.content[0].text.split(" ")[0];
 	assert.deepEqual(compacted.details[CHECKPOINT].output.filter(item => item.role === "user").map(text), ["first", "second"]);

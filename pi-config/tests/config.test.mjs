@@ -72,3 +72,27 @@ test('an edit cannot overwrite a change made while its dialog was open', async t
  assert.equal(readFileSync(path, 'utf8'), 'Concurrent edit\n');
  assert.match(errors[0], /changed while it was being edited/);
 });
+
+test('notice references match the settings supported by the native SDK', async t => {
+ const root = mkdtempSync(join(tmpdir(), 'pi-config-notices-'));
+ t.after(() => rmSync(root, {recursive: true, force: true}));
+ const previous = process.env.PI_CODING_AGENT_DIR;
+ process.env.PI_CODING_AGENT_DIR = root;
+ t.after(() => { if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; });
+ const {SettingsManager} = await import('@earendil-works/pi-coding-agent');
+ const commands = {};
+ let component;
+ extension({on() {}, registerCommand: (name, command) => commands[name] = command, getCommands: () => [], getAllTools: () => []});
+ await commands['pi-config'].handler('notices', {cwd: root, mode: 'tui', hasUI: true, ui: {
+  notify(message, level) {assert.notEqual(level, 'error', message);},
+  async custom(factory) {
+   component = factory({terminal: {rows: 40}, requestRender() {}}, theme, getKeybindings(), () => {});
+   return null;
+  },
+ }});
+ const text = component.render(220).join('\n');
+ if ('getNotices' in SettingsManager.prototype) {
+  for (const key of ['notices.cacheMisses', 'notices.cacheWarming', 'notices.compactionCosts', 'notices.reasoningDrops']) assert.ok(text.includes(key), key + ' missing from reference');
+  assert.doesNotMatch(text, /showCacheMissNotices/);
+ } else assert.match(text, /showCacheMissNotices/);
+});
