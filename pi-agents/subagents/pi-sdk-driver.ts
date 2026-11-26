@@ -65,7 +65,8 @@ export function bindChildProvider(provider: Provider, sessionId: string): Provid
 }
 
 const CHILD_CONTEXT = `You are a delegated subagent. Tools follow the parent's enabled selection and execute in your own session. Actual permissions, project trust and direct-human approval requirements still apply; you cannot grant yourself authority. Work independently in the shared working directory. Background children continue after you start them.`;
-const MESSAGE_CONTEXT = `Send interim findings to the agent that started you with agent_send (its path is yours without the last part); your final answer reaches it automatically.`;
+// Each message wakes the agent that started the helper, so a helper that sent every finding interrupted it a dozen times.
+const MESSAGE_CONTEXT = `Your final answer reaches the agent that started you automatically: put your findings there. Message it with agent_send (its path is yours without the last part) only when it must act before you finish.`;
 
 export function childSystemContext(mode: "continuable" | "one-shot", humanUi = false): string {
 	const human = humanUi ? "Use ask_user for questions that need a human answer." : "Send questions requiring human input to your direct parent.";
