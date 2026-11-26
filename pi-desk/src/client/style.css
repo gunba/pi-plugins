@@ -85,6 +85,9 @@ dialog:not([open]) { display:none; }
 @media (max-width:700px) { .root-transcript .virtual-row { padding:0 16px; } }
 .file-link { color:var(--accent); background:transparent; border:0; border-radius:4px; padding:2px 3px; font-size:inherit; text-align:left; overflow-wrap:anywhere; }
 .file-link:hover { text-decoration:underline; }
+/* Inline code is already the link colour; a path the host linked needs its own cue. */
+.file-link > code { text-decoration:underline dotted; text-underline-offset:3px; }
+.file-link:hover > code { text-decoration-style:solid; }
 .file-link-wrap { position:relative; display:inline; }
 .file-link-actions { display:inline-flex; position:absolute; z-index:2; left:100%; top:50%; transform:translateY(-50%); gap:2px; padding:2px; border:1px solid var(--border); border-radius:7px; background:var(--surface); box-shadow:0 5px 14px rgb(0 0 0 / .2); opacity:0; pointer-events:none; }
 .file-link-wrap:is(:hover,:focus-within) .file-link-actions { opacity:1; pointer-events:auto; }
