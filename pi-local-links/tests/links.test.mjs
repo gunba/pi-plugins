@@ -107,7 +107,7 @@ test("display hook handles streaming/restoration without modifying messages or m
 	assert.equal(first.transform(message.content, "assistant-thinking"), "[x](file:///C:/one/out.pdf)");
 	first.hooks.get("session_start")({}, { cwd: "E:/resumed" });
 	assert.equal(first.transform(message.content), "[x](file:///E:/resumed/out.pdf)");
-	first.hooks.get("before_agent_start")({}, { cwd: "F:/updated" });
+	first.hooks.get("before_agent_start")({ systemPromptOptions: {} }, { cwd: "F:/updated" });
 	assert.equal(first.transform(message.content), "[x](file:///F:/updated/out.pdf)");
 	assert.equal(JSON.stringify(message), original);
 	assert.deepEqual([...first.hooks.keys()].sort(), ["before_agent_start", "session_shutdown", "session_start"]);

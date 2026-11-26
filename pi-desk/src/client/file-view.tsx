@@ -58,9 +58,10 @@ export function FileLink({ session, file, children }: { session: string; file: F
 		clearTimeout(statusTimer.current); setPending(true); setError(""); setStatus(operation === "download" ? "Downloading…" : "Opening…");
 		try {
 			const info = await api<FileInfo>(`/sessions/${session}/files/${file.id}?${origin}`);
+			if (info.kind === "folder" && operation === "download") throw new Error(`${info.name} is a folder, which can't be downloaded.`);
 			// A file on another computer opens on this one: its Desk saves it in Downloads and opens it, or, with no
-			// Desk here to reach, the browser downloads it.
-			const here = computerHere(), elsewhere = operation === "open" && here !== undefined && here?.id !== fileComputer;
+			// Desk here to reach, the browser downloads it. A folder opens on its own computer.
+			const here = computerHere(), elsewhere = operation === "open" && info.kind !== "folder" && here !== undefined && here?.id !== fileComputer;
 			if (operation === "download" || elsewhere) {
 				const controller = transfer.current = new AbortController();
 				const blob = await fileBlob(session, info, origin, controller.signal, bytes => setStatus(`Downloading ${Math.round(bytes / Math.max(info.size, 1) * 100)}%`));
@@ -199,12 +200,12 @@ export function FileViewer({ session, reference, close }: { session: string; ref
 			<button aria-label="Close file" onClick={close}>×</button></header>
 		<div className="file-controls">
 			<button onClick={() => void refresh()} disabled={loading || progress !== undefined}>Refresh file</button>
-			<button disabled={!info || info.size > FILE_DOWNLOAD_LIMIT || loading || progress !== undefined} onClick={() => void save()}>Download</button>
+			<button disabled={!info || info.kind === "folder" || info.size > FILE_DOWNLOAD_LIMIT || loading || progress !== undefined} onClick={() => void save()}>Download</button>
 			{progress !== undefined && <><small role="status">{Math.round(progress / Math.max(1, info?.size ?? 1) * 100)}%</small>
 				<button onClick={() => { transfer.current?.abort(); setProgress(undefined); }}>Cancel download</button></>}
 			{download && <a href={download} download={info?.name}>Save file</a>}
 			{markdown && <button onClick={() => setFormatted(value => !value)}>{formatted ? "Show text" : "Show formatted"}</button>}
-			{info && <small>{info.size.toLocaleString()} bytes · {info.kind === "binary" ? "Download only" : info.kind}</small>}
+			{info && <small>{info.kind === "folder" ? "Folder" : `${info.size.toLocaleString()} bytes · ${info.kind === "binary" ? "Download only" : info.kind}`}</small>}
 		</div>
 		{info?.kind === "text" && <div className="artifact-controls">
 			<button disabled={!previous.length || loading} onClick={() => {
@@ -228,6 +229,7 @@ export function FileViewer({ session, reference, close }: { session: string; ref
 			<img src={image} alt={info?.name} onError={() => setError("This image could not be decoded. Download it to inspect the file.")} /></a></div>}
 		{info?.kind === "image" && info.size > FILE_IMAGE_LIMIT && <p className="muted">Image previews are limited to 16 MiB.</p>}
 		{info && info.size > FILE_DOWNLOAD_LIMIT && <p className="muted">Downloads are limited to 128 MiB. Use Pi to prepare a smaller file.</p>}
+		{info?.kind === "folder" && <p className="muted">This is a folder. Its link in the message opens it in the file manager of the computer it is on.</p>}
 		{info?.kind === "binary" && <p className="muted">This file cannot be previewed as UTF-8 text or a supported image. Download it to open it on your device.</p>}
 	</SurfaceFrame>;
 }

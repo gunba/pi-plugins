@@ -5,7 +5,7 @@ export const FILE_IMAGE_LIMIT = 16 * 1024 * 1024;
 export const OFFICE_PAGES = /\.(docx|docm|doc|rtf|odt|xlsx|xlsm|xls|ods|pptx|pptm|ppt|odp)$/i;
 export interface FileReference { id: string; name: string; line?: number }
 export interface FileInfo extends FileReference {
-	path: string; size: number; version: string; kind: "text" | "image" | "binary"; mimeType: string;
+	path: string; size: number; version: string; kind: "text" | "image" | "binary" | "folder"; mimeType: string;
 }
 export interface FileTextPage { text: string; offset: number; next: number | null; line?: number }
 export interface FileChunk { base64: string; offset: number; next: number | null }

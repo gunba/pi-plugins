@@ -1,6 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { rewriteFileLinks } from "./links.ts";
 
+const EXAMPLE = process.platform === "win32" ? "[Project Plan.docx](<C:\\Work\\Project Plan.docx>)" : "[plan.md](</home/me/work/plan.md>)";
+const GUIDANCE = `### Local files
+Name each file or folder on this computer in a reply by its absolute path, as a Markdown link such as ${EXAMPLE} or in backticks: the user opens those with a click, and can't open a bare name listed under a folder.`;
+
 export default function localLinks(pi: ExtensionAPI): void {
 	let cwd = process.cwd();
 	// Keep stable history separate from changing streaming prefixes. A tiny shared
@@ -13,8 +17,10 @@ export default function localLinks(pi: ExtensionAPI): void {
 		for (const cache of caches) { cache.values.clear(); cache.chars = 0; }
 	};
 	pi.on("session_start", (_event, ctx) => { cwd = ctx.cwd; clear(); });
-	pi.on("before_agent_start", (_event, ctx) => {
+	pi.on("before_agent_start", (event, ctx) => {
 		if (cwd !== ctx.cwd) { cwd = ctx.cwd; clear(); }
+		const options = event.systemPromptOptions;
+		options.appendSystemPrompt = options.appendSystemPrompt ? `${options.appendSystemPrompt}\n\n${GUIDANCE}` : GUIDANCE;
 	});
 	pi.on("session_shutdown", clear);
 	pi.registerMarkdownTransformer((markdown, context) => {

@@ -37,6 +37,10 @@ updates, restored messages and terminal redraws. It does not patch Pi, change
 model context, rewrite saved sessions, access linked files or launch applications.
 The terminal still handles Ctrl+click.
 
+It also asks the model, in the system prompt, to name local files and folders in
+replies by absolute path, as Markdown links or in backticks, which Desk and the
+terminal can open; a bare name listed under a folder cannot be opened.
+
 No settings or commands are needed. Restart Pi after installing the update.
 Each session has its own directory and bounded render cache.
 

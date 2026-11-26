@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { open, realpath, type FileHandle } from "node:fs/promises";
+import { open, realpath, stat, type FileHandle } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { fileLink } from "../../../pi-local-links/extensions/links.ts";
@@ -16,6 +16,8 @@ async function stamp(file: FileHandle): Promise<{ size: number; version: string 
 	if (!info.isFile() || info.size > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Only regular files can be opened.");
 	return { size: Number(info.size), version: createHash("sha256").update(`${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`).digest("hex") };
 }
+/** A folder's identity, not its contents: adding a file to it doesn't make an open link stale. */
+const folderVersion = (info: { dev: bigint; ino: bigint }) => createHash("sha256").update(`folder:${info.dev}:${info.ino}`).digest("hex");
 function classify(head: Buffer, partial: boolean): Pick<FileInfo, "kind" | "mimeType"> {
 	if (head.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) return { kind: "image", mimeType: "image/png" };
 	if (head[0] === 255 && head[1] === 216 && head[2] === 255) return { kind: "image", mimeType: "image/jpeg" };
@@ -99,6 +101,12 @@ export class LocalFiles {
 				throw error.code === "ENOENT" ? new Error(`${grant.name} no longer exists.`) : error;
 			});
 			if (!localPath(path)) throw new Error("Network and device paths cannot be opened here.");
+			const entry = await stat(path, { bigint: true });
+			if (entry.isDirectory()) {
+				const info: FileInfo = { id: grant.id, name: grant.name, path, size: 0, version: folderVersion(entry), kind: "folder", mimeType: "inode/directory" };
+				grant.snapshot = info;
+				return info;
+			}
 			return this.opened(path, async file => {
 				const version = await stamp(file);
 				const head = await bytesAt(file, 0, Math.min(8192, version.size));
@@ -110,6 +118,13 @@ export class LocalFiles {
 		}
 		const info = grant.snapshot ?? await this.command({ kind: "file", operation: "info", id: command.id }) as FileInfo;
 		if (info.version !== command.version) throw new Error("File changed. Refresh it before continuing.");
+		if (info.kind === "folder") {
+			if (command.operation !== "open" && command.operation !== "reveal") throw new Error(`${info.name} is a folder. Open it instead.`);
+			const entry = await stat(info.path, { bigint: true });
+			if (!entry.isDirectory() || folderVersion(entry) !== command.version) throw new Error("Folder changed. Refresh it before continuing.");
+			await this.desktop(info.path, command.operation === "open" ? "browse" : "reveal");
+			return { launched: true };
+		}
 		return this.opened(info.path, async file => {
 			if ((await stamp(file)).version !== command.version) throw new Error("File changed. Refresh it before continuing.");
 			if (command.operation === "open" || command.operation === "reveal") {

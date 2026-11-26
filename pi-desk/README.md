@@ -685,7 +685,11 @@ pinned and bundled into the client. It is not a host or terminal dependency.
 ### Files
 
 Markdown file links, local images, patch paths and supported tool path fields
-open in the associated application on the file's computer. The link's tooltip
+open in the associated application on the file's computer. In replies, an
+absolute path alone in backticks is a link too: a drive or home path as written,
+and another POSIX path when its first folder exists, so routes such as
+`/api/state` stay code. A link to a folder opens it in the file manager of its
+own computer; it cannot be downloaded. The link's tooltip
 names that destination. Hover or keyboard-focus a link to reveal its folder,
 download a copy here, or open Preview. On phones, tapping a link opens Preview,
 which can download it. Relative paths use that conversation's native working

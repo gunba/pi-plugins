@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { dirname, extname, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export type DesktopFileAction = "open" | "reveal";
+/** "browse" opens a folder in the file manager. */
+export type DesktopFileAction = "open" | "reveal" | "browse";
 const executable = /^(?:\.exe|\.com|\.bat|\.cmd|\.msi|\.msp|\.scr|\.cpl|\.lnk|\.url|\.desktop|\.app|\.ps1|\.psm1|\.vbs|\.vbe|\.wsf|\.wsh|\.hta|\.reg|\.jar|\.sh|\.bash|\.zsh)$/i;
 /** Whether opening a file would run code: a program or script by its name, or a Linux or Windows program by its first bytes. */
 export function runsCode(path: string, head: Uint8Array, platform = process.platform): boolean {
@@ -14,6 +15,7 @@ export function desktopFileCommand(path: string, action: DesktopFileAction, plat
 		throw new Error("Desk does not launch executable files. Show the containing folder or use Preview instead.");
 	if (platform === "win32") return action === "reveal"
 		? { command: win32.join(systemRoot, "explorer.exe"), args: ["/select,", path] }
+		: action === "browse" ? { command: win32.join(systemRoot, "explorer.exe"), args: [path] }
 		: { command: win32.join(systemRoot, "System32", "rundll32.exe"), args: ["url.dll,FileProtocolHandler", pathToFileURL(path, { windows: true }).href] };
 	if (platform !== "linux") throw new Error("Native file opening is available on Windows and Linux.");
 	return { command: "xdg-open", args: [action === "reveal" ? dirname(path) : path] };
