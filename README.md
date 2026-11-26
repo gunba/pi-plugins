@@ -28,7 +28,7 @@ Do not pin a ref, or Pi's update checks will not see new commits.
 - [`pi-show`](pi-show/README.md): `show` presents results in Desk, including live HTML pages; file changes are
   computed for text, spreadsheets, documents and decks.
 - [`pi-watch`](pi-watch/README.md): `watch` waits without spending turns, for a command's output, a change, or a time. A wake is delivery of its event, not a second scheduling tool.
-- [`pi-web-search`](pi-web-search/README.md): `web_search` and `web_fetch`, through Parallel or, with a key, Exa.
+- [`pi-web-search`](pi-web-search/README.md): `web_search` and `web_fetch`, through Parallel, free or with a key.
 - [`pi-command-guard`](pi-command-guard/README.md): asks before commands that would wipe a drive or a Git working tree.
 
 ## Models, context and cost

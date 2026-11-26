@@ -3,7 +3,8 @@ import type { ModelCallsView } from "../../../pi-model-calls/settings.ts";
 export type { ModelCallsView };
 
 export interface ServicesSnapshot {
-	exa: { configured: boolean; environment: boolean };
+	/** The web search key; absent from hosts that still used Exa. */
+	parallel?: { configured: boolean; environment: boolean };
 	/** ask_model's model and limit; absent from hosts older than ask_model. */
 	models?: ModelCallsView;
 	usage: ServiceUsageSnapshot;

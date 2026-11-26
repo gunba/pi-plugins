@@ -12,7 +12,7 @@ import type { ConversationSearch } from "./conversation-search.ts";
 import type { ConversationMoves } from "./conversation-moves.ts";
 import { MAX_DICTATION_BYTES, type Dictation } from "./dictation.ts";
 import { ServiceUsage } from "../../../pi-service-usage/index.ts";
-import { exaSettings, saveExaKey } from "../../../pi-web-search/extensions/settings.ts";
+import { parallelSettings, saveParallelKey } from "../../../pi-web-search/extensions/settings.ts";
 import { modelCallsView, saveModelCalls } from "../../../pi-model-calls/settings.ts";
 import type { Home } from "./home.ts";
 import { OpenHere, type OpenHereCommand } from "./open-here.ts";
@@ -181,7 +181,7 @@ export class HostApi {
 		}
 		if (url.pathname === "/api/services" && request.method === "GET") {
 			const usage = new ServiceUsage(this.core.options.agentDir);
-			try { return reply({ exa: exaSettings(this.core.options.agentDir), models: modelCallsView(this.core.options.agentDir), usage: usage.snapshot() }); }
+			try { return reply({ parallel: parallelSettings(this.core.options.agentDir), models: modelCallsView(this.core.options.agentDir), usage: usage.snapshot() }); }
 			finally { usage.close(); }
 		}
 		if (url.pathname === "/api/services/models" && request.method === "GET") {
@@ -199,11 +199,11 @@ export class HostApi {
 			saveModelCalls({ provider, model, effort, dailyLimit: Number(data.dailyLimit), ...key ? { apiKey: key } : {} }, agentDir);
 			return reply(modelCallsView(agentDir));
 		}
-		if (url.pathname === "/api/services/exa" && request.method === "POST") {
-			if (exaSettings(this.core.options.agentDir).environment) throw new Error("EXA_API_KEY is set in this computer’s environment. Change it there instead.");
+		if (url.pathname === "/api/services/parallel" && request.method === "POST") {
+			if (parallelSettings(this.core.options.agentDir).environment) throw new Error("PARALLEL_API_KEY is set in this computer’s environment. Change it there instead.");
 			const key = data.key === null ? undefined : string(data.key, 2000).trim();
-			if (data.key !== null && !key) throw new Error("Enter an Exa API key.");
-			saveExaKey(key, this.core.options.agentDir); return reply(exaSettings(this.core.options.agentDir));
+			if (data.key !== null && !key) throw new Error("Enter a Parallel API key.");
+			saveParallelKey(key, this.core.options.agentDir); return reply(parallelSettings(this.core.options.agentDir));
 		}
 		if (url.pathname === "/api/dictation" && request.method === "POST") {
 			const dictation = this.host.dictation();

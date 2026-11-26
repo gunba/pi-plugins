@@ -16,14 +16,12 @@ browser tools.
 
 ## Service
 
-**Parallel** runs them by default, through its MCP server, `https://search.parallel.ai/mcp`, which is free without an
-account and rate-limited. Each call carries the conversation's session ID and model, which its free tier uses for
-rate limiting.
-
-**Exa** runs them instead on a computer with an Exa API key: Desk's Settings → Accounts & connections saves one in
-`web-search.json` in Pi's agent folder (readable only by the user), or set `EXA_API_KEY`. Exa ranks higher in the
-Artificial Analysis Search Index and is billed per request: each query of a `web_search` is one search, with the goal
-passed as its objective, and the results are interleaved by rank; `web_fetch` reads pages through Exa's contents
-endpoint. Removing the key returns the computer to Parallel.
+**Parallel** runs them, through its MCP server, `https://mcp.parallel.ai/mcp` (only its `web_search` and `web_fetch`
+tools). Without a key it is free and rate-limited; each call carries the model's name, and the session ID the server
+returned to the conversation's previous call, which it uses for rate limiting. With an API key, saved from Desk's
+Settings → Accounts & connections in `web-search.json` in Pi's agent folder (readable only by the user) or set as
+`PARALLEL_API_KEY`, calls are billed to the account at the Search and Extract APIs' prices (fast mode: $1 per 1,000
+searches, whatever the number of queries, and $1 per 1,000 pages read) at higher limits, and the cost each call
+reports is recorded in service usage. Removing the key returns the computer to the free service.
 
 Output is cut once, at 16,000 characters, by `pi-output-budget`, which keeps the rest retrievable.

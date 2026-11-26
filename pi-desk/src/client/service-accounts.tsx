@@ -5,8 +5,8 @@ import { DictationKey } from "./dictation.tsx";
 import { ModelCalls } from "./model-calls.tsx";
 import { Row } from "./settings-pages.tsx";
 
-const names: Record<string, string> = { exa: "Exa", typesafe: "TypeSafe", elevenlabs: "ElevenLabs" };
-const message = (error: unknown) => error instanceof ApiError && error.status === 404 ? "Update this computer to manage Exa and view service costs."
+const names: Record<string, string> = { parallel: "Parallel", exa: "Exa", typesafe: "TypeSafe", elevenlabs: "ElevenLabs" };
+const message = (error: unknown) => error instanceof ApiError && error.status === 404 ? "Update this computer to manage web search and view service costs."
 	: error instanceof Error ? error.message : String(error);
 
 /** Service keys and their usage belong to the selected computer, not to an open conversation. */
@@ -25,24 +25,26 @@ export function ServiceAccounts({ computer, name, connected, legacy }: { compute
 	const save = async (key: string | null) => {
 		setWorking(true); setError("");
 		try {
-			const exa = await api<ServicesSnapshot["exa"]>("/services/exa", { key }, computer);
-			setSnapshot(value => value ? { ...value, exa } : value); setKey("");
+			const parallel = await api<ServicesSnapshot["parallel"]>("/services/parallel", { key }, computer);
+			setSnapshot(value => value ? { ...value, parallel } : value); setKey("");
 		} catch (error) { setError(message(error)); }
 		finally { setWorking(false); }
 	};
-	const locked = !connected || working || !snapshot || snapshot.exa.environment;
-	const services = [...new Set([...Object.keys(names), ...snapshot?.usage.totals.map(item => item.service) ?? []])];
+	// A computer still on Exa reports no Parallel key and takes none until it updates.
+	const parallel = snapshot?.parallel, locked = !connected || working || !parallel || parallel.environment;
+	const services = [...new Set(["parallel", "typesafe", "elevenlabs", ...snapshot?.usage.totals.map(item => item.service) ?? []])];
 	return <>
 		<section className="settings-group">
-			{!unsupported && <Row label="Exa" hint="Web search and page reading. A saved key applies to running conversations immediately; without a key, search uses Parallel's free service.">
-				<span className="muted">{snapshot?.exa.environment ? "EXA_API_KEY environment variable" : snapshot?.exa.configured ? "API key saved" : snapshot ? "No key · free search" : connected ? "Loading…" : "Disconnected"}</span>
+			{!unsupported && <Row label="Parallel" hint="Web search and page reading. Free and rate-limited without a key; with one, billed to the account at higher limits. A saved key applies to running conversations immediately.">
+				<span className="muted">{parallel?.environment ? "PARALLEL_API_KEY environment variable" : parallel?.configured ? "API key saved" : parallel ? "No key · free search"
+					: snapshot ? "Update this computer to use Parallel" : connected ? "Loading…" : "Disconnected"}</span>
 				<form className="settings-inline-form" onSubmit={event => { event.preventDefault(); void save(key.trim()); }}>
-					<input type="password" autoComplete="off" spellCheck={false} maxLength={2000} aria-label="Exa API key" value={key} disabled={locked}
-						placeholder={snapshot?.exa.configured ? "Replace API key" : "Paste API key"} onChange={event => setKey(event.target.value)} />
-					<button type="submit" disabled={locked || !key.trim()}>{snapshot?.exa.configured ? "Replace API key" : "Save API key"}</button>
+					<input type="password" autoComplete="off" spellCheck={false} maxLength={2000} aria-label="Parallel API key" value={key} disabled={locked}
+						placeholder={parallel?.configured ? "Replace API key" : "Paste API key"} onChange={event => setKey(event.target.value)} />
+					<button type="submit" disabled={locked || !key.trim()}>{parallel?.configured ? "Replace API key" : "Save API key"}</button>
 				</form>
-				{snapshot?.exa.configured && !snapshot.exa.environment && <button className="quiet-action" disabled={locked} onClick={() => void save(null)}>Remove API key</button>}
-				<a className="quiet-action" href="https://dashboard.exa.ai/api-keys" target="_blank" rel="noopener noreferrer">Get a key ↗</a>
+				{parallel?.configured && !parallel.environment && <button className="quiet-action" disabled={locked} onClick={() => void save(null)}>Remove API key</button>}
+				<a className="quiet-action" href="https://platform.parallel.ai" target="_blank" rel="noopener noreferrer">Get a key ↗</a>
 			</Row>}
 			{!unsupported && snapshot?.models && <ModelCalls computer={computer} name={name} connected={connected} view={snapshot.models}
 				saved={models => setSnapshot(value => value ? { ...value, models } : value)} />}

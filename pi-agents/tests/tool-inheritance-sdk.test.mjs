@@ -104,9 +104,9 @@ async function integration(t, { search = false, party = false, policy = false, g
 	const settings = { packages: [], extensions: [], compaction: { enabled: false }, retry: { enabled: false } };
 	await writeFile(join(agentDir, "settings.json"), JSON.stringify(settings));
 	const requests = [];
-	// Parallel's search service, as web_search's MCP client reaches it.
+	// Parallel's free search service, as web_search's MCP client reaches it.
 	globalThis.fetch = async (url, init) => {
-		assert.equal(String(url), "https://search.parallel.ai/mcp", "all network calls must hit this fake search handler");
+		assert.equal(String(url), "https://mcp.parallel.ai/mcp?tools=web_search,web_fetch", "all network calls must hit this fake search handler");
 		assert.equal(init?.method, "POST");
 		const body = JSON.parse(init.body);
 		if (body.method === "initialize") return Response.json({ jsonrpc: "2.0", id: body.id, result: {} }, { headers: { "mcp-session-id": "fixture-session" } });
@@ -114,7 +114,7 @@ async function integration(t, { search = false, party = false, policy = false, g
 		assert.equal(body.method, "tools/call");
 		requests.push({ url: String(url), body });
 		const results = [{ url: "https://example.invalid/fixture", title: "OFFLINE SEARCH RESULT", excerpts: ["fixture"] }];
-		return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: JSON.stringify({ results }) }] } });
+		return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: JSON.stringify({ results, session_id: `parallel-${requests.length}` }) }] } });
 	};
 	const auditPath = join(directory, "shutdown.jsonl");
 	const fixturePath = join(directory, "provider.ts");
@@ -263,8 +263,9 @@ test("actual web_search runs with the child's own model and session in its fake 
 		assert.match(outcome.output, /OFFLINE SEARCH RESULT/);
 		assert.equal(toolResults(child.manager).at(-1).isError, false);
 	}
-	const callers = h.requests.map((request) => ({ id: request.body.params.arguments.session_id, model: request.body.params.arguments.model_name }));
-	assert.deepEqual(callers, [{ id: "search-child", model: "child-codex-fixture" }, { id: "search-grandchild", model: "grandchild-codex-fixture" }]);
+	// The session ID Parallel returned to the child's call belongs to the child's conversation, not the grandchild's.
+	const callers = h.requests.map((request) => ({ id: request.body.params.arguments.session_id, model: request.body.params.arguments.client_model }));
+	assert.deepEqual(callers, [{ id: undefined, model: "child-codex-fixture" }, { id: undefined, model: "grandchild-codex-fixture" }]);
 	assert.equal(h.rootCatalogs.length, 2);
 	assert.ok(h.rootCatalogs.every((catalog) => catalog.find((tool) => tool.name === "web_search").sourceInfo.path === SEARCH_SOURCE));
 	assert.deepEqual(new Set(h.observations.map((entry) => entry.sessionId)), new Set(["search-child", "search-grandchild"]));

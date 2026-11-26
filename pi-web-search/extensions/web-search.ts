@@ -4,18 +4,17 @@ import { Type, type Static } from "typebox";
 import { getPresentation } from "../../pi-ui/index.ts";
 import { isLocalUrl, readDirect } from "./direct.ts";
 import { renderSearchResult } from "./render.ts";
-import { exaKey, saveExaKey } from "./settings.ts";
+import { parallelKey, saveParallelKey } from "./settings.ts";
 import { recordServiceUsage } from "../../pi-service-usage/index.ts";
-export { exaKey } from "./settings.ts";
+export { parallelKey } from "./settings.ts";
 
 /**
- * Web search and page reading for every model. Parallel's search service (its MCP server, free without an account)
- * runs them unless this computer has an Exa API key, saved from Desk's Accounts & connections into web-search.json in
- * Pi's agent folder, or set as EXA_API_KEY. Then Exa runs them. Pages the service could not read, and local network
- * addresses it cannot reach, are read from this computer.
+ * Web search and page reading for every model, through Parallel's MCP server. Without a key it is free and
+ * rate-limited; with an API key, saved from Desk's Accounts & connections into web-search.json in Pi's agent folder or
+ * set as PARALLEL_API_KEY, the account is billed at the Search and Extract APIs' prices and the limits are higher.
+ * Pages the service could not read, and local network addresses it cannot reach, are read from this computer.
  */
-export const ENDPOINT = "https://search.parallel.ai/mcp";
-const EXA = "https://api.exa.ai";
+export const ENDPOINT = "https://mcp.parallel.ai/mcp?tools=web_search,web_fetch";
 const TIMEOUT_MS = 90_000;
 /** Excerpts kept per search result, and results kept per search: a week of searches averaged 12,000 characters each. */
 const RESULT_CHARS = 1_200, RESULTS = 8;
@@ -36,7 +35,7 @@ type FetchParams = Static<typeof FETCH_PARAMETERS>;
 
 type Page = { url: string; title?: string; publish_date?: string; excerpts?: string[]; full_content?: string; direct?: boolean };
 type Failure = { url?: string; error?: string; message?: string; error_type?: string; http_status_code?: number | null };
-type Payload = { results?: Page[]; errors?: Failure[]; warnings?: unknown[] };
+type Payload = { results?: Page[]; errors?: Failure[]; warnings?: unknown[]; session_id?: string };
 export type WebDetails = { results?: { url: string; title?: string }[]; errors?: number };
 
 /** One JSON-RPC message from a response, which the server sends as JSON or as a server-sent event stream. */
@@ -50,23 +49,29 @@ function message(body: string, type: string, id: number): { result?: unknown; er
 	return undefined;
 }
 
-/** A Streamable HTTP MCP client for one server: a session per process, opened on first use and reopened if it lapses. */
+/**
+ * A Streamable HTTP MCP client for one server and key: a session per process, opened on first use and reopened if it
+ * lapses. With a key, each call's cost, which the server reports in its result, is recorded in service usage.
+ */
 export class McpClient {
 	private session?: string;
 	private opening?: Promise<void>;
 	private next = 1;
 	private readonly endpoint: string;
 	private readonly fetchImpl: typeof fetch;
+	private readonly key?: string;
 
-	constructor(endpoint = ENDPOINT, fetchImpl: typeof fetch = fetch) {
+	constructor(endpoint = ENDPOINT, fetchImpl: typeof fetch = fetch, key?: string) {
 		this.endpoint = endpoint;
 		this.fetchImpl = fetchImpl;
+		this.key = key;
 	}
 
 	private async post(method: string, params: unknown, signal: AbortSignal, notification = false) {
 		const id = this.next++;
 		const response = await this.fetchImpl(this.endpoint, { method: "POST", signal, headers: {
 			"content-type": "application/json", accept: "application/json, text/event-stream",
+			...(this.key ? { authorization: `Bearer ${this.key}` } : {}),
 			...(this.session ? { "mcp-session-id": this.session } : {}),
 		}, body: JSON.stringify({ jsonrpc: "2.0", method, params, ...(notification ? {} : { id }) }) });
 		const session = response.headers.get("mcp-session-id");
@@ -92,20 +97,39 @@ export class McpClient {
 			this.opening = undefined; this.session = undefined;
 			return this.call(tool, args, signal, true);
 		}
-		if (response.status === 429) throw new Error("Parallel's free search is rate-limited right now. Try again shortly; "
-			+ "an Exa API key in Settings → Accounts & connections moves this computer's searches to Exa.");
+		if (this.key && (response.status === 401 || response.status === 403))
+			throw new Error(`Parallel refused this computer's API key (HTTP ${response.status}). Check it in Settings → Accounts & connections.`);
+		if (this.key && response.status === 402) throw new Error("Parallel says the account is out of credit (HTTP 402). Add credit at platform.parallel.ai.");
+		if (response.status === 429) throw new Error(this.key ? "Parallel is rate-limiting requests right now. Try again shortly."
+			: "Parallel's free search is rate-limited right now. Try again shortly; a Parallel API key in Settings → Accounts & connections raises the limit.");
+		// A refused request (4xx) is not charged; any other reply without a reported cost may have been.
+		if (this.key && !response.ok && response.status >= 500) this.record(tool);
 		if (!response.ok) throw new Error(`Parallel search failed: HTTP ${response.status} ${body.slice(0, 300)}`);
 		const reply = message(body, response.headers.get("content-type") ?? "", id);
 		if (reply?.error) throw new Error(`Parallel search failed: ${reply.error.message ?? JSON.stringify(reply.error)}`);
-		const result = reply?.result as { content?: { type: string; text?: string }[]; isError?: boolean } | undefined;
+		const result = reply?.result as { content?: { type: string; text?: string }[]; isError?: boolean; _meta?: Record<string, unknown> } | undefined;
+		if (this.key) {
+			const usage = result?._meta?.["parallel/usage"];
+			this.record(tool, Array.isArray(usage) ? usage.reduce((sum: number, item: { cost_usd?: unknown }) => sum + (typeof item?.cost_usd === "number" ? item.cost_usd : 0), 0) : undefined);
+		}
 		const text = result?.content?.filter(block => block.type === "text").map(block => block.text ?? "").join("\n") ?? "";
 		if (result?.isError) throw new Error(`Parallel search failed: ${text.slice(0, 500)}`);
 		return text;
 	}
+
+	private record(tool: string, cost?: number): void {
+		const warning = recordServiceUsage(getAgentDir(), { service: "parallel", operation: tool === "web_search" ? "search" : "extract", cost, estimated: true });
+		if (warning) console.error(warning);
+	}
 }
 
-let shared: McpClient | undefined;
-const client = () => shared ??= new McpClient();
+/** One client for each key in use, so a key saved or removed while a conversation runs takes effect at its next call. */
+const clients = new Map<string, McpClient>();
+const client = (key = parallelKey()) => {
+	let found = clients.get(key ?? "");
+	if (!found) clients.set(key ?? "", found = new McpClient(ENDPOINT, fetch, key));
+	return found;
+};
 
 function parse(text: string): Payload {
 	try { return JSON.parse(text) as Payload; } catch { throw new Error(`Parallel search returned something unexpected: ${text.slice(0, 300)}`); }
@@ -124,10 +148,23 @@ function failures(payload: Payload): Unread[] {
 	});
 }
 
-const callerArgs = (ctx: ExtensionContext) => ({ session_id: ctx.sessionManager.getSessionId(), ...(ctx.model ? { model_name: ctx.model.id } : {}) });
+/**
+ * Without a key the server rate-limits by its own session ID, which each result returns and the conversation's next
+ * call passes back, and takes the model's name for its analytics. Calls with a key take neither.
+ */
+const parallelSessions = new Map<string, string>();
+const callerArgs = (ctx: ExtensionContext, key: string | undefined) => {
+	if (key) return {};
+	const session = parallelSessions.get(ctx.sessionManager.getSessionId());
+	return { ...(ctx.model ? { client_model: ctx.model.id } : {}), ...(session ? { session_id: session } : {}) };
+};
+const remember = (ctx: ExtensionContext, payload: Payload) => {
+	if (typeof payload.session_id === "string" && payload.session_id) parallelSessions.set(ctx.sessionManager.getSessionId(), payload.session_id);
+	return payload;
+};
 const timed = (signal: AbortSignal | undefined) => AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(TIMEOUT_MS)]);
 
-/** The search results and fetch failures both services come down to. */
+/** The search results and fetch failures a call comes down to. */
 type Unread = { url: string; reason: string };
 type Found = { pages: Page[]; failures: Unread[] };
 
@@ -149,77 +186,37 @@ function fetchText({ pages, failures }: Found): AgentToolResult<WebDetails> {
 		...(failures.length ? { errors: failures.length } : {}) } };
 }
 
-async function exa(path: string, body: Record<string, unknown>, key: string, signal: AbortSignal, fetchImpl: typeof fetch = fetch): Promise<Record<string, unknown>> {
-	let response: Response, text: string;
-	const record = (cost?: number) => {
-		const warning = recordServiceUsage(getAgentDir(), { service: "exa", operation: path.slice(1), cost, estimated: true });
-		if (warning) console.error(warning);
-	};
-	try {
-		response = await fetchImpl(`${EXA}${path}`, { method: "POST", signal, headers: { "content-type": "application/json", "x-api-key": key }, body: JSON.stringify(body) });
-		text = await response.text();
-	} catch (error) { record(); throw error; }
-	let payload: Record<string, unknown> | undefined;
-	try { payload = JSON.parse(text); } catch { /* The request may still have been charged. */ }
-	const cost = (payload?.costDollars as { total?: unknown } | undefined)?.total;
-	// A request Exa refused (4xx) is not charged; any other reply without a cost may have been.
-	if (typeof cost === "number") record(cost); else if (response.status < 400 || response.status >= 500) record();
-	if (response.status === 401 || response.status === 403) throw new Error(`Exa refused this computer's API key (HTTP ${response.status}). Check it in Settings → Accounts & connections.`);
-	if (response.status === 402) throw new Error("Exa says the account is out of credit (HTTP 402). Add credit at dashboard.exa.ai.");
-	if (response.status === 429) throw new Error("Exa is rate-limiting requests right now. Try again shortly.");
-	if (!response.ok) throw new Error(`Exa failed: HTTP ${response.status} ${text.slice(0, 300)}`);
-	if (!payload || typeof payload !== "object") throw new Error(`Exa returned something unexpected: ${text.slice(0, 300)}`);
-	return payload;
-}
-type ExaPage = { url: string; title?: string | null; publishedDate?: string | null; highlights?: string[]; text?: string };
-const exaPage = (page: ExaPage): Page => ({ url: page.url, ...(page.title ? { title: page.title } : {}), ...(page.publishedDate ? { publish_date: page.publishedDate.slice(0, 10) } : {}),
-	...(page.highlights?.length ? { excerpts: page.highlights } : {}), ...(page.text !== undefined ? { full_content: page.text } : {}) });
-/** Results localized to this computer's country, from its locale (en-AU gives AU). */
-const country = () => /^[a-z]{2,3}-([A-Z]{2})\b/.exec(Intl.DateTimeFormat().resolvedOptions().locale)?.[1];
-
-/** Each query is its own Exa search, guided by the goal; results are interleaved by rank and deduplicated. */
-async function exaSearch(params: SearchParams, key: string, signal: AbortSignal): Promise<Found> {
-	const location = country();
-	const replies = await Promise.all(params.queries.map(query => exa("/search", { query, type: "auto", numResults: 5, objective: params.goal,
-		...(location ? { userLocation: location } : {}), contents: { highlights: { maxCharacters: RESULT_CHARS } } }, key, signal)));
-	const lists = replies.map(reply => (reply.results ?? []) as ExaPage[]), pages: Page[] = [], seen = new Set<string>();
-	for (let rank = 0; pages.length < RESULTS && lists.some(list => rank < list.length); rank++)
-		for (const list of lists) {
-			const page = list[rank];
-			if (page && !seen.has(page.url) && pages.length < RESULTS) { seen.add(page.url); pages.push(exaPage(page)); }
-		}
-	return { pages, failures: [] };
+/**
+ * Parallel's index holds some pages under several URLs that differ only in a cache-busting query, such as
+ * ai.google.dev's pricing page four times in one result list. Copies with the same host, path and title become one
+ * result with all their excerpts, so they leave room for other pages.
+ */
+function distinct(pages: Page[]) {
+	const kept = new Map<string, Page>();
+	for (const page of pages) {
+		let id = page.url;
+		try { const url = new URL(page.url); id = `${url.host}${url.pathname.replace(/\/$/, "")}\n${page.title?.trim() ?? ""}`; } catch {}
+		const first = kept.get(id);
+		if (!first) kept.set(id, { ...page });
+		else if (page.excerpts?.length) first.excerpts = [...new Set([...first.excerpts ?? [], ...page.excerpts])];
+	}
+	return [...kept.values()];
 }
 
-async function exaFetch(params: FetchParams, key: string, signal: AbortSignal): Promise<Found> {
-	const reply = await exa("/contents", { urls: params.urls, ...params.full ? { text: true }
-		: params.goal ? { highlights: { query: params.goal, maxCharacters: 4_000 } } : { text: { maxCharacters: PAGE_CHARS } } }, key, signal);
-	const statuses = (reply.statuses ?? []) as { id: string; status: string; error?: { tag?: string; httpStatusCode?: number | null } }[];
-	return { pages: ((reply.results ?? []) as ExaPage[]).map(exaPage),
-		failures: statuses.filter(status => status.status !== "success").map(status => ({ url: status.id,
-			reason: `${status.error?.tag ?? "could not be read"}${status.error?.httpStatusCode ? ` (HTTP ${status.error.httpStatusCode})` : ""}` })) };
+export async function search(params: SearchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, key = parallelKey(), mcp = client(key)): Promise<AgentToolResult<WebDetails>> {
+	const payload = remember(ctx, parse(await mcp.call("web_search", { objective: params.goal, search_queries: params.queries, ...callerArgs(ctx, key) }, timed(signal))));
+	return searchText({ pages: distinct(payload.results ?? []).slice(0, RESULTS), failures: failures(payload) });
 }
 
-export async function search(params: SearchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, mcp = client()): Promise<AgentToolResult<WebDetails>> {
-	const key = exaKey();
-	if (key) return searchText(await exaSearch(params, key, timed(signal)));
-	const payload = parse(await mcp.call("web_search", { objective: params.goal, search_queries: params.queries, ...callerArgs(ctx) }, timed(signal)));
-	return searchText({ pages: (payload.results ?? []).slice(0, RESULTS), failures: failures(payload) });
-}
-
-export async function fetchPages(params: FetchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, mcp = client()): Promise<AgentToolResult<WebDetails>> {
+export async function fetchPages(params: FetchParams, signal: AbortSignal | undefined, ctx: ExtensionContext, key = parallelKey(), mcp = client(key)): Promise<AgentToolResult<WebDetails>> {
 	const invalid = params.urls.filter(url => !/^https?:$/.test((() => { try { return new URL(url).protocol; } catch { return ""; } })()));
 	if (invalid.length) throw new Error(`Not http(s) URLs: ${invalid.join(", ")}`);
 	const urls = params.urls.filter(url => !isLocalUrl(url));
 	let found: Found = { pages: [], failures: [] };
 	if (urls.length) try {
-		const key = exaKey();
-		if (key) found = await exaFetch({ ...params, urls }, key, timed(signal));
-		else {
-			const payload = parse(await mcp.call("web_fetch", { urls, ...(params.goal ? { objective: params.goal.slice(0, 200) } : {}),
-				...(params.full ? { full_content: true } : {}), ...callerArgs(ctx) }, timed(signal)));
-			found = { pages: payload.results ?? [], failures: failures(payload) };
-		}
+		const payload = remember(ctx, parse(await mcp.call("web_fetch", { urls, ...(params.goal ? { objective: params.goal.slice(0, 200) } : {}),
+			...(params.full ? { full_content: true } : {}), ...callerArgs(ctx, key) }, timed(signal))));
+		found = { pages: payload.results ?? [], failures: failures(payload) };
 	} catch (error) {
 		if (signal?.aborted) throw error;
 		found.failures = urls.map(url => ({ url, reason: (error as Error).message }));
@@ -235,21 +232,20 @@ export async function fetchPages(params: FetchParams, signal: AbortSignal | unde
 	return fetchText(found);
 }
 
-/** Exa settings for terminal and older Desk clients; current Desk merges them into Accounts & connections. */
+/** The Parallel key for terminal and older Desk clients; current Desk merges it into Accounts & connections. */
 function publishSettings(pi: ExtensionAPI): void {
 	const remote = getPresentation(pi);
 	if (!remote?.capabilities.includes("details") || remote.suspended) return;
-	const key = exaKey(), fromEnvironment = !!process.env.EXA_API_KEY?.trim();
+	const key = parallelKey(), fromEnvironment = !!process.env.PARALLEL_API_KEY?.trim();
 	remote.publish("web-search", { kind: "details", surface: "settings", title: "Web search", data: {
-		summary: "web_search and web_fetch use Parallel's free search unless this computer has an Exa API key; then they use Exa, "
-			+ "which ranks higher in independent tests and is billed per request. Applies to every conversation on this computer.",
-		fields: [{ label: "Service", value: key ? "Exa" : "Parallel (free)" }],
-		controls: fromEnvironment ? [] : [{ kind: "text", secret: true, label: "Exa API key", value: "",
-			placeholder: key ? "Saved; enter a new key to replace it" : "Paste a key from dashboard.exa.ai",
-			help: "Saved in this computer's Pi folder (web-search.json), readable only by you.", action: { id: "exa-key", label: "Save Exa key" } }],
-	}, actions: key && !fromEnvironment ? [{ id: "exa-remove", label: "Remove Exa key", destructive: true }] : [] }, {
-		"exa-key": value => { if (typeof value === "string" && value.trim()) { saveExaKey(value.trim()); publishSettings(pi); } },
-		"exa-remove": () => { saveExaKey(undefined); publishSettings(pi); },
+		summary: "web_search and web_fetch use Parallel: free and rate-limited without a key, billed to the account with one. Applies to every conversation on this computer.",
+		fields: [{ label: "Service", value: key ? "Parallel (API key)" : "Parallel (free)" }],
+		controls: fromEnvironment ? [] : [{ kind: "text", secret: true, label: "Parallel API key", value: "",
+			placeholder: key ? "Saved; enter a new key to replace it" : "Paste a key from platform.parallel.ai",
+			help: "Saved in this computer's Pi folder (web-search.json), readable only by you.", action: { id: "parallel-key", label: "Save Parallel key" } }],
+	}, actions: key && !fromEnvironment ? [{ id: "parallel-remove", label: "Remove Parallel key", destructive: true }] : [] }, {
+		"parallel-key": value => { if (typeof value === "string" && value.trim()) { saveParallelKey(value.trim()); publishSettings(pi); } },
+		"parallel-remove": () => { saveParallelKey(undefined); publishSettings(pi); },
 	});
 }
 

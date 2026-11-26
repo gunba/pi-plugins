@@ -11,7 +11,7 @@ const PAGE = `<html><head><title>SECTION 110-45</title><script>track()</script><
 <footer>Copyright</footer></body></html>`;
 
 test("pages the service cannot read, and local network addresses, are read from this computer", async (t) => {
-	// No Exa key: the free service, stubbed here, reads pages.
+	// No Parallel key: the free service, stubbed here, reads pages.
 	const agentDir = mkdtempSync(join(tmpdir(), "web-fetch-"));
 	const previous = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -28,7 +28,7 @@ test("pages the service cannot read, and local network addresses, are read from 
 		? new Response("<title>Just a moment...</title>", { status: 403, headers: { "content-type": "text/html" } })
 		: new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } }));
 
-	const result = await fetchPages({ urls: ["https://www.ato.gov.au/law/110-45", "http://192.168.1.5/status", "https://blocked.example/page"] }, undefined, ctx, mcp);
+	const result = await fetchPages({ urls: ["https://www.ato.gov.au/law/110-45", "http://192.168.1.5/status", "https://blocked.example/page"] }, undefined, ctx, undefined, mcp);
 	assert.deepEqual(asked, ["https://www.ato.gov.au/law/110-45", "https://blocked.example/page"]);
 	const text = "## Section 110-45\n\nAssets acquired after 7.30 pm on 13 May 1997\n\n- Cost & base\n- Reduced cost base";
 	assert.equal(result.content[0].text, [
