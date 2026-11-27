@@ -16,7 +16,12 @@ export const controllerAck = (home: string, id: string): string => {
 	return join(home, "controllers", `${id}.json`);
 };
 interface ControllerTask { home: string; cwd: string; node: string; entry: string; args: string[]; launch: string }
-/** The scheduler owns the controller, outside the host's process tree/job. */
+/**
+ * The scheduler owns the controller, outside the host's process tree/job. Its priority is 6, the lowest of the normal
+ * ones: Task Scheduler's default, 7, gives the controller and everything it starts (the host, conversations and their
+ * tools) below-normal CPU priority and low I/O priority. On the work laptop, an Antigravity server, which unpacks
+ * 6,277 files at each start, then took 70 to 110 s to start instead of 27.
+ */
 export function controllerTaskScript(c: ControllerTask): string {
 	controllerAck(c.home, c.launch);
 	const name = `pi-desk-controller-${c.launch}`, owner = `Pi Desk controller ${c.home} ${c.launch}`;
@@ -45,7 +50,7 @@ if (Get-ScheduledTask -TaskName $name -TaskPath '\\' -ErrorAction SilentlyContin
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $action = New-ScheduledTaskAction -Execute ${literal(powershell())} -Argument ${literal(arguments_.map(windowsQuote).join(" "))} -WorkingDirectory ${literal(c.cwd)}
 $principal = New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -DisallowHardTerminate -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -DisallowHardTerminate -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Priority 6
 Register-ScheduledTask -TaskName $name -TaskPath '\\' -Action $action -Principal $principal -Settings $settings -Description ${literal(owner)} | Out-Null
 try { Start-ScheduledTask -TaskName $name -TaskPath '\\' }
 catch { Unregister-ScheduledTask -TaskName $name -TaskPath '\\' -Confirm:$false; throw }
