@@ -1946,7 +1946,7 @@ details[open] > summary:before {
 .provider-icon svg { width:24px; height:24px; }
 .provider-icon > span { font-size:12px; font-weight:650; letter-spacing:.5px; }
 .provider-anthropic { background:#d58b691c; color:#d89476; }
-.provider-gemini { background:#fff; border:1px solid #e6e6e6; }
+.provider-gemini { background:var(--surface); border:1px solid var(--border); }
 .provider-openai { background:var(--surface); border:1px solid var(--border); }
 .conversation-heading { flex:1; margin-right:16px; }
 .conversation-title { display:flex; align-items:center; gap:9px; max-width:100%; padding:2px 0; border:0; background:transparent; text-align:left; }
