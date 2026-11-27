@@ -20,7 +20,14 @@ instead (not available on Windows).
 
 - Gemini receives Pi's system prompt, history and tools (as `pi_codemode` and other `pi_` tools over a local MCP
   bridge), so Pi's command guard and Desk's change tracking apply as for other models.
-- Antigravity also has its own commands and edits, which bypass both. The package runs them unasked by default; here a
+- Pi's tools are declared to Gemini in full, as Antigravity's own are, rather than listed by name. Antigravity's own
+  tools that Pi's cover (commands, files, search, the web, questions, subagents, timers) are turned off, as they
+  bypassed Pi's command guard and Desk's change tracking.
+- Pi's system prompt reaches Gemini in the first message of a session, below Antigravity's own instructions. The server
+  accepts a client's system instructions, but in November 2026 it refused every model call of a session whose
+  instructions held Pi's opening line ("… running inside pi, a coding agent harness …"), with "Resource has been
+  exhausted" and a full allowance; Google's terms forbid consumer sign-ins in third-party harnesses.
+- Antigravity's remaining actions (image generation) run unasked in the package by default; here a
   computer without a saved choice asks first (`permissions: "default"` in `config.json` beside the token). Where
   the question cannot be shown, the action is refused. `/antigravity-acp permissions` changes it.
 - Outside `yolo`, Antigravity would also ask before each call to Pi's tools; those run unasked here, as Claude's do.

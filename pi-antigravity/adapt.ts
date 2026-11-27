@@ -35,6 +35,7 @@ export default function adaptAntigravity(): void {
 	hidePiToolLines(runtime);
 	passAddedMessages(runtime);
 	adjustConnections(runtime);
+	offerPiToolsNatively(runtime);
 	reuseModelList(provider);
 	runtime[ADAPTED] = true;
 }
@@ -68,7 +69,7 @@ function hidePiToolLines(runtime: Members): void {
 	if (typeof runtime.consumeUpdate !== "function") return;
 	const consume = (runtime.consumeUpdate as (binding: unknown, notification: { update?: ToolUpdate }) => void).bind(runtime);
 	const piCalls = new Set<string>();
-	const piTool = (update: ToolUpdate) => update._meta?.mcp?.server === "pi-bridge" || /^pi-bridge_/.test(update.title ?? "");
+	const piTool = (update: ToolUpdate) => update._meta?.mcp?.server === "pi-bridge" || /^(mcp_)?pi-bridge_/.test(update.title ?? "");
 	runtime.consumeUpdate = (binding: unknown, notification: { update?: ToolUpdate }) => {
 		const update = notification?.update, id = update?.toolCallId ?? "";
 		if (update?.sessionUpdate === "tool_call" && piTool(update)) return void piCalls.add(id);
@@ -135,6 +136,45 @@ function addedDuringTools(messages: PiMessage[]): Block[] {
 		}
 	}
 	return blocks.length ? [{ type: "text", text: "Added to the conversation while this tool ran, not part of its output:" }, ...blocks] : [];
+}
+
+interface SessionMeta { antigravity?: { disabledTools?: string[]; eagerMcpServers?: string[] } }
+interface Connection { sessionToolMetadata?: () => SessionMeta }
+
+/** The MCP server through which the provider offers Pi's tools. */
+const PI_BRIDGE = "pi-bridge";
+/**
+ * Antigravity's own tools that Pi's cover: commands, files, search, the web, questions, subagents and timers. Calls
+ * to them bypassed Pi's command guard and Desk's change tracking, asked for permission where Pi's would not, and kept
+ * their results out of Desk's tool cards. Its image generation and "finish" stay.
+ */
+const COVERED_BY_PI = ["run_command", "view_file", "create_file", "edit_file", "list_directory", "search_directory", "find_file",
+	"search_web", "read_url_content", "ask_question", "invoke_subagent", "run_workflow", "schedule"];
+
+/**
+ * The server lists the tools of a client's MCP servers in Gemini's instructions by name only, and Gemini reads one's
+ * description from a file before its first call; Antigravity's own tools are declared to the model in full. So Pi's
+ * tools, plan tools included, were the ones Gemini knew least about, and it reached for Antigravity's terminal first.
+ * Each session asks the server (session options in _meta.antigravity, 2026 builds) to declare Pi's tools in full
+ * (eagerMcpServers) and to leave out its own tools that Pi's cover (disabledTools).
+ *
+ * The server also takes a client's system instructions (systemPrompt.append), but it refused every model call of a
+ * session whose instructions held Pi's opening line ("… running inside pi, a coding agent harness …"), answering
+ * "Resource has been exhausted" while the account had 95% of its allowance left. Pi's prompt stays in the first
+ * message.
+ */
+function offerPiToolsNatively(runtime: Members): void {
+	if (typeof runtime.connectionFactory !== "function") return;
+	const create = runtime.connectionFactory as (options: ConnectionOptions) => Connection;
+	runtime.connectionFactory = (options: ConnectionOptions) => {
+		const connection = create(options), meta = connection.sessionToolMetadata?.bind(connection);
+		if (meta) connection.sessionToolMetadata = () => {
+			const base = meta();
+			return { ...base, antigravity: { ...base?.antigravity, eagerMcpServers: [PI_BRIDGE],
+				disabledTools: [...new Set([...base?.antigravity?.disabledTools ?? [], ...COVERED_BY_PI])] } };
+		};
+		return connection;
+	};
 }
 
 interface ConnectionOptions { initializeTimeoutMs?: number; env?: NodeJS.ProcessEnv }
