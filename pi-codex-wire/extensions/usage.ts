@@ -625,7 +625,12 @@ export default function codexUsage(pi: ExtensionAPI): void {
     updateUsageStatus(ctx, state);
     if (contextUsageSource(ctx) === "gemini") requestGeminiQuota(state);
   });
-  pi.on("turn_end", (_event, ctx) => updateUsageStatus(ctx, state));
+  pi.on("turn_end", (_event, ctx) => {
+    updateUsageStatus(ctx, state);
+    // By the end of the first model call the conversation's own server is running, so a long first turn needn't wait
+    // until it settles for the gauges.
+    if (contextUsageSource(ctx) === "gemini") requestGeminiQuota(state);
+  });
   pi.on("session_tree", (_event, ctx) => updateUsageStatus(ctx, state));
   pi.on("session_compact", (_event, ctx) => updateUsageStatus(ctx, state));
 

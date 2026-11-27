@@ -24,6 +24,11 @@ instead (not available on Windows).
   computer without a saved choice asks first (`permissions: "default"` in `config.json` beside the token). Where
   the question cannot be shown, the action is refused. `/antigravity-acp permissions` changes it.
 - Outside `yolo`, Antigravity would also ask before each call to Pi's tools; those run unasked here, as Claude's do.
+- Gemini's thinking text is not available: the server asks Google for none, and Google sent none when a test request
+  asked for it (November 2026). The thinking block holds the provider's notes on Antigravity's own actions; its notes on
+  calls to Pi's tools are left out here, as each call shows as that tool's card.
+- A message that arrives while Pi's tools run (Jordan's, or another agent's) goes to Gemini with the tools' results;
+  the provider passed on only the results.
 - The provider starts a separate server to list models whenever Pi refreshes them (each conversation start, each
   opening of the model list); here a list is reused for 12 hours.
 - On Windows the server unpacks about 140 MB into a new temporary folder at every start and Defender scans it: a

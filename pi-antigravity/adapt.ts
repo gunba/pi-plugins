@@ -32,6 +32,8 @@ export default function adaptAntigravity(): void {
 	const runtime = shared?.runtime, provider = shared?.provider;
 	if (!runtime || !provider || runtime[ADAPTED]) return;
 	allowPiTools(runtime);
+	hidePiToolLines(runtime);
+	passAddedMessages(runtime);
 	adjustConnections(runtime);
 	reuseModelList(provider);
 	runtime[ADAPTED] = true;
@@ -53,6 +55,86 @@ function allowPiTools(runtime: Members): void {
 		const live = !!binding?.writer && !binding.writer.finished && !binding.abortRequested;
 		return piTool && allow && live ? Promise.resolve({ outcome: { outcome: "selected", optionId: allow.optionId } }) : ask(binding, request);
 	};
+}
+
+interface ToolUpdate { sessionUpdate?: string; toolCallId?: string; title?: string | null; status?: string | null; _meta?: { mcp?: { server?: unknown } } }
+
+/**
+ * The provider writes a line into the thinking block for each tool call Antigravity reports, such as "[Antigravity
+ * tool: pi-bridge_pi_codemode — pending]". A call to one of Pi's tools also arrives as that tool's own card, so its
+ * lines are dropped; Antigravity's own actions keep theirs, as they have no card. Tool updates do nothing else there.
+ */
+function hidePiToolLines(runtime: Members): void {
+	if (typeof runtime.consumeUpdate !== "function") return;
+	const consume = (runtime.consumeUpdate as (binding: unknown, notification: { update?: ToolUpdate }) => void).bind(runtime);
+	const piCalls = new Set<string>();
+	const piTool = (update: ToolUpdate) => update._meta?.mcp?.server === "pi-bridge" || /^pi-bridge_/.test(update.title ?? "");
+	runtime.consumeUpdate = (binding: unknown, notification: { update?: ToolUpdate }) => {
+		const update = notification?.update, id = update?.toolCallId ?? "";
+		if (update?.sessionUpdate === "tool_call" && piTool(update)) return void piCalls.add(id);
+		if (update?.sessionUpdate === "tool_call_update" && (piCalls.has(id) || piTool(update))) {
+			if (update.status === "completed" || update.status === "failed") piCalls.delete(id);
+			return;
+		}
+		consume(binding, notification);
+	};
+}
+
+interface Block { type: string; text?: string; data?: string; mimeType?: string }
+interface PiMessage { role?: string; content?: string | Block[] }
+interface ToolAnswer { content?: Block[]; isError?: boolean }
+interface ToolBinding { key?: string; pendingTools?: Map<string, { resolve: (answer: ToolAnswer) => void }> }
+
+/**
+ * A message added to a Pi conversation while its tools run, Jordan's or another agent's, goes into the context after
+ * the tool results, where Claude reads it with them. The provider hands Antigravity only the results, as the answers to
+ * its still-running pi-bridge calls, and counts the rest of the context as delivered, so Gemini never saw such a message
+ * and went looking for one it had been sent. The messages are appended to the first answer handed over instead.
+ */
+function passAddedMessages(runtime: Members): void {
+	if (typeof runtime.runQueued !== "function" || typeof runtime.requestPiTool !== "function") return;
+	const run = (runtime.runQueued as (...args: unknown[]) => Promise<void>).bind(runtime);
+	const request = (runtime.requestPiTool as (binding: ToolBinding | undefined, invocation: { id?: string }) => Promise<ToolAnswer>).bind(runtime);
+	// Keyed like the runtime's bindings; set as each model call starts, before the answers it carries are handed over.
+	const added = new Map<string, Block[]>();
+	runtime.runQueued = (model: unknown, context: { messages?: PiMessage[] }, options: { sessionId?: string } | undefined, writer: unknown) => {
+		if (options?.sessionId) {
+			const key = `sid:${options.sessionId}`, blocks = addedDuringTools(context?.messages ?? []);
+			if (blocks.length) added.set(key, blocks); else added.delete(key);
+		}
+		return run(model, context, options, writer);
+	};
+	runtime.requestPiTool = (binding: ToolBinding | undefined, invocation: { id?: string }) => {
+		const answer = request(binding, invocation);
+		const pending = binding?.pendingTools?.get(invocation?.id ?? ""), key = binding?.key;
+		if (pending && key) {
+			const resolve = pending.resolve;
+			pending.resolve = result => {
+				const blocks = added.get(key);
+				added.delete(key);
+				resolve(blocks ? { ...result, content: [...(result?.content ?? []), ...blocks] } : result);
+			};
+		}
+		return answer;
+	};
+}
+
+/** The user-role messages (Pi's custom messages among them) that follow tool results after the latest assistant message. */
+function addedDuringTools(messages: PiMessage[]): Block[] {
+	let start = messages.length;
+	while (start > 0 && messages[start - 1]?.role !== "assistant") start--;
+	const tail = messages.slice(start), first = tail.findIndex(message => message.role === "toolResult");
+	if (first < 0) return [];
+	const blocks: Block[] = [];
+	for (const message of tail.slice(first)) {
+		if (message.role !== "user") continue;
+		const content = typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content ?? [];
+		for (const block of content) {
+			if (block.type === "text" && block.text) blocks.push({ type: "text", text: block.text });
+			else if (block.type === "image" && block.data && block.mimeType) blocks.push({ type: "image", data: block.data, mimeType: block.mimeType });
+		}
+	}
+	return blocks.length ? [{ type: "text", text: "Added to the conversation while this tool ran, not part of its output:" }, ...blocks] : [];
 }
 
 interface ConnectionOptions { initializeTimeoutMs?: number; env?: NodeJS.ProcessEnv }
