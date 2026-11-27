@@ -9,7 +9,7 @@ type Model = SessionSnapshot["models"][number];
 const modelKey = (model: Model) => `${model.provider}:${model.id}`;
 const providerNames: Record<string, string> = {
 	anthropic: "Anthropic", "openai-codex": "OpenAI Codex", openai: "OpenAI API",
-	google: "Google", "google-gemini-cli": "Google Gemini", "github-copilot": "GitHub Copilot",
+	google: "Google", "google-gemini-cli": "Google Gemini", "antigravity-acp": "Google Gemini", "github-copilot": "GitHub Copilot",
 };
 export function ModelPicker({ snapshot, disabled, select, accounts, history, refresh }: {
 	snapshot: Pick<SessionSnapshot, "id" | "leaf" | "empty" | "activity" | "model" | "models" | "modelSwitchConstraint">; disabled: boolean; select: (model: Model, context?: ModelContext) => void;

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 
 const paths: Record<string, ReactNode> = {
 	// Lucide "settings" (ISC licence).
@@ -68,12 +68,26 @@ const sections: Record<string, string> = {
 };
 export function SectionIcon({ id }: { id: string }) { return <Icon name={sections[id] ?? "settings"} />; }
 
+/** Gemini's sparkle as Google draws it since 2025 (shape and colours after Lobe Icons' "gemini-color", MIT licence). */
+const SPARKLE = "M20.6 10.8a14.1 14.1 0 0 1-4.4-3 14.1 14.1 0 0 1-3.7-6.4.5.5 0 0 0-1 0 14.1 14.1 0 0 1-3.7 6.4 14.2 14.2 0 0 1-4.4 3c-.7.3-1.3.5-2 .7a.5.5 0 0 0 0 1c.7.2 1.3.4 2 .7a14.1 14.1 0 0 1 4.4 3 14.1 14.1 0 0 1 3.7 6.4.5.5 0 0 0 1 0c.2-.7.4-1.4.7-2a14.1 14.1 0 0 1 3-4.4 14.1 14.1 0 0 1 6.4-3.7.5.5 0 0 0 0-1c-.7-.2-1.3-.4-2-.7Z";
+function GeminiMark() {
+	// Ids are per icon: a gradient defined in a hidden copy would not paint the visible ones.
+	const id = useId(), tints: [string, number, number, number, number, number][] = [["#08B962", 7, 15.5, 11, 12, 1], ["#F94543", 8, 5.5, 11.5, 11, 1], ["#FABC12", 3.5, 13.5, 17.5, 12, 0.46]];
+	return <svg viewBox="0 0 24 24">
+		<defs>{tints.map(([color, x1, y1, x2, y2, end], index) => <linearGradient key={color} id={`${id}-${index}`} gradientUnits="userSpaceOnUse" x1={x1} y1={y1} x2={x2} y2={y2}>
+			<stop stopColor={color} /><stop offset={end} stopColor={color} stopOpacity="0" /></linearGradient>)}</defs>
+		<path d={SPARKLE} fill="#3186FF" />
+		{tints.map((_, index) => <path key={index} d={SPARKLE} fill={`url(#${id}-${index})`} />)}
+	</svg>;
+}
+
 export function ProviderIcon({ id, title }: { id: string; title: string }) {
-	const brand = id.startsWith("openai") ? "openai" : id.startsWith("google") ? "google" : id.startsWith("anthropic") ? "anthropic" : "other";
+	// Google's providers and Antigravity's ("antigravity-acp") serve Gemini models.
+	const brand = id.startsWith("openai") ? "openai" : /^(google|antigravity)/.test(id) ? "gemini" : id.startsWith("anthropic") ? "anthropic" : "other";
 	return <span className={`provider-icon provider-${brand}`} aria-hidden="true">
 		{/* The mark runs from x 1 to 25: a 24-wide view cut its last stroke. */}
 		{brand === "anthropic" ? <svg viewBox="0 0 26 24" fill="currentColor"><path d="M8 4h3l7 16h-3.5l-1.4-3.5H6L4.5 20H1Zm-.9 9.7h4.8L9.5 7.8ZM15 4h3l7 16h-3.2Z" /></svg>
-			: brand === "google" ? <svg viewBox="0 0 24 24" fill="none" strokeWidth="4"><path stroke="#4285f4" d="M20.8 10.2v2c0 3-1.5 5.3-4 6.5" /><path stroke="#34a853" d="M17.6 18.2a9 9 0 0 1-13.7-3.7" /><path stroke="#fbbc05" d="M4.1 15.1a9 9 0 0 1 0-6.2" /><path stroke="#ea4335" d="M3.9 9.5A9 9 0 0 1 18 5" /><path stroke="#4285f4" d="M12 11.7h9" /></svg>
+			: brand === "gemini" ? <GeminiMark />
 			: brand === "openai" ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
 				{[0, 60, 120, 180, 240, 300].map(angle => <path key={angle} transform={`rotate(${angle} 12 12)`} d="M12 5c0-4 7-4 8-1s-1 5-4 7l-4 2V8l4-2" />)}
 			</svg> : <span>{title.slice(0, 2).toUpperCase()}</span>}
