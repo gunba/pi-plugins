@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
+import { type Relay, startRelay } from "./relay.ts";
 
 /**
  * Loaded right after the Gemini provider (pi-antigravity-acp-provider), and by Desk's sign-in after it, to change the
@@ -65,43 +66,72 @@ interface ConnectionOptions { initializeTimeoutMs?: number; env?: NodeJS.Process
  * waits up to START_TIMEOUT_MS instead. The provider stops a server by ending its process tree, so the unpacker never
  * deletes its folder; those are swept up (sweepUnpacks).
  *
- * Its Python also trusts only the certificates it ships, not Windows': behind the work laptop's Netskope inspection,
- * which signs Google's sites with RSM's own certificate, Google's sign-in page completed and the token exchange that
- * follows failed. On Windows the server gets the certificates Node trusts, including Windows' and those in
- * NODE_EXTRA_CA_CERTS, unless its environment already names a bundle.
+ * On Windows the server's HTTPS also goes through a proxy in this process (relay.ts), which lets it work behind TLS
+ * inspection such as the work laptop's Netskope; it is pointed there unless its environment names a proxy or
+ * certificates of its own. The factory is synchronous and the proxy's port is known only once it listens, so the
+ * runtime's methods that start servers (SERVER_STARTS) wait for that first.
  */
 function adjustConnections(runtime: Members): void {
 	if (typeof runtime.connectionFactory !== "function") return;
 	const create = runtime.connectionFactory as (options: ConnectionOptions) => unknown;
+	const windows = process.platform === "win32", relay = windows ? openRelay() : undefined;
+	for (const method of relay ? SERVER_STARTS : []) {
+		const start = runtime[method];
+		if (typeof start !== "function") continue;
+		runtime[method] = async (...args: unknown[]) => {
+			await relay!.relay.ready;
+			return (start as (...args: unknown[]) => Promise<unknown>).apply(runtime, args);
+		};
+	}
 	runtime.connectionFactory = (options: ConnectionOptions) => {
-		const windows = process.platform === "win32", bundle = windows ? trustedCertificates() : undefined;
 		if (windows) sweepUnpacks();
-		return create({ ...options, initializeTimeoutMs: Math.max(options?.initializeTimeoutMs ?? 0, START_TIMEOUT_MS),
-			...(bundle && options?.env ? { env: { REQUESTS_CA_BUNDLE: bundle, SSL_CERT_FILE: bundle, GRPC_DEFAULT_SSL_ROOTS_FILE_PATH: bundle, ...options.env } } : {}) });
+		const env = relay && options?.env ? throughRelay(options.env, relay) : undefined;
+		return create({ ...options, initializeTimeoutMs: Math.max(options?.initializeTimeoutMs ?? 0, START_TIMEOUT_MS), ...(env ? { env } : {}) });
 	};
 }
 
-let bundlePath: string | undefined;
-/** The certificates Node trusts, written once per process as a PEM bundle beside the provider's config. */
-function trustedCertificates(): string | undefined {
-	if (bundlePath !== undefined) return bundlePath || undefined;
-	bundlePath = "";
+/** The runtime's methods that call the connection factory (0.1.23); all are async. */
+const SERVER_STARTS = ["discoverModels", "fetchQuota", "loginGoogle", "verifyApiKey", "createBinding"];
+const OWN_NETWORK_SETTINGS = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "PI_ANTIGRAVITY_ACP_PROXY", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"];
+/**
+ * The server's environment for the relay. Its Python reads REQUESTS_CA_BUNDLE (requests) and SSL_CERT_FILE (urllib,
+ * httpx, aiohttp), its gRPC GRPC_DEFAULT_SSL_ROOTS_FILE_PATH, and its Go harness SSL_CERT_FILE, which on Windows
+ * replaces the system's certificates, so the bundle holds those as well as the relay's authority.
+ */
+function throughRelay(env: NodeJS.ProcessEnv, { relay, bundle }: { relay: Relay; bundle: string }): NodeJS.ProcessEnv | undefined {
+	if (!relay.url || Object.entries(env).some(([key, value]) => value && OWN_NETWORK_SETTINGS.includes(key.toUpperCase()))) return undefined;
+	return { ...env, REQUESTS_CA_BUNDLE: bundle, SSL_CERT_FILE: bundle, GRPC_DEFAULT_SSL_ROOTS_FILE_PATH: bundle, HTTPS_PROXY: relay.url };
+}
+
+/** Starts the relay and writes ca-bundle.pem beside the provider's config: the certificates Node trusts and the relay's. */
+function openRelay(): { relay: Relay; bundle: string } | undefined {
 	try {
-		const certificates = new Set<string>();
-		const add = (list: readonly string[] | undefined) => { for (const pem of list ?? []) certificates.add(pem.trim()); };
-		if (typeof tls.getCACertificates === "function") for (const kind of ["default", "system", "extra"] as const) add(tls.getCACertificates(kind));
-		else {
-			add(tls.rootCertificates);
-			const extra = process.env.NODE_EXTRA_CA_CERTS;
-			if (extra) add(readFileSync(extra, "utf8").match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) ?? []);
-		}
 		const agentDir = process.env.PI_CODING_AGENT_DIR?.trim().replace(/^~(?=$|[\\/])/, homedir()) || join(homedir(), ".pi", "agent");
-		const file = join(agentDir, "antigravity-acp-provider", "ca-bundle.pem"), text = `${[...certificates].join("\n")}\n`;
-		mkdirSync(join(agentDir, "antigravity-acp-provider"), { recursive: true });
-		if (!existsSync(file) || readFileSync(file, "utf8") !== text) writeFileSync(file, text);
-		bundlePath = file;
-	} catch { /* The server keeps its own certificates. */ }
-	return bundlePath || undefined;
+		const folder = join(agentDir, "antigravity-acp-provider"), bundle = join(folder, "ca-bundle.pem");
+		mkdirSync(folder, { recursive: true });
+		const trusted = trustedCertificates(), relay = startRelay(folder, trusted);
+		const text = `${[...trusted, relay.authority.trim()].join("\n")}\n`;
+		if (!existsSync(bundle) || readFileSync(bundle, "utf8") !== text) {
+			// A server starting meanwhile reads the old file or the new one, never half of one.
+			const temp = `${bundle}.${process.pid}.tmp`;
+			writeFileSync(temp, text);
+			renameSync(temp, bundle);
+		}
+		return { relay, bundle };
+	} catch { return undefined; }
+}
+
+/** The certificates Node trusts: its own, the system's and NODE_EXTRA_CA_CERTS. */
+function trustedCertificates(): string[] {
+	const certificates = new Set<string>();
+	const add = (list: readonly string[] | undefined) => { for (const pem of list ?? []) certificates.add(pem.trim()); };
+	if (typeof tls.getCACertificates === "function") for (const kind of ["default", "system", "extra"] as const) add(tls.getCACertificates(kind));
+	else {
+		add(tls.rootCertificates);
+		const extra = process.env.NODE_EXTRA_CA_CERTS;
+		if (extra) add(readFileSync(extra, "utf8").match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) ?? []);
+	}
+	return [...certificates];
 }
 
 let swept = 0;

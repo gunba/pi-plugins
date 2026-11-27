@@ -31,10 +31,14 @@ instead (not available on Windows).
   an idle server is kept for 30 minutes instead of 5 (about 170 MB each), and the allowance gauges are refreshed at
   most every 15 minutes. The provider stops a server by ending its processes, which leaves its unpacked folder
   (`%TEMP%\_MEI…`) behind; folders whose server has ended are deleted.
-- The Windows server trusts only the certificates it ships with. Behind the work laptop's Netskope inspection, which
-  signs Google's sites with RSM's certificate, Google's sign-in page completed but the token exchange after it failed.
-  On Windows it is given `ca-bundle.pem` (beside `config.json`): the certificates Node trusts, Windows' own and
-  `NODE_EXTRA_CA_CERTS` included.
+- On Windows the server's HTTPS goes through a proxy inside the Pi process (`relay.ts`). Behind TLS inspection
+  such as the work laptop's Netskope, which signs every site with RSM's certificate, the server's Python refused every
+  chain (it verifies strictly, and RSM's intermediate certificate lacks Key Usage), so sign-in failed at the token
+  exchange. Node verifies and reaches each site, and the server is shown it under a certificate from a local authority
+  (`relay-authority.pem`, its key included, beside `config.json` and the sign-in token); the traffic still passes the
+  inspection. Only names on port 443 are relayed. The server trusts
+  `ca-bundle.pem`: the certificates Node trusts (Windows' own and `NODE_EXTRA_CA_CERTS` included) and the local
+  authority's. A server whose environment names its own proxy or certificate bundle is left alone.
 - `index.ts` loads before the provider and `adapt.ts` after it; Desk's sign-in loads the provider and `adapt.ts`.
   `adapt.ts` replaces members the package does not export and skips any it no longer finds, so check it after each
   provider update.
