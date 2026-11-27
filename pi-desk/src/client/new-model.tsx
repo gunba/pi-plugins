@@ -1,3 +1,6 @@
+import { useEffect, useState } from "react";
+import type { SessionSnapshot } from "../shared/protocol.ts";
+import { api } from "./connection.ts";
 import type { WorkspaceSession } from "./workspace.ts";
 import { ModelPicker } from "./model-picker.tsx";
 import { useAnchoredPopover } from "./anchored-popover.ts";
@@ -52,20 +55,37 @@ export function ResumeModel({ sessions, session, disabled, change }: {
 	</div>;
 }
 
+/**
+ * The models a conversation started now on the computer can use, asked of it each time the choice is shown. A running
+ * conversation's list dates from its own start: one from before a sign-in lacks that provider. Undefined until the
+ * computer answers, and for a Desk too old to answer.
+ */
+function useComputerModels(computer: string | undefined): SessionSnapshot["models"] | undefined {
+	const [models, setModels] = useState<SessionSnapshot["models"]>();
+	useEffect(() => {
+		let alive = true;
+		api<{ models: SessionSnapshot["models"] }>("/models", undefined, computer).then(value => { if (alive) setModels(value.models); }, () => {});
+		return () => { alive = false; };
+	}, [computer]);
+	return models;
+}
+
 /** Model and reasoning for a new conversation, chosen with the same picker as the composer. */
 export function NewConversationModel({ sessions, computer, value, change, disabled }: {
 	sessions: WorkspaceSession[]; computer?: string; value: ModelChoice; change: (value: ModelChoice) => void; disabled: boolean;
 }) {
+	const current = useComputerModels(computer);
 	const source = sessions.find(session => (computer === undefined || session.computer === computer) && session.snapshot?.models.length)?.snapshot;
-	if (!source) return null;
-	const find = (provider?: string, id?: string) => source.models.find(model => model.provider === provider && model.id === id);
+	const models = current?.length ? current : source?.models;
+	if (!models?.length) return null;
+	const find = (provider?: string, id?: string) => models.find(model => model.provider === provider && model.id === id);
 	const [provider, id] = value.model.split(/\/(.*)/s);
-	const chosen = find(provider, id) ?? (source.defaultModel ? find(source.defaultModel.provider, source.defaultModel.id) : undefined);
+	const chosen = find(provider, id) ?? (source?.defaultModel ? find(source.defaultModel.provider, source.defaultModel.id) : undefined);
 	return <div className="new-model-fields">
 		<div className="new-model-field"><span>Model</span>
 			<ModelPicker disabled={disabled} select={model => change({ ...value, model: `${model.provider}/${model.id}` })}
 				// Nothing to carry over yet, so any model can be chosen without a provider-switch warning.
-				snapshot={{ id: `new:${computer ?? "local"}`, leaf: null, empty: true, activity: "idle", models: source.models,
+				snapshot={{ id: `new:${computer ?? "local"}`, leaf: null, empty: true, activity: "idle", models,
 					modelSwitchConstraint: null, model: chosen ? { ...chosen, images: false } : undefined }} />
 		</div>
 		<div className="new-model-field"><span>Reasoning</span>

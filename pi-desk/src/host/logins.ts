@@ -10,6 +10,7 @@ import { atomicJson } from "../../manage/store.ts";
 import { providerIdentity } from "./provider-identity.ts";
 import type { LoginProvider, LoginsSnapshot, ProviderAuthType, SignIn } from "../shared/logins.ts";
 import type { ModelOption, ModelProvider } from "../shared/services.ts";
+import type { SessionSnapshot } from "../shared/protocol.ts";
 
 const pending = (state: SignIn["state"]) => ["starting", "waiting"].includes(state);
 const safeLinks = (links: { label?: string; url: string }[]) => links.map(link => {
@@ -17,7 +18,7 @@ const safeLinks = (links: { label?: string; url: string }[]) => links.map(link =
 	if (url.protocol !== "https:" || url.username || url.password) throw Error("Provider returned an invalid sign-in link.");
 	return { label: link.label ?? "Open sign-in page", url: url.href };
 });
-type RuntimeFactory = (options: CreateModelRuntimeOptions) => Promise<Pick<ModelRuntime, "getProvider" | "getProviders" | "getModels" | "login" | "logout" | "registerNativeProvider">>;
+type RuntimeFactory = (options: CreateModelRuntimeOptions) => Promise<Pick<ModelRuntime, "getProvider" | "getProviders" | "getModels" | "getAvailable" | "login" | "logout" | "registerNativeProvider">>;
 
 /**
  * Extension packages of the plugins package whose providers Pi itself lacks, so Desk's sign-in loads them: Gemini on a
@@ -85,6 +86,14 @@ export class Logins {
 		return catalog.getModels(id).map(model => ({ id: model.id, name: model.name, efforts: getSupportedThinkingLevels(model),
 			input: model.cost.input, output: model.cost.output }))
 			.sort((a, b) => a.input + a.output - b.input - b.output || a.name.localeCompare(b.name));
+	}
+	/**
+	 * The chat models a conversation started now can use: providers signed in or with a key, extension providers
+	 * included. A running conversation's own list dates from its start, so one from before a sign-in lacks that
+	 * provider.
+	 */
+	async availableModels(): Promise<SessionSnapshot["models"]> {
+		return (await (await this.runtime()).getAvailable()).map(model => ({ id: model.id, provider: model.provider, name: model.name }));
 	}
 	async snapshot(): Promise<LoginsSnapshot> {
 		let providers: LoginProvider[];

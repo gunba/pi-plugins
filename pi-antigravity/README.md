@@ -23,6 +23,7 @@ instead (not available on Windows).
 - Antigravity also has its own commands and edits, which bypass both. The package runs them unasked by default; here a
   computer without a saved choice asks first (`permissions: "default"` in `config.json` beside the token). Where
   the question cannot be shown, the action is refused. `/antigravity-acp permissions` changes it.
+- Outside `yolo`, Antigravity would also ask before each call to Pi's tools; those run unasked here, as Claude's do.
 - `/antigravity-acp doctor` shows the server, sign-in, permission mode and any Pi tool the bridge left out;
   `/antigravity-acp quota` shows the plan's remaining allowance.
 

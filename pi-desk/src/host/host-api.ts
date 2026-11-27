@@ -109,6 +109,7 @@ export class HostApi {
 	/** Pi's logins and the workspace's other computers: moving conversations and keeping copies. */
 	private async workspace(url: URL, request: ApiRequest, data: Record<string, unknown>): Promise<ApiResponse | undefined> {
 		if (url.pathname === "/api/logins" && request.method === "GET") return reply(await this.host.logins()!.snapshot());
+		if (url.pathname === "/api/models" && request.method === "GET") return reply({ models: await this.host.logins()!.availableModels() });
 		if (url.pathname === "/api/logins/sign-out" && request.method === "POST") return reply(await this.host.logins()!.signOut(string(data.provider, 200)));
 		if (url.pathname === "/api/teleport/move" && request.method === "POST")
 			return reply({ key: (await this.host.moves.move(string(data.computer, 36), string(data.session, 100), string(data.cwd, 4096))).key });
