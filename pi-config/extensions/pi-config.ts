@@ -66,7 +66,8 @@ const PI_SETTINGS: SettingField[] = [
   field("fullscreenScrollbar", "Fullscreen scrollbar", "enum", "Transcript scrollbar visibility.", "auto", ["auto", "always", "hidden"]),
   field("fullscreenCopyOnSelect", "Copy on selection", "boolean", "Automatically copy selected text in fullscreen mode.", true),
   field("collapseChangelog", "Collapse changelog", "boolean", "Show condensed changelog after updates.", false),
-  field("enableInstallTelemetry", "Install telemetry", "boolean", "Send anonymous install/update version ping.", true),
+  ...("getEnableInstallTelemetry" in SettingsManager.prototype
+    ? [field("enableInstallTelemetry", "Install telemetry", "boolean", "Send anonymous install/update version ping.", true)] : []),
   field("enableAnalytics", "Analytics", "boolean", "Opt in to analytics data sharing.", false),
   field("externalEditor", "External editor", "string", "Editor command; when unset Pi uses VISUAL, EDITOR, then the platform default.", ""),
   field("defaultProjectTrust", "Project trust", "enum", "Fallback trust policy. Agent-directory setting only.", "ask", ["ask", "always", "never"]),
