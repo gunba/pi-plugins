@@ -500,7 +500,7 @@ details[open] > summary:before {
 .session-marks { flex:0 1 auto; min-width:0; max-width:60%; margin-left:auto; padding-left:6px; display:inline-flex; align-items:center; gap:6px; }
 .session-metadata .session-model { display:inline-flex; align-items:center; gap:4px; min-width:0; }
 .session-model > span:last-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.session-model .provider-icon { width:13px; height:13px; border-radius:0; background:none; color:inherit; }
+.session-model .provider-icon { width:13px; height:13px; border-radius:0; border:0; background:none; color:inherit; }
 .session-model .provider-icon svg { width:12px; height:12px; }
 .session-model .provider-icon > span { font-size:8px; }
 /* A conversation's banner picture (picture.tsx) behind its row, faded to the sidebar where the text is; its subject
@@ -1023,7 +1023,7 @@ details[open] > summary:before {
 .model-menu-search input { width:100%; padding:8px 10px; border-radius:7px; font-size:13px; background:var(--bg); }
 .model-menu-list { overflow:auto; overscroll-behavior:contain; min-height:0; padding:0 6px 6px; }
 .model-menu-provider { display:flex; align-items:center; gap:7px; padding:8px; color:var(--muted); font-size:11px; font-weight:600; }
-.model-menu-provider .provider-icon { width:18px; height:18px; background:none; }
+.model-menu-provider .provider-icon { width:18px; height:18px; border:0; background:none; }
 .model-menu-provider .provider-icon svg { width:16px; height:16px; }
 .model-menu-option { display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%; min-height:34px; padding:8px 10px; border:0; border-radius:6px; background:transparent; color:var(--text); font-size:12px; text-align:left; }
 .model-menu-option > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -1946,7 +1946,6 @@ details[open] > summary:before {
 .provider-icon svg { width:24px; height:24px; }
 .provider-icon > span { font-size:12px; font-weight:650; letter-spacing:.5px; }
 .provider-anthropic { background:#d58b691c; color:#d89476; }
-.provider-gemini { background:var(--surface); border:1px solid var(--border); }
 .provider-openai { background:var(--surface); border:1px solid var(--border); }
 .conversation-heading { flex:1; margin-right:16px; }
 .conversation-title { display:flex; align-items:center; gap:9px; max-width:100%; padding:2px 0; border:0; background:transparent; text-align:left; }
