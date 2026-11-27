@@ -15,7 +15,7 @@ export type UsageWindow = {
   resetAtMs?: number;
   resetAfterSeconds?: number;
 };
-export type UsageSource = "codex" | "claude";
+export type UsageSource = "codex" | "claude" | "gemini";
 type UsageSnapshot = {
   source: UsageSource;
   updatedAtMs: number;
@@ -34,8 +34,15 @@ type SessionStatsCache = {
 
 const STATUS_KEY = "codex-usage";
 const DISABLE_STATUS_ENV = "PI_CODEX_USAGE_STATUS";
-const SOURCE_LABELS: Record<UsageSource, string> = { codex: "Codex", claude: "Claude" };
-const USAGE_SOURCES: readonly UsageSource[] = ["codex", "claude"];
+const SOURCE_LABELS: Record<UsageSource, string> = { codex: "Codex", claude: "Claude", gemini: "Gemini" };
+const USAGE_SOURCES: readonly UsageSource[] = ["codex", "claude", "gemini"];
+/** The Gemini provider (pi-antigravity-acp-provider) answers `{ reply }` on this channel with its plan's quota. */
+const GEMINI_QUOTA_REQUEST = "antigravity-acp:quota:request";
+/**
+ * Antigravity reports its quota only when asked, and each answer takes a separate Antigravity process about 4 s, so a
+ * computer asks after a Gemini reply at most this often. Its conversations share the answer through the snapshot file.
+ */
+const GEMINI_QUOTA_INTERVAL_MS = 5 * 60_000;
 
 // Factories can share this module across reloads. Never share captured contexts,
 // timers or per-session preferences between extension instances.
@@ -50,6 +57,7 @@ type UsageState = {
   statsCache?: SessionStatsCache;
   disposed: boolean;
   presentation?: Presentation;
+  geminiAskedAt?: number;
   dispose(): void;
 };
 const statusOwners = new WeakMap<ExtensionAPI["events"], UsageState>();
@@ -158,6 +166,24 @@ function parseClaudeUsageHeaders(headers: HeaderMap | undefined): UsageSnapshot 
   return primary || secondary ? { source: "claude", updatedAtMs: Date.now(), primary, secondary } : undefined;
 }
 
+type GeminiQuota = { at?: unknown; groups?: { displayName?: unknown; buckets?: { window?: unknown; remainingFraction?: unknown; resetTime?: unknown }[] }[] };
+
+/** The Gemini models' 5-hour and weekly windows from the provider's quota. */
+export function parseGeminiQuota(quota: GeminiQuota | undefined, nowMs = Date.now()): UsageSnapshot | undefined {
+  const groups = Array.isArray(quota?.groups) ? quota.groups : [];
+  const group = groups.find(group => /gemini/i.test(String(group?.displayName))) ?? groups[0];
+  const window = (name: string, minutes: number): UsageWindow | undefined => {
+    const bucket = Array.isArray(group?.buckets) ? group.buckets.find(bucket => bucket?.window === name) : undefined;
+    if (typeof bucket?.remainingFraction !== "number" || !Number.isFinite(bucket.remainingFraction)) return;
+    const resetAtMs = typeof bucket.resetTime === "string" ? Date.parse(bucket.resetTime) : NaN;
+    return { label: labelForWindow(minutes, name), windowMinutes: minutes, usedPercent: clampPercent((1 - bucket.remainingFraction) * 100),
+      ...(Number.isFinite(resetAtMs) ? { resetAtMs } : {}) };
+  };
+  const primary = window("5h", 300), secondary = window("weekly", 10_080);
+  const at = typeof quota?.at === "number" && Number.isFinite(quota.at) ? quota.at : nowMs;
+  return primary || secondary ? { source: "gemini", updatedAtMs: at, primary, secondary } : undefined;
+}
+
 export function parseUsageHeaders(headers: HeaderMap | undefined, source: UsageSource = "codex"): UsageSnapshot | undefined {
   return source === "claude" ? parseClaudeUsageHeaders(headers) : parseCodexUsageHeaders(headers);
 }
@@ -233,7 +259,7 @@ function persistSnapshots(state: UsageState, sources: readonly UsageSource[]): v
 }
 
 const usageDirectory = () => process.env.PI_CODEX_USAGE_DIR || join(getAgentDir(), "codex-wire");
-const snapshotFile = (directory: string, source: UsageSource) => join(directory, `${source === "codex" ? "usage" : "usage-claude"}.json`);
+const snapshotFile = (directory: string, source: UsageSource) => join(directory, `${source === "codex" ? "usage" : `usage-${source}`}.json`);
 
 /** The allowance windows of a source last recorded on this computer, by any conversation, that haven't reset yet. */
 export function savedUsageWindows(source: UsageSource): UsageWindow[] {
@@ -252,10 +278,32 @@ export function currentUsageSource(model: ExtensionContext["model"] | undefined,
   if (oauth && model?.provider === "anthropic" && model.api === "anthropic-messages") {
     try { if (new URL(model.baseUrl).origin === "https://api.anthropic.com") return "claude"; } catch { /* No known subscription endpoint. */ }
   }
+  // Signed in with Google rather than a Gemini API key.
+  if (oauth && model?.provider === "antigravity-acp") return "gemini";
 }
 
 function contextUsageSource(ctx: ExtensionContext): UsageSource | undefined {
-  return currentUsageSource(ctx.model, ctx.model?.provider === "anthropic" && ctx.modelRegistry.isUsingOAuth(ctx.model));
+  const model = ctx.model;
+  return currentUsageSource(model, !!model && ["anthropic", "antigravity-acp"].includes(model.provider) && ctx.modelRegistry.isUsingOAuth(model));
+}
+
+/** Asks the Gemini provider for the plan's quota, unless this computer has a recent answer or this process just asked. */
+function requestGeminiQuota(state: UsageState): void {
+  const now = Date.now();
+  if (state.disposed || now - (state.geminiAskedAt ?? 0) < GEMINI_QUOTA_INTERVAL_MS) return;
+  const saved = readPersistedSnapshots(snapshotFile(state.directory, "gemini")).gemini;
+  if (saved && now - saved.updatedAtMs < GEMINI_QUOTA_INTERVAL_MS) {
+    if (saved.updatedAtMs > (state.snapshots.gemini?.updatedAtMs ?? 0)) recordSnapshot(saved, state);
+    return;
+  }
+  state.geminiAskedAt = now;
+  let answered = false;
+  state.events.emit(GEMINI_QUOTA_REQUEST, { reply: (result: unknown) => {
+    if (answered) return;
+    answered = true;
+    const answer = recordValue(result), snapshot = answer?.ok === true ? parseGeminiQuota(recordValue(answer.quota) as GeminiQuota) : undefined;
+    if (snapshot) recordSnapshot(snapshot, state);
+  } });
 }
 
 function formatDurationUntil(targetMs: number | undefined, nowMs = Date.now()): string | undefined {
@@ -302,7 +350,7 @@ function formatUsageDetails(state: UsageState, nowMs = Date.now()): string {
   if (entries.length === 0) {
     return [
       "No subscription allowance snapshot yet.",
-      "Allowance updates passively from Codex and Claude responses. No usage endpoint is polled.",
+      "Allowance updates passively from Codex and Claude responses. Gemini's is asked of Antigravity after a reply, at most every 5 minutes.",
     ].join("\n");
   }
 
@@ -322,7 +370,7 @@ function formatUsageDetails(state: UsageState, nowMs = Date.now()): string {
     lines.push("");
   }
   for (const source of USAGE_SOURCES) if (state.snapshotFiles[source]) lines.push(`${SOURCE_LABELS[source]} state: ${state.snapshotFiles[source]}`);
-  lines.push("Network policy: passive only; no usage polling or extra provider requests.");
+  lines.push("Network policy: Codex and Claude passive only; Gemini asked after a reply, at most every 5 minutes.");
   return lines.join("\n").trimEnd();
 }
 
@@ -435,7 +483,8 @@ function publishUsage(ctx: ExtensionContext, state: UsageState): void {
     }),
   };
   if (!allowance) data.items = [{ id: "no-snapshot", title: source ? `No current ${SOURCE_LABELS[source]} allowance snapshot` : "Subscription allowance unavailable",
-    body: source ? `Allowance arrives with normal ${SOURCE_LABELS[source]} responses. No polling or extra provider request is made.`
+    body: source === "gemini" ? "Gemini's allowance is asked of Antigravity after a reply, at most every 5 minutes."
+      : source ? `Allowance arrives with normal ${SOURCE_LABELS[source]} responses. No polling or extra provider request is made.`
       : "Remaining subscription allowance is not provided by this integration for the selected model. Token and cost totals above are recorded usage, not a balance." }];
   remote.publish("pi-usage", { kind: "details", surface: "settings", title: "Usage & allowance", data,
     badges: state.enabled && source ? [allowance?.primary, allowance?.secondary].flatMap(window => {
@@ -563,8 +612,12 @@ export default function codexUsage(pi: ExtensionAPI): void {
 
   pi.on("model_select", (_event, ctx) => {
     updateUsageStatus(ctx, state);
+    if (contextUsageSource(ctx) === "gemini") requestGeminiQuota(state);
   });
-  pi.on("agent_settled", (_event, ctx) => updateUsageStatus(ctx, state));
+  pi.on("agent_settled", (_event, ctx) => {
+    updateUsageStatus(ctx, state);
+    if (contextUsageSource(ctx) === "gemini") requestGeminiQuota(state);
+  });
   pi.on("turn_end", (_event, ctx) => updateUsageStatus(ctx, state));
   pi.on("session_tree", (_event, ctx) => updateUsageStatus(ctx, state));
   pi.on("session_compact", (_event, ctx) => updateUsageStatus(ctx, state));
