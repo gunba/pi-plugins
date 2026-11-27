@@ -90,6 +90,11 @@ and prompt shaping apply through the configured native provider, including child
 sessions and compaction requests. No Claude Code executable or wrapper is used;
 API-key requests and other providers keep their native transport.
 
+Gemini on a Google AI subscription runs through Google's own Antigravity ACP server
+([`pi-antigravity`](../pi-antigravity/README.md)). Sign in per computer from **Accounts & connections**; the first
+sign-in downloads the server. Gemini uses Pi's tools through the server, and Antigravity's own commands and edits ask
+first.
+
 Claude uses Pi's native thinking levels, tools and model request handling, and
 compacts the way Claude Code does (`pi-compaction-context`). Codex Fast/Ultrafast, Wire transport and encrypted compaction remain
 Codex-specific. Claude startup does not activate Codex Wire; Wire activates when

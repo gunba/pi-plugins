@@ -43,6 +43,8 @@ Do not pin a ref, or Pi's update checks will not see new commits.
   allowance status, `/pi-usage` and the Fast tier.
 - [`@gotgenes/pi-anthropic-auth`](https://github.com/gotgenes/pi-anthropic-auth): Claude sign-in. The Pi update
   workflow updates it hourly to its latest release.
+- [`pi-antigravity`](pi-antigravity/README.md): Gemini on a Google AI subscription through Google's Antigravity ACP
+  server (`pi-antigravity-acp-provider`, followed by the same workflow), with Antigravity's own actions asking first.
 - [`pi-output-budget`](pi-output-budget/README.md): Pi's own output limits (2,000 lines or 50 KB) for every tool, with
   the full text saved to a file; images read at most 1.5 MB.
 - [`pi-compaction-context`](pi-compaction-context/README.md): compaction summaries written as Claude Code writes them, and briefs from the prompt cache

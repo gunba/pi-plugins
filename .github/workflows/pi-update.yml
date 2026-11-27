@@ -1,7 +1,9 @@
 name: Pi update
 
-# Desk follows each release of Pi and of the Claude sign-in extension (@gotgenes/pi-anthropic-auth), which must keep
-# up with changes on Anthropic's side: pin the new versions, pass the same checks as any release, then publish. Hosts
+# Desk follows each release of Pi, of the Claude sign-in extension (@gotgenes/pi-anthropic-auth), which must keep up
+# with changes on Anthropic's side, and of the Gemini provider (pi-antigravity-acp-provider), whose signed catalog
+# approves each new release of Google's Antigravity server: pin the new versions, pass the same checks as any release,
+# then publish. Hosts
 # with automatic updates install the result within the hour. A failure opens an issue instead of releasing.
 # GitHub skips many scheduled runs when it is busy, so the check also runs after each push to main passes CI: a fix
 # pushed for a failed update is then published without anyone starting this workflow by hand.
@@ -54,12 +56,19 @@ jobs:
           echo "auth_current=$auth_current" >> "$GITHUB_OUTPUT"
           if [ "$auth_latest" != "$auth_current" ]; then echo "update=true" >> "$GITHUB_OUTPUT"; fi
           echo "Claude sign-in extension in Desk: $auth_current; latest: $auth_latest"
+          gemini_latest=$(npm view pi-antigravity-acp-provider version)
+          gemini_current=$(node -p 'require("./package.json").dependencies["pi-antigravity-acp-provider"]')
+          echo "gemini_latest=$gemini_latest" >> "$GITHUB_OUTPUT"
+          echo "gemini_current=$gemini_current" >> "$GITHUB_OUTPUT"
+          if [ "$gemini_latest" != "$gemini_current" ]; then echo "update=true" >> "$GITHUB_OUTPUT"; fi
+          echo "Gemini provider in Desk: $gemini_current; latest: $gemini_latest"
       - name: Pin the new versions
         if: steps.pi.outputs.update == 'true'
         shell: bash
         env:
           PI_VERSION: ${{ steps.pi.outputs.latest }}
           AUTH_VERSION: ${{ steps.pi.outputs.auth_latest }}
+          GEMINI_VERSION: ${{ steps.pi.outputs.gemini_latest }}
         run: |
           # pi-ai and pi-tui at the versions that Pi release depends on.
           npm view "@earendil-works/pi-coding-agent@$PI_VERSION" dependencies --json > /tmp/pi-dependencies.json
@@ -68,12 +77,13 @@ jobs:
             // npm view gives an array of objects when the registry lists the version more than once (as for Pi 1.4.0).
             const listed = JSON.parse(readFileSync("/tmp/pi-dependencies.json", "utf8"));
             const versions = { "@earendil-works/pi-coding-agent": process.env.PI_VERSION, ...(Array.isArray(listed) ? listed.at(-1) : listed),
-              "@gotgenes/pi-anthropic-auth": process.env.AUTH_VERSION };
+              "@gotgenes/pi-anthropic-auth": process.env.AUTH_VERSION, "pi-antigravity-acp-provider": process.env.GEMINI_VERSION };
+            const followed = name => name.startsWith("@earendil-works/pi-") || name === "@gotgenes/pi-anthropic-auth" || name === "pi-antigravity-acp-provider";
             for (const file of ["package.json", "pi-desk/package.json", "pi-codex-wire/package.json"]) {
               const json = JSON.parse(readFileSync(file, "utf8"));
               for (const field of ["dependencies", "devDependencies"])
                 for (const name of Object.keys(json[field] ?? {}))
-                  if ((name.startsWith("@earendil-works/pi-") || name === "@gotgenes/pi-anthropic-auth") && versions[name]) json[field][name] = versions[name];
+                  if (followed(name) && versions[name]) json[field][name] = versions[name];
               writeFileSync(file, JSON.stringify(json, null, 2) + "\n");
             }'
           npm install --no-audit --no-fund --ignore-scripts
@@ -96,6 +106,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PI_VERSION: ${{ steps.pi.outputs.latest }}
           AUTH_VERSION: ${{ steps.pi.outputs.auth_latest }}
+          GEMINI_VERSION: ${{ steps.pi.outputs.gemini_latest }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -104,7 +115,7 @@ jobs:
           npm --prefix pi-desk version patch --no-git-tag-version --ignore-scripts > /dev/null
           desk=$(node -p 'require("./pi-desk/package.json").version')
           plugins=$(node -p 'require("./package.json").version')
-          git commit -qam "Update Pi to $PI_VERSION and the Claude sign-in extension to $AUTH_VERSION; release Desk $desk with plugins $plugins"
+          git commit -qam "Update Pi to $PI_VERSION, the Claude sign-in extension to $AUTH_VERSION and the Gemini provider to $GEMINI_VERSION; release Desk $desk with plugins $plugins"
           git push origin HEAD:main
           sha=$(git rev-parse HEAD)
           echo "desk=$desk" >> "$GITHUB_OUTPUT"
@@ -131,5 +142,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue create --title "Pi ${{ steps.pi.outputs.latest }} / Claude sign-in ${{ steps.pi.outputs.auth_latest }} need attention before Desk can use them" \
-            --body "The automatic update failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Desk stays on Pi ${{ steps.pi.outputs.current }} and Claude sign-in ${{ steps.pi.outputs.auth_current }} until it is fixed."
+          gh issue create --title "Pi ${{ steps.pi.outputs.latest }} / Claude sign-in ${{ steps.pi.outputs.auth_latest }} / Gemini provider ${{ steps.pi.outputs.gemini_latest }} need attention before Desk can use them" \
+            --body "The automatic update failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Desk stays on Pi ${{ steps.pi.outputs.current }}, Claude sign-in ${{ steps.pi.outputs.auth_current }} and Gemini provider ${{ steps.pi.outputs.gemini_current }} until it is fixed."
