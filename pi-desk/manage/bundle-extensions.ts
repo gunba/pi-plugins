@@ -38,9 +38,9 @@ export async function bundleExtensions(root: string, build: typeof import("esbui
 			// A package file stays a separate module, loaded from where the source would load it.
 			return found.path.includes(`${sep}node_modules${sep}`) ? { path: fromBundle(found.path), external: true } : undefined;
 		});
-		// Each module declares its original URL; the define below points its import.meta.url expressions at it.
+		// Each module declares its original URL; the define below points its import.meta.url expressions at it. That
+		// includes a package's own files bundled with its entry: an undeclared one failed to load at all.
 		context.onLoad({ filter: /\.(?:[cm]?ts|[cm]?js)$/ }, async args => {
-			if (args.path.includes(`${sep}node_modules${sep}`) && !entries.some(entry => resolve(root, entry) === args.path)) return;
 			const source = await readFile(args.path, "utf8");
 			if (!source.includes("import.meta")) return;
 			const original = JSON.stringify(relative(outdir, args.path).split(sep).join("/"));

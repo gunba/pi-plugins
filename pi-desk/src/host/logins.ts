@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import lockfile from "proper-lockfile";
-import { ModelRuntime, CredentialSynchronizationError, readStoredCredential, type CreateModelRuntimeOptions } from "@earendil-works/pi-coding-agent";
-import { getSupportedThinkingLevels, type AuthPrompt, type AuthEvent, type Credential } from "@earendil-works/pi-ai";
+import { ModelRuntime, CredentialSynchronizationError, discoverAndLoadExtensions, readStoredCredential, type CreateModelRuntimeOptions } from "@earendil-works/pi-coding-agent";
+import { getSupportedThinkingLevels, type AuthPrompt, type AuthEvent, type Credential, type Provider } from "@earendil-works/pi-ai";
 import { atomicJson } from "../../manage/store.ts";
 import { providerIdentity } from "./provider-identity.ts";
 import type { LoginProvider, LoginsSnapshot, ProviderAuthType, SignIn } from "../shared/logins.ts";
@@ -16,7 +17,27 @@ const safeLinks = (links: { label?: string; url: string }[]) => links.map(link =
 	if (url.protocol !== "https:" || url.username || url.password) throw Error("Provider returned an invalid sign-in link.");
 	return { label: link.label ?? "Open sign-in page", url: url.href };
 });
-type RuntimeFactory = (options: CreateModelRuntimeOptions) => Promise<Pick<ModelRuntime, "getProvider" | "getProviders" | "getModels" | "login" | "logout">>;
+type RuntimeFactory = (options: CreateModelRuntimeOptions) => Promise<Pick<ModelRuntime, "getProvider" | "getProviders" | "getModels" | "login" | "logout" | "registerNativeProvider">>;
+
+/**
+ * Extension packages of the plugins package whose providers Pi itself lacks, so Desk's sign-in loads them: Gemini on a
+ * Google plan. Only these are loaded in the host, once, because every extension's start-up would run in a process
+ * that lives for days. The plugins manifest names their entries: precompiled in a release, sources in development.
+ */
+const SIGN_IN_PACKAGES = ["pi-antigravity-acp-provider"];
+let signInProviders: Promise<Provider[]> | undefined;
+function extensionProviders(): Promise<Provider[]> {
+	return signInProviders ??= (async () => {
+		const root = fileURLToPath(new URL("../../../", import.meta.url));
+		const entries: string[] = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).pi?.extensions ?? [];
+		const files = entries.filter(entry => SIGN_IN_PACKAGES.some(name => entry.includes(name))).map(entry => resolve(root, entry));
+		if (!files.length) return [];
+		// Discovery also loads <cwd>/.pi/extensions and <agentDir>/extensions, which the entry's own folder lacks.
+		const folder = dirname(files[0]!), loaded = await discoverAndLoadExtensions(files, folder, folder);
+		for (const { path, error } of loaded.errors) console.error(`Desk sign-in could not load ${path}: ${error}`);
+		return loaded.runtime.pendingNativeProviderRegistrations.map(entry => entry.provider);
+	})().catch(error => { console.error(`Desk sign-in could not load extension providers: ${error instanceof Error ? error.message : error}`); return []; });
+}
 interface Active { controller: AbortController; work: Promise<void>; inputs: string[]; answer?: { id: string; finish: (answer?: string) => void } }
 
 /**
@@ -30,11 +51,16 @@ export class Logins {
 	private operations = new Map<string, SignIn>();
 	private active = new Map<string, Active>();
 	private catalog?: Promise<Pick<ModelRuntime, "getProviders" | "getModels">>;
-	constructor(agentDir: string, factory: RuntimeFactory = options => ModelRuntime.create(options)) {
-		this.agentDir = agentDir; this.authPath = join(agentDir, "auth.json"); this.factory = factory;
+	private extensions: () => Promise<Provider[]>;
+	/** `extensions`: providers registered by extensions, offered for sign-in only; none by default with a given factory. */
+	constructor(agentDir: string, factory?: RuntimeFactory, extensions: () => Promise<Provider[]> = factory ? async () => [] : extensionProviders) {
+		this.agentDir = agentDir; this.authPath = join(agentDir, "auth.json"); this.factory = factory ?? (options => ModelRuntime.create(options));
+		this.extensions = extensions;
 	}
-	private runtime(signal?: AbortSignal) {
-		return this.factory({ authPath: this.authPath, modelsPath: join(this.agentDir, "models.json"), refreshOnCreate: false, allowModelNetwork: false, signal });
+	private async runtime(signal?: AbortSignal) {
+		const runtime = await this.factory({ authPath: this.authPath, modelsPath: join(this.agentDir, "models.json"), refreshOnCreate: false, allowModelNetwork: false, signal });
+		for (const provider of await this.extensions()) runtime.registerNativeProvider(provider);
+		return runtime;
 	}
 	get signingIn(): boolean { return this.active.size > 0; }
 	/** The provider list needs no credentials: read with an empty store, so listing never creates or refreshes anything. */
@@ -43,7 +69,7 @@ export class Logins {
 			modify: async () => { throw Error("The provider list cannot change logins."); } },
 			modelsPath: join(this.agentDir, "models.json"), refreshOnCreate: false, allowModelNetwork: false });
 	}
-	/** Providers that take API keys and have chat models: ask_model's choices. */
+	/** Providers that take API keys and have chat models: ask_model's choices. Extension providers are not among them. */
 	async modelProviders(): Promise<ModelProvider[]> {
 		const catalog = await this.providers();
 		return catalog.getProviders().filter(provider => provider.auth.apiKey?.login && catalog.getModels(provider.id).length)
@@ -63,7 +89,9 @@ export class Logins {
 	async snapshot(): Promise<LoginsSnapshot> {
 		let providers: LoginProvider[];
 		try {
-			providers = (await this.providers()).getProviders().flatMap(provider => {
+			const extensions = await this.extensions();
+			const builtIn = (await this.providers()).getProviders().filter(provider => !extensions.some(extension => extension.id === provider.id));
+			providers = [...builtIn, ...extensions].flatMap(provider => {
 				const types: ProviderAuthType[] = [...provider.auth.oauth ? ["oauth" as const] : [], ...provider.auth.apiKey?.login ? ["api_key" as const] : []];
 				if (!types.length) return [];
 				const credential = readStoredCredential(provider.id, this.authPath);
