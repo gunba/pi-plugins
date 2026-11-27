@@ -21,17 +21,19 @@ const safeLinks = (links: { label?: string; url: string }[]) => links.map(link =
 type RuntimeFactory = (options: CreateModelRuntimeOptions) => Promise<Pick<ModelRuntime, "getProvider" | "getProviders" | "getModels" | "getAvailable" | "login" | "logout" | "registerNativeProvider">>;
 
 /**
- * Extension packages of the plugins package whose providers Pi itself lacks, so Desk's sign-in loads them: Gemini on a
- * Google plan. Only these are loaded in the host, once, because every extension's start-up would run in a process
- * that lives for days. The plugins manifest names their entries: precompiled in a release, sources in development.
+ * Extensions of the plugins package whose providers Pi itself lacks, so Desk's sign-in loads them, in this order:
+ * Gemini on a Google plan, then the changes pi-antigravity makes to it (a longer wait for the server to start, which
+ * sign-in needs on Windows). Only these are loaded in the host, once, because every extension's start-up would run in
+ * a process that lives for days. The plugins manifest names their entries: precompiled in a release, sources in
+ * development.
  */
-const SIGN_IN_PACKAGES = ["pi-antigravity-acp-provider"];
+const SIGN_IN_ENTRIES = [/pi-antigravity-acp-provider/, /pi-antigravity[/-]adapt\.(?:ts|mjs)$/];
 let signInProviders: Promise<Provider[]> | undefined;
 function extensionProviders(): Promise<Provider[]> {
 	return signInProviders ??= (async () => {
 		const root = fileURLToPath(new URL("../../../", import.meta.url));
 		const entries: string[] = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).pi?.extensions ?? [];
-		const files = entries.filter(entry => SIGN_IN_PACKAGES.some(name => entry.includes(name))).map(entry => resolve(root, entry));
+		const files = SIGN_IN_ENTRIES.flatMap(pattern => entries.filter(entry => pattern.test(entry))).map(entry => resolve(root, entry));
 		if (!files.length) return [];
 		// Discovery also loads <cwd>/.pi/extensions and <agentDir>/extensions, which the entry's own folder lacks.
 		const folder = dirname(files[0]!), loaded = await discoverAndLoadExtensions(files, folder, folder);

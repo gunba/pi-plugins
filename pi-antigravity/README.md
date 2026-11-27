@@ -24,6 +24,15 @@ instead (not available on Windows).
   computer without a saved choice asks first (`permissions: "default"` in `config.json` beside the token). Where
   the question cannot be shown, the action is refused. `/antigravity-acp permissions` changes it.
 - Outside `yolo`, Antigravity would also ask before each call to Pi's tools; those run unasked here, as Claude's do.
+- The provider starts a separate server to list models whenever Pi refreshes them (each conversation start, each
+  opening of the model list); here a list is reused for 12 hours.
+- On Windows the server unpacks about 140 MB into a new temporary folder at every start and Defender scans it: a
+  start took 10 to 27 s on the work laptop, where the provider allows 30 s. Here a connection waits up to 2 minutes,
+  an idle server is kept for 30 minutes instead of 5 (about 170 MB each), and the allowance gauges are refreshed at
+  most every 15 minutes.
+- `index.ts` loads before the provider and `adapt.ts` after it; Desk's sign-in loads the provider and `adapt.ts`.
+  `adapt.ts` replaces members the package does not export and skips any it no longer finds, so check it after each
+  provider update.
 - `/antigravity-acp doctor` shows the server, sign-in, permission mode and any Pi tool the bridge left out;
   `/antigravity-acp quota` shows the plan's remaining allowance.
 

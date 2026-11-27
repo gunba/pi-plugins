@@ -39,10 +39,11 @@ const USAGE_SOURCES: readonly UsageSource[] = ["codex", "claude", "gemini"];
 /** The Gemini provider (pi-antigravity-acp-provider) answers `{ reply }` on this channel with its plan's quota. */
 const GEMINI_QUOTA_REQUEST = "antigravity-acp:quota:request";
 /**
- * Antigravity reports its quota only when asked, and each answer takes a separate Antigravity process about 4 s, so a
- * computer asks after a Gemini reply at most this often. Its conversations share the answer through the snapshot file.
+ * Antigravity reports its quota only when asked, and each answer starts a separate Antigravity server: about 4 s on
+ * Linux, and 10 to 27 s on Windows, where Defender scans the 140 MB the server unpacks each time. A computer asks after
+ * a Gemini reply at most this often, and its conversations share the answer through the snapshot file.
  */
-const GEMINI_QUOTA_INTERVAL_MS = 5 * 60_000;
+const GEMINI_QUOTA_INTERVAL_MS = (process.platform === "win32" ? 15 : 5) * 60_000;
 
 // Factories can share this module across reloads. Never share captured contexts,
 // timers or per-session preferences between extension instances.
@@ -350,7 +351,7 @@ function formatUsageDetails(state: UsageState, nowMs = Date.now()): string {
   if (entries.length === 0) {
     return [
       "No subscription allowance snapshot yet.",
-      "Allowance updates passively from Codex and Claude responses. Gemini's is asked of Antigravity after a reply, at most every 5 minutes.",
+      `Allowance updates passively from Codex and Claude responses. Gemini's is asked of Antigravity after a reply, at most every ${GEMINI_QUOTA_INTERVAL_MS / 60_000} minutes.`,
     ].join("\n");
   }
 
@@ -370,7 +371,7 @@ function formatUsageDetails(state: UsageState, nowMs = Date.now()): string {
     lines.push("");
   }
   for (const source of USAGE_SOURCES) if (state.snapshotFiles[source]) lines.push(`${SOURCE_LABELS[source]} state: ${state.snapshotFiles[source]}`);
-  lines.push("Network policy: Codex and Claude passive only; Gemini asked after a reply, at most every 5 minutes.");
+  lines.push(`Network policy: Codex and Claude passive only; Gemini asked after a reply, at most every ${GEMINI_QUOTA_INTERVAL_MS / 60_000} minutes.`);
   return lines.join("\n").trimEnd();
 }
 
@@ -483,7 +484,7 @@ function publishUsage(ctx: ExtensionContext, state: UsageState): void {
     }),
   };
   if (!allowance) data.items = [{ id: "no-snapshot", title: source ? `No current ${SOURCE_LABELS[source]} allowance snapshot` : "Subscription allowance unavailable",
-    body: source === "gemini" ? "Gemini's allowance is asked of Antigravity after a reply, at most every 5 minutes."
+    body: source === "gemini" ? `Gemini's allowance is asked of Antigravity after a reply, at most every ${GEMINI_QUOTA_INTERVAL_MS / 60_000} minutes.`
       : source ? `Allowance arrives with normal ${SOURCE_LABELS[source]} responses. No polling or extra provider request is made.`
       : "Remaining subscription allowance is not provided by this integration for the selected model. Token and cost totals above are recorded usage, not a balance." }];
   remote.publish("pi-usage", { kind: "details", surface: "settings", title: "Usage & allowance", data,

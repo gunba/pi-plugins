@@ -1,6 +1,6 @@
 {
   "name": "pi-plugins",
-  "version": "0.29.349",
+  "version": "0.29.350",
   "description": "Custom Pi extensions packaged as one auto-updatable Pi package.",
   "keywords": [
     "pi-package",
@@ -31,6 +31,7 @@
       "./node_modules/@gotgenes/pi-anthropic-auth/src/index.ts",
       "./pi-antigravity/index.ts",
       "./node_modules/pi-antigravity-acp-provider/extensions/index.ts",
+      "./pi-antigravity/adapt.ts",
       "./pi-message-timestamps/extensions/message-timestamps.ts",
       "./pi-local-links/extensions/local-links.ts",
       "./pi-web-search/extensions/web-search.ts",
