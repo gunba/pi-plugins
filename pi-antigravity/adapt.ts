@@ -70,17 +70,24 @@ interface ConnectionOptions { initializeTimeoutMs?: number; env?: NodeJS.Process
  * inspection such as the work laptop's Netskope; it is pointed there unless its environment names a proxy or
  * certificates of its own. The factory is synchronous and the proxy's port is known only once it listens, so the
  * runtime's methods that start servers (SERVER_STARTS) wait for that first.
+ *
+ * Starting servers at once on Windows multiplies the cost: when a conversation's first message on the laptop came with
+ * the model list and the allowance figures, three servers started together and none answered within the 2 minutes,
+ * while one alone answered in 27 s. There a process starts one at a time, a conversation's own ahead of the others.
  */
 function adjustConnections(runtime: Members): void {
 	if (typeof runtime.connectionFactory !== "function") return;
 	const create = runtime.connectionFactory as (options: ConnectionOptions) => unknown;
 	const windows = process.platform === "win32", relay = windows ? openRelay() : undefined;
-	for (const method of relay ? SERVER_STARTS : []) {
+	const queue = windows ? oneAtATime() : undefined;
+	for (const method of windows ? SERVER_STARTS : []) {
 		const start = runtime[method];
 		if (typeof start !== "function") continue;
 		runtime[method] = async (...args: unknown[]) => {
-			await relay!.relay.ready;
-			return (start as (...args: unknown[]) => Promise<unknown>).apply(runtime, args);
+			await relay?.relay.ready;
+			const run = () => (start as (...args: unknown[]) => Promise<unknown>).apply(runtime, args);
+			// A sign-in lasts as long as Jordan takes in the browser, so it doesn't hold up the others.
+			return method === "loginGoogle" ? run() : queue!(method === "createBinding", run);
 		};
 	}
 	runtime.connectionFactory = (options: ConnectionOptions) => {
@@ -90,8 +97,28 @@ function adjustConnections(runtime: Members): void {
 	};
 }
 
-/** The runtime's methods that call the connection factory (0.1.23); all are async. */
+/** The runtime's methods that call the connection factory (0.1.23); all are async. A conversation's own server comes from createBinding. */
 const SERVER_STARTS = ["discoverModels", "fetchQuota", "loginGoogle", "verifyApiKey", "createBinding"];
+
+/** Runs one task at a time, in arrival order except that urgent ones go ahead of waiting ones that aren't. */
+function oneAtATime(): <T>(urgent: boolean, task: () => Promise<T>) => Promise<T> {
+	const waiting: { urgent: boolean; go: () => void }[] = [];
+	let running = false;
+	return async (urgent, task) => {
+		if (running) await new Promise<void>(go => {
+			const ahead = urgent ? waiting.findIndex(entry => !entry.urgent) : -1;
+			waiting.splice(ahead < 0 ? waiting.length : ahead, 0, { urgent, go });
+		});
+		running = true;
+		try {
+			return await task();
+		} finally {
+			const next = waiting.shift();
+			running = !!next;
+			next?.go();
+		}
+	};
+}
 const OWN_NETWORK_SETTINGS = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "PI_ANTIGRAVITY_ACP_PROXY", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"];
 /**
  * The server's environment for the relay. Its Python reads REQUESTS_CA_BUNDLE (requests) and SSL_CERT_FILE (urllib,

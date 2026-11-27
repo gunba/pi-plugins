@@ -288,8 +288,11 @@ function contextUsageSource(ctx: ExtensionContext): UsageSource | undefined {
   return currentUsageSource(model, !!model && ["anthropic", "antigravity-acp"].includes(model.provider) && ctx.modelRegistry.isUsingOAuth(model));
 }
 
-/** Asks the Gemini provider for the plan's quota, unless this computer has a recent answer or this process just asked. */
-function requestGeminiQuota(state: UsageState): void {
+/**
+ * Asks the Gemini provider for the plan's quota, unless this computer has a recent answer or this process just asked.
+ * With `ask` false only a saved answer is shown.
+ */
+function requestGeminiQuota(state: UsageState, ask = true): void {
   const now = Date.now();
   if (state.disposed || now - (state.geminiAskedAt ?? 0) < GEMINI_QUOTA_INTERVAL_MS) return;
   const saved = readPersistedSnapshots(snapshotFile(state.directory, "gemini")).gemini;
@@ -297,6 +300,7 @@ function requestGeminiQuota(state: UsageState): void {
     if (saved.updatedAtMs > (state.snapshots.gemini?.updatedAtMs ?? 0)) recordSnapshot(saved, state);
     return;
   }
+  if (!ask) return;
   state.geminiAskedAt = now;
   let answered = false;
   state.events.emit(GEMINI_QUOTA_REQUEST, { reply: (result: unknown) => {
@@ -613,7 +617,9 @@ export default function codexUsage(pi: ExtensionAPI): void {
 
   pi.on("model_select", (_event, ctx) => {
     updateUsageStatus(ctx, state);
-    if (contextUsageSource(ctx) === "gemini") requestGeminiQuota(state);
+    // Each answer starts a server. On Windows a start takes several cores for up to half a minute, so the question waits
+    // until a turn has settled rather than delay the conversation's own first server.
+    if (contextUsageSource(ctx) === "gemini") requestGeminiQuota(state, process.platform !== "win32");
   });
   pi.on("agent_settled", (_event, ctx) => {
     updateUsageStatus(ctx, state);
