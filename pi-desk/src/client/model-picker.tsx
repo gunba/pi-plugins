@@ -9,8 +9,18 @@ type Model = SessionSnapshot["models"][number];
 const modelKey = (model: Model) => `${model.provider}:${model.id}`;
 const providerNames: Record<string, string> = {
 	anthropic: "Anthropic", "openai-codex": "OpenAI Codex", openai: "OpenAI API",
-	google: "Google", "google-gemini-cli": "Google Gemini", "antigravity-acp": "Google Gemini", "github-copilot": "GitHub Copilot",
+	google: "Gemini API key", "google-gemini-cli": "Google Gemini", "antigravity-acp": "Gemini (Google AI plan)", "github-copilot": "GitHub Copilot",
 };
+/**
+ * Pi's "google" provider runs Gemini on an API key, billed per token, and a free key is refused for newer models
+ * ("limit: 0" for Gemini 4); the signed-in Google AI plan (antigravity-acp) runs the same models within the
+ * subscription. Where both offer a model only the plan's is listed, and a choice of the key's copy becomes the plan's.
+ */
+const PLAN_COPIES: Record<string, string> = { google: "antigravity-acp" };
+export function planCopy(models: readonly Model[], model: Model | undefined): Model | undefined {
+	const plan = model && PLAN_COPIES[model.provider];
+	return (plan && models.find(candidate => candidate.provider === plan && candidate.id === model.id)) || model;
+}
 export function ModelPicker({ snapshot, disabled, select, accounts, history, refresh }: {
 	snapshot: Pick<SessionSnapshot, "id" | "leaf" | "empty" | "activity" | "model" | "models" | "modelSwitchConstraint">; disabled: boolean; select: (model: Model, context?: ModelContext) => void;
 	/** Omitted where the sign-in and history links do not apply, such as a conversation not yet created. */
@@ -33,7 +43,7 @@ export function ModelPicker({ snapshot, disabled, select, accounts, history, ref
 			if (snapshot.activity !== "idle") return "Finish current work before switching providers.";
 		}
 	};
-	const filtered = open ? snapshot.models.filter(model => `${model.name} ${model.id} ${providerNames[model.provider] ?? model.provider}`.toLowerCase().includes(query.trim().toLowerCase())) : [];
+	const filtered = open ? snapshot.models.filter(model => planCopy(snapshot.models, model) === model).filter(model => `${model.name} ${model.id} ${providerNames[model.provider] ?? model.provider}`.toLowerCase().includes(query.trim().toLowerCase())) : [];
 	const groups = new Map<string, Model[]>();
 	for (const model of filtered) {
 		const group = groups.get(model.provider) ?? [];

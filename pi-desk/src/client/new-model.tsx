@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { api } from "./connection.ts";
 import type { WorkspaceSession } from "./workspace.ts";
-import { ModelPicker } from "./model-picker.tsx";
+import { ModelPicker, planCopy } from "./model-picker.tsx";
 import { useAnchoredPopover } from "./anchored-popover.ts";
 import { Icon } from "./icons.tsx";
 
@@ -77,10 +77,13 @@ export function NewConversationModel({ sessions, computer, value, change, disabl
 	const current = useComputerModels(computer);
 	const source = sessions.find(session => (computer === undefined || session.computer === computer) && session.snapshot?.models.length)?.snapshot;
 	const models = current?.length ? current : source?.models;
-	if (!models?.length) return null;
-	const find = (provider?: string, id?: string) => models.find(model => model.provider === provider && model.id === id);
+	const find = (provider?: string, id?: string) => models?.find(model => model.provider === provider && model.id === id);
 	const [provider, id] = value.model.split(/\/(.*)/s);
-	const chosen = find(provider, id) ?? (source?.defaultModel ? find(source.defaultModel.provider, source.defaultModel.id) : undefined);
+	const chosen = planCopy(models ?? [], find(provider, id) ?? (source?.defaultModel ? find(source.defaultModel.provider, source.defaultModel.id) : undefined));
+	const chosenRef = chosen ? `${chosen.provider}/${chosen.id}` : "";
+	// A remembered choice of a model the plan also offers is moved to the plan's copy, which is what gets created.
+	useEffect(() => { if (value.model && chosenRef && value.model !== chosenRef) change({ ...value, model: chosenRef }); }, [value.model, chosenRef]);
+	if (!models?.length) return null;
 	return <div className="new-model-fields">
 		<div className="new-model-field"><span>Model</span>
 			<ModelPicker disabled={disabled} select={model => change({ ...value, model: `${model.provider}/${model.id}` })}
